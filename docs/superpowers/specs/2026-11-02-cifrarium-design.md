@@ -22,7 +22,7 @@ The operational key and the Ed25519 signing private key are encoded in a version
 
 ## Storage and provider contract
 
-The provider interface is capability-oriented: upload, catalog upload, list, download, catalog download, and health. Snapshot IDs, ciphertext, and signed manifests are opaque to providers. The Git provider uses a private repository, a local temporary Git checkout, atomic file writes, and commits that contain only encrypted objects and signed manifests. Provider reads verify the local signature and catalog chain before activation. Future providers must implement the same opaque-object contract and must not receive plaintext.
+The provider interface is capability-oriented: upload, catalog upload, list, download, catalog download, and health. Snapshot IDs, ciphertext, and signed manifests are opaque to providers. The Git provider uses a private repository, a local temporary Git checkout, atomic file writes, and commits that contain only encrypted objects and signed manifests. Its read-only remote probe reports actionable repository/token access failures while leaving credentials to Git. Migration copies ciphertext and manifests through the same contract, using atomic upload when available, and never decrypts data. Provider reads verify the local signature and catalog chain before activation. Future providers must implement the same opaque-object contract and must not receive plaintext.
 
 ## Adapters and consistency
 
