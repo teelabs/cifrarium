@@ -43,6 +43,7 @@ All notable changes to Cifrarium will be documented here.
 
 ### Changed
 
+- Clarified that Cifrarium is a general application-configuration vault and that Codex, Oh My Zsh, and Starship are initial adapters; documentation-only, [`VERSION`](VERSION) remains `0.3.0`.
 - Streamlined the [README](README.md) around project usage and interaction, and clarified the separate recovery-share environment variables in the [GitHub provider provisioning runbook](docs/runbooks/github-provider-provisioning.md); documentation-only, [`VERSION`](VERSION) remains `0.3.0`.
 - Routed allowed MCP status and plan methods through a daemon-supplied handler with structured read-only results; [`VERSION`](VERSION) remains `0.3.0` pending release classification.
 - Refreshed the [red-team report](docs/security/2026-11-02-red-team-review.md) to the reconciled `main` commit and current CI evidence, including the latest restore, save, and MCP security slices; documentation-only, [`VERSION`](VERSION) remains `0.3.0`.

@@ -1,13 +1,12 @@
 # cifrarium
 
-Cifrarium is a local, portable encrypted vault for Codex, Oh My Zsh, and
-Starship configuration. It provides a CLI, an optional Linux user daemon, and
-a local read-only MCP interface.
+Cifrarium is a local, portable encrypted vault for application configuration
+that needs secure storage, reuse, version management, and backup. It provides
+a CLI, an optional Linux user daemon, and a local read-only MCP interface.
 
 ## What it does
 
-- Captures the supported configuration files into encrypted, versioned
-  snapshots.
+- Captures application configuration into encrypted, versioned snapshots.
 - Keeps keys in the Linux keyring and uses two of three recovery shares for
   recovery and before remote upload.
 - Uses a private Git repository as the first remote provider; remote setup is
@@ -15,6 +14,10 @@ a local read-only MCP interface.
 - Restores snapshots atomically with a local backup and rejects unsafe paths.
 - Exposes local status and change-plan MCP methods through the daemon; it does
   not accept autonomous mutations.
+
+The first adapters support Codex, Oh My Zsh, and Starship. They are the
+initial integrations, not a limit on the types of application configuration
+that Cifrarium is intended to manage.
 
 ## Requirements
 
