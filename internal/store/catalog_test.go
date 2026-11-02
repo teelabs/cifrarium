@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,5 +94,70 @@ func TestVerifyHistoricalHeadRequiresActiveChain(t *testing.T) {
 	}
 	if v.Head != m2.Snapshot {
 		t.Fatalf("historical verification changed head: %s", v.Head)
+	}
+}
+
+func TestMigrateCatalogEncryptsVerifiedLegacyMetadata(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, sign, _ := ed25519.GenerateKey(rand.Reader)
+	v := New(root, op, sign)
+	m, err := v.Save([]Record{{Path: "one", Data: []byte("1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, _ := json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(root, "head.json"), legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "catalog", m.Snapshot+".json"), legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := MigrateCatalog(root, op, sign.Public().(ed25519.PublicKey))
+	if err != nil || !changed {
+		t.Fatalf("migration: changed=%v err=%v", changed, err)
+	}
+	if _, err := Open(root, op, sign); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(root, "head.json"))
+	if bytes.Contains(raw, []byte(`"snapshot"`)) {
+		t.Fatal("legacy metadata remains plaintext")
+	}
+}
+
+func TestMigrateCatalogRollsBackWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, sign, _ := ed25519.GenerateKey(rand.Reader)
+	v := New(root, op, sign)
+	m, err := v.Save([]Record{{Path: "one", Data: []byte("1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, _ := json.Marshal(m)
+	headPath := filepath.Join(root, "head.json")
+	catalogPath := filepath.Join(root, "catalog", m.Snapshot+".json")
+	if err := os.WriteFile(headPath, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(catalogPath, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	write := func(path string, data []byte, mode os.FileMode) error {
+		calls++
+		if calls == 2 {
+			return errors.New("injected migration write failure")
+		}
+		return writeAtomic(path, data, mode)
+	}
+	if _, err := migrateCatalog(root, op, sign.Public().(ed25519.PublicKey), write); err == nil {
+		t.Fatal("write failure accepted")
+	}
+	gotHead, _ := os.ReadFile(headPath)
+	gotCatalog, _ := os.ReadFile(catalogPath)
+	if !bytes.Equal(gotHead, legacy) || !bytes.Equal(gotCatalog, legacy) {
+		t.Fatal("migration did not restore original plaintext metadata")
 	}
 }

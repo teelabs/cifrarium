@@ -20,6 +20,8 @@ Remote upload is guarded by explicit two-share recovery verification. Restore st
 
 Use `-command=recovery-shares` to print three recovery shares for the current keyring. On a fresh environment, import exactly two with `-command=recover -recovery-share label:value` repeated twice, then run `status` to verify the signed vault chain. Treat these shares as secrets; Cifrarium never stores them in the vault or remote provider.
 
+If upgrading a pre-encryption development vault, run `-command=migrate-catalog` once and then `status`. The migration verifies the complete signed chain and snapshot hashes before replacing plaintext catalog metadata with encrypted envelopes.
+
 Provider health performs a read-only `git ls-remote` probe when a GitHub remote is configured. Authentication remains Git's responsibility; failures identify repository or token access problems without embedding or storing credentials. Provider migration transfers only encrypted objects and signed manifests.
 
 ```sh

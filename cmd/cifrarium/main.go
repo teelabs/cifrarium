@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -51,6 +52,19 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 		os.Exit(1)
+	}
+	if *cmd == "migrate-catalog" {
+		changed, err := store.MigrateCatalog(*root, op, sign.Public().(ed25519.PublicKey))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: catalog migration failed: %v\n", err)
+			os.Exit(1)
+		}
+		if changed {
+			fmt.Println("catalog migration complete; run status to verify the keyring guard")
+		} else {
+			fmt.Println("catalog already uses encrypted metadata")
+		}
+		return
 	}
 	v, err := store.OpenWithGuard(*root, op, sign, keyringStore)
 	if err != nil {
@@ -147,7 +161,7 @@ func main() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot|recovery-shares|recover -recovery-share label:value")
+		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot|recovery-shares|recover|migrate-catalog -recovery-share label:value")
 		os.Exit(2)
 	}
 }
