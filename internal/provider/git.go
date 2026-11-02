@@ -76,16 +76,28 @@ func (g Git) Download(ctx context.Context, id string) ([]byte, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
-	return os.ReadFile(filepath.Join(g.Dir, "objects", id))
+	path, err := g.safePath(filepath.Join("objects", id))
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
 }
 func (g Git) DownloadCatalog(ctx context.Context, id string) ([]byte, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
-	return os.ReadFile(filepath.Join(g.Dir, "catalog", id+".json"))
+	path, err := g.safePath(filepath.Join("catalog", id+".json"))
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
 }
 func (g Git) List(ctx context.Context) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(g.Dir, "objects"))
+	objects, err := g.safePath("objects")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(objects)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +160,10 @@ func (g Git) VerifyPrivate(ctx context.Context) error {
 }
 
 func (g Git) writeObject(ctx context.Context, relative string, data []byte) error {
-	path := filepath.Join(g.Dir, relative)
+	path, err := g.safePath(relative)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -157,6 +172,31 @@ func (g Git) writeObject(ctx context.Context, relative string, data []byte) erro
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func (g Git) safePath(relative string) (string, error) {
+	if relative == "" || filepath.IsAbs(relative) || filepath.Clean(relative) != relative || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+		return "", fmt.Errorf("unsafe provider path")
+	}
+	path := filepath.Join(g.Dir, relative)
+	current := g.Dir
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("provider symlink path rejected: %s", relative)
+		}
+	}
+	return path, nil
 }
 func (g Git) commitAndPush(ctx context.Context, message string, paths ...string) error {
 	args := append([]string{"add", "--"}, paths...)
