@@ -40,6 +40,7 @@ All notable changes to Cifrarium will be documented here.
 
 - Routed allowed MCP status and plan methods through a daemon-supplied handler with structured read-only results; `VERSION` remains `0.3.0` pending release classification.
 - Refreshed the red-team report to the reconciled `main` commit and current CI evidence, including the latest restore, save, and MCP security slices; documentation-only, `VERSION` remains `0.3.0`.
+- Refreshed the red-team report with the mandatory provider privacy gate and current `main`/CI evidence; documentation-only, `VERSION` remains `0.3.0`.
 
 ## [0.3.0] - 2026-11-02
 

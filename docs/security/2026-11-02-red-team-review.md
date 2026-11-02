@@ -6,7 +6,7 @@ Review date: 2026-11-02.
 
 ## Scope
 
-The review covered the local encrypted store, recovery shares, catalog chain, remote snapshot verification, restore activation, provider boundary, daemon queue, systemd user boundary, adapters, and local MCP server. The source of truth is the reconciled `main` branch at `acd1d80b375831cec69b02336603adbb81262360`.
+The review covered the local encrypted store, recovery shares, catalog chain, remote snapshot verification, restore activation, provider boundary, daemon queue, systemd user boundary, adapters, and local MCP server. The source of truth is the reconciled `main` branch at `377476050a461ce056d0f2879f688f1f4702380d`.
 
 ## Evidence matrix
 
@@ -21,6 +21,7 @@ The review covered the local encrypted store, recovery shares, catalog chain, re
 | Partial activation failure restores moved files and removes newly activated files | `internal/store/restore_test.go`, PR #40 |
 | Snapshot, catalog, and head files roll back when a write or keyring-head update fails | `internal/store/catalog_test.go`, PR #44 |
 | Provider receives opaque ciphertext and encrypted catalog bytes | `internal/provider/provider_test.go`, `internal/provider/git_test.go`, `internal/sync/upload_test.go` |
+| Git uploads require private-provider verification before remote writes | `internal/provider/provider.go`, `internal/sync/upload.go`, `internal/sync/upload_test.go`, PR #48 |
 | Remote access and privacy failures are actionable without token arguments | `internal/provider/git.go`, `internal/provider/provider_test.go`, `cmd/cifrarium/main.go` |
 | Provider migration preserves opaque objects and atomic capability | `internal/provider/provider.go`, `internal/provider/provider_test.go` |
 | Pending queue is encrypted and bounded to 16 items | `internal/daemon/queue.go`, `internal/daemon/queue_test.go` |
@@ -42,7 +43,7 @@ git diff --check
 ./scripts/verify-secrets.sh
 ```
 
-The GitHub Actions `verify` job passed these gates on `main` in run `41507996239`, including the MCP handshake and systemd installer checks.
+The GitHub Actions `verify` job passed these gates on `main` in run `41509291305`, including the MCP handshake and systemd installer checks.
 
 ## Findings and residuals
 
