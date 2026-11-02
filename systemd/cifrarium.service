@@ -1,0 +1,11 @@
+[Unit]
+Description=Cifrarium local encrypted configuration vault
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/cifrarium -command=daemon
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=default.target
