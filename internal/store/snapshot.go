@@ -274,6 +274,12 @@ func OpenManifest(raw, operationalKey []byte) (Manifest, error) {
 // true when files were rewritten. No plaintext fallback is used by normal
 // vault opening.
 func MigrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey) (bool, error) {
+	return migrateCatalog(root, operationalKey, pub, writeAtomic)
+}
+
+type catalogWriter func(path string, data []byte, mode os.FileMode) error
+
+func migrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey, write catalogWriter) (bool, error) {
 	headRaw, err := os.ReadFile(filepath.Join(root, "head.json"))
 	if os.IsNotExist(err) {
 		return false, nil
@@ -290,6 +296,7 @@ func MigrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey) (
 	}
 	v := New(root, operationalKey, nil)
 	var entries []Manifest
+	originals := make([][]byte, 0)
 	seen := map[string]bool{}
 	for current, depth := head.Snapshot, 0; current != ""; depth++ {
 		if depth > 1024 || seen[current] || filepath.Base(current) != current {
@@ -304,6 +311,7 @@ func MigrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey) (
 		if err := json.Unmarshal(raw, &m); err != nil {
 			return false, fmt.Errorf("legacy catalog entry %s is invalid: %w", current, err)
 		}
+		originals = append(originals, append([]byte(nil), raw...))
 		if m.Snapshot != current {
 			return false, fmt.Errorf("legacy catalog snapshot mismatch")
 		}
@@ -331,12 +339,20 @@ func MigrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey) (
 			return false, err
 		}
 	}
+	rollback := func() {
+		for i, m := range entries {
+			_ = write(filepath.Join(root, "catalog", m.Snapshot+".json"), originals[i], 0600)
+		}
+		_ = write(filepath.Join(root, "head.json"), headRaw, 0600)
+	}
 	for i, m := range entries {
-		if err := writeAtomic(filepath.Join(root, "catalog", m.Snapshot+".json"), sealed[i], 0600); err != nil {
+		if err := write(filepath.Join(root, "catalog", m.Snapshot+".json"), sealed[i], 0600); err != nil {
+			rollback()
 			return false, err
 		}
 	}
-	if err := writeAtomic(filepath.Join(root, "head.json"), sealed[0], 0600); err != nil {
+	if err := write(filepath.Join(root, "head.json"), sealed[0], 0600); err != nil {
+		rollback()
 		return false, err
 	}
 	return true, nil
