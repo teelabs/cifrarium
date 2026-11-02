@@ -40,8 +40,14 @@ func TestSchedulerQueuesAndCreatesRecoveryAfterFailure(t *testing.T) {
 	if err := s.Cycle(context.Background()); err == nil {
 		t.Fatal("offline cycle succeeded")
 	}
-	if q.Len() != 1 || recovery != 1 || s.MissedCycles != 1 {
+	if q.Len() != 2 || recovery != 1 || s.MissedCycles != 1 {
 		t.Fatalf("queue=%d recovery=%d missed=%d", q.Len(), recovery, s.MissedCycles)
+	}
+	if first, ok := q.Pop(); !ok || first.ID != "s" {
+		t.Fatalf("first queued item=%q", first.ID)
+	}
+	if second, ok := q.Pop(); !ok || second.ID != "recovery" {
+		t.Fatalf("recovery queued item=%q", second.ID)
 	}
 	_ = s.Cycle(context.Background())
 	if recovery != 1 {
