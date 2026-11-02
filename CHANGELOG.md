@@ -12,6 +12,8 @@ All notable changes to Cifrarium will be documented here.
 - Incident deduplication is bounded to prevent unbounded memory growth.
 - Wired the daemon command to encrypted queue persistence, initial snapshot/drain cycles, configured Git uploads, recovery-share gating, signal shutdown, and the local MCP socket.
 - Added safe Git provider initialization and HTTPS GitHub remote validation without embedded credentials.
+- Added signed catalog persistence, restart verification, snapshot hash checks, and explicit current-head rollback rejection.
+- Added a keyring-backed catalog head guard to reject replay of an older valid local head.
 
 ## [0.2.1] - 2026-11-02
 
