@@ -12,7 +12,7 @@ The repository contains the MVP security design and a testable Go core:
 - Opaque Git provider contract and local Git implementation.
 - Mode-0600 local MCP socket exposing status and plan-only methods.
 
-Remote upload is guarded by explicit two-share recovery verification. Restore stages a complete tree, rejects traversal and symlink targets, and preserves a local backup. The daemon queue is bounded at 16 encrypted items; systemd scheduling, retry persistence, and GitHub provisioning remain rollout work. Do not store `auth.json`, logs, caches, databases, or shell history in the vault.
+Remote upload is guarded by explicit two-share recovery verification. Restore stages a complete tree, rejects traversal and symlink targets, and preserves a local backup. The daemon queue is bounded at 16 encrypted items and now has a six-hour scheduler contract with retry/backoff, recovery-snapshot triggering, and incident deduplication; systemd wiring and GitHub provisioning remain rollout work. Do not store `auth.json`, logs, caches, databases, or shell history in the vault.
 
 ```sh
 go test ./...
