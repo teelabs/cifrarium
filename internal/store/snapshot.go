@@ -437,7 +437,11 @@ func RestoreWithRename(records []Record, target, backupRoot string, rename Renam
 		return err
 	}
 	var moved []struct{ from, to string }
+	var activated []string
 	rollback := func() {
+		for i := len(activated) - 1; i >= 0; i-- {
+			_ = os.Remove(activated[i])
+		}
 		for i := len(moved) - 1; i >= 0; i-- {
 			_ = os.MkdirAll(filepath.Dir(moved[i].from), 0700)
 			_ = rename(moved[i].to, moved[i].from)
@@ -479,6 +483,7 @@ func RestoreWithRename(records []Record, target, backupRoot string, rename Renam
 		if e := rename(path, dest); e != nil {
 			return e
 		}
+		activated = append(activated, dest)
 		return nil
 	})
 	if err != nil {
