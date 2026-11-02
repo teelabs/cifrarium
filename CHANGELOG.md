@@ -10,6 +10,7 @@ All notable changes to Cifrarium will be documented here.
 - Added explicit historical restore APIs anchored to the verified local catalog chain and a deterministic mid-activation rollback test seam.
 - Added read-only GitHub remote access diagnostics and opaque provider migration through the atomic snapshot capability.
 - Encrypted local and provider catalog manifests with the operational-key envelope while retaining Ed25519 verification after decryption.
+- Added explicit `migrate-catalog` conversion for verified pre-encryption catalog metadata before normal vault opening.
 
 ## [0.3.0] - 2026-11-02
 

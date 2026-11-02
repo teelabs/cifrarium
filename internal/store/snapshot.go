@@ -269,6 +269,79 @@ func OpenManifest(raw, operationalKey []byte) (Manifest, error) {
 	return m, nil
 }
 
+// MigrateCatalog converts the pre-encryption plaintext catalog format after
+// verifying the complete chain and every referenced ciphertext. It returns
+// true when files were rewritten. No plaintext fallback is used by normal
+// vault opening.
+func MigrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey) (bool, error) {
+	headRaw, err := os.ReadFile(filepath.Join(root, "head.json"))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := OpenManifest(headRaw, operationalKey); err == nil {
+		return false, nil
+	}
+	var head Manifest
+	if err := json.Unmarshal(headRaw, &head); err != nil {
+		return false, fmt.Errorf("legacy catalog head is invalid: %w", err)
+	}
+	v := New(root, operationalKey, nil)
+	var entries []Manifest
+	seen := map[string]bool{}
+	for current, depth := head.Snapshot, 0; current != ""; depth++ {
+		if depth > 1024 || seen[current] || filepath.Base(current) != current {
+			return false, fmt.Errorf("legacy catalog chain loop or invalid head")
+		}
+		seen[current] = true
+		raw, err := os.ReadFile(filepath.Join(root, "catalog", current+".json"))
+		if err != nil {
+			return false, err
+		}
+		var m Manifest
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return false, fmt.Errorf("legacy catalog entry %s is invalid: %w", current, err)
+		}
+		if m.Snapshot != current {
+			return false, fmt.Errorf("legacy catalog snapshot mismatch")
+		}
+		if err := v.Verify(m, pub); err != nil {
+			return false, err
+		}
+		ciphertext, err := os.ReadFile(filepath.Join(root, "snapshots", current))
+		if err != nil {
+			return false, err
+		}
+		h := sha256.Sum256(ciphertext)
+		if hex.EncodeToString(h[:]) != current {
+			return false, fmt.Errorf("legacy snapshot hash mismatch")
+		}
+		entries = append(entries, m)
+		current = m.Previous
+	}
+	if head.Snapshot == "" || len(entries) == 0 {
+		return false, fmt.Errorf("legacy catalog has no head")
+	}
+	sealed := make([][]byte, len(entries))
+	for i, m := range entries {
+		sealed[i], err = SealManifest(m, operationalKey)
+		if err != nil {
+			return false, err
+		}
+	}
+	for i, m := range entries {
+		if err := writeAtomic(filepath.Join(root, "catalog", m.Snapshot+".json"), sealed[i], 0600); err != nil {
+			return false, err
+		}
+	}
+	if err := writeAtomic(filepath.Join(root, "head.json"), sealed[0], 0600); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (v *Vault) Load(id string) ([]Record, error) {
 	if id == "" || filepath.Base(id) != id {
 		return nil, fmt.Errorf("invalid snapshot id")
