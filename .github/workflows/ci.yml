@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Run unit and integration tests
+        run: go test ./...
+
+      - name: Run race detector
+        run: go test -race ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Check whitespace errors
+        run: git diff --check "${{ github.event.pull_request.base.sha || github.event.before }}" "$GITHUB_SHA"
+
+      - name: Check version and changelog
+        run: ./scripts/verify-version-changelog.sh
+
+      - name: Scan tracked files for high-confidence secrets
+        run: ./scripts/verify-secrets.sh
+
+      - name: Verify MCP handshake
+        run: go test ./internal/mcp -run TestInitializeHandshake -count=1
