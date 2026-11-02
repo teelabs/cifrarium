@@ -18,3 +18,18 @@ func TestServiceRunsInitialCycle(t *testing.T) {
 		t.Fatal("initial cycle not run")
 	}
 }
+
+func TestDrainPendingRestoresItemWhenPersistenceFails(t *testing.T) {
+	q := Queue{}
+	if err := q.Push(Item{ID: "pending", Ciphertext: []byte("c")}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewScheduler(nil, nil, &q)
+	s.Persist = func() error { return context.Canceled }
+	if err := s.DrainPending(context.Background()); err == nil {
+		t.Fatal("persistence failure ignored")
+	}
+	if q.Len() != 1 {
+		t.Fatalf("pending item lost: %d", q.Len())
+	}
+}

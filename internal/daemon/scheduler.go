@@ -57,6 +57,7 @@ func (s *Scheduler) DrainPending(ctx context.Context) error {
 		item, _ := s.Pending.Pop()
 		if s.Persist != nil {
 			if err := s.Persist(); err != nil {
+				_ = s.Pending.Push(item)
 				return err
 			}
 		}
