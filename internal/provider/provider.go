@@ -11,3 +11,6 @@ type Provider interface {
 	List(ctx context.Context) ([]string, error)
 	Health(ctx context.Context) error
 }
+type AtomicSnapshotProvider interface {
+	UploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte) error
+}

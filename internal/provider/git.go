@@ -48,6 +48,23 @@ func (g Git) UploadCatalog(ctx context.Context, id string, manifest []byte) erro
 	}
 	return g.commitAndPush(ctx, "catalog "+id, path)
 }
+func (g Git) UploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte) error {
+	if err := g.Ensure(ctx); err != nil {
+		return err
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	objectPath := filepath.Join("objects", id)
+	catalogPath := filepath.Join("catalog", id+".json")
+	if err := g.writeObject(ctx, objectPath, ciphertext); err != nil {
+		return err
+	}
+	if err := g.writeObject(ctx, catalogPath, manifest); err != nil {
+		return err
+	}
+	return g.commitAndPush(ctx, "snapshot "+id, objectPath, catalogPath)
+}
 func (g Git) Download(ctx context.Context, id string) ([]byte, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
@@ -86,8 +103,9 @@ func (g Git) writeObject(ctx context.Context, relative string, data []byte) erro
 	}
 	return os.Rename(tmp, path)
 }
-func (g Git) commitAndPush(ctx context.Context, message, path string) error {
-	if err := g.run(ctx, "add", "--", path); err != nil {
+func (g Git) commitAndPush(ctx context.Context, message string, paths ...string) error {
+	args := append([]string{"add", "--"}, paths...)
+	if err := g.run(ctx, args...); err != nil {
 		return err
 	}
 	if err := g.run(ctx, "commit", "-m", message); err != nil {

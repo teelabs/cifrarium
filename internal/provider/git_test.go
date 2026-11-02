@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -45,5 +46,25 @@ func TestGitEnsureInitializesAndValidatesRemote(t *testing.T) {
 	}
 	if err := (Git{Dir: dir2}).Ensure(context.Background()); err == nil {
 		t.Fatal(".git symlink accepted")
+	}
+}
+
+func TestGitUploadSnapshotCommitsCiphertextAndCatalogTogether(t *testing.T) {
+	dir := t.TempDir()
+	g := Git{Dir: dir}
+	if err := g.UploadSnapshot(context.Background(), "id", []byte("cipher"), []byte(`{"snapshot":"id"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "objects", "id")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "catalog", "id.json")); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "rev-list", "--count", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil || string(out) != "1\n" {
+		t.Fatalf("commits=%q err=%v", out, err)
 	}
 }

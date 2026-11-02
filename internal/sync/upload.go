@@ -33,6 +33,9 @@ func (g UploadGate) UploadSnapshot(ctx context.Context, p provider.Provider, id 
 	if err := g.verify(ctx, shares); err != nil {
 		return err
 	}
+	if atomic, ok := p.(provider.AtomicSnapshotProvider); ok {
+		return atomic.UploadSnapshot(ctx, id, ciphertext, manifestBytes)
+	}
 	if err := p.Upload(ctx, id, ciphertext); err != nil {
 		return err
 	}
