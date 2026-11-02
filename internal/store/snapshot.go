@@ -422,11 +422,12 @@ func (v *Vault) RecordsFromCiphertext(ciphertext []byte) ([]Record, error) {
 type RenameFunc func(oldPath, newPath string) error
 
 func Restore(records []Record, target, backupRoot string) error {
-	return RestoreWithRename(records, target, backupRoot, os.Rename)
+	return restoreSecure(records, target, backupRoot)
 }
 
 // RestoreWithRename is the transactional restore implementation with an
-// injectable rename seam for deterministic failure-path tests.
+// injectable rename seam for deterministic failure-path tests. Production
+// callers must use Restore, which uses descriptor-relative Linux operations.
 func RestoreWithRename(records []Record, target, backupRoot string, rename RenameFunc) error {
 	if rename == nil {
 		return fmt.Errorf("rename function is required")
@@ -443,8 +444,8 @@ func RestoreWithRename(records []Record, target, backupRoot string, rename Renam
 	}
 	defer os.RemoveAll(stage)
 	for _, r := range records {
-		if r.Path == "" || filepath.IsAbs(r.Path) || filepath.Clean(r.Path) != r.Path || r.Path == "." || filepath.Base(r.Path) == ".." || r.Path == ".." || strings.HasPrefix(r.Path, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("unsafe restore path %q", r.Path)
+		if err := validateRestoreRecordPath(r.Path); err != nil {
+			return err
 		}
 		p := filepath.Join(stage, r.Path)
 		if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
@@ -517,6 +518,13 @@ func RestoreWithRename(records []Record, target, backupRoot string, rename Renam
 	if err != nil {
 		rollback()
 		return err
+	}
+	return nil
+}
+
+func validateRestoreRecordPath(path string) error {
+	if path == "" || filepath.IsAbs(path) || filepath.Clean(path) != path || path == "." || filepath.Base(path) == ".." || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("unsafe restore path %q", path)
 	}
 	return nil
 }

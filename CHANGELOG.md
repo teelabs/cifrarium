@@ -34,6 +34,8 @@ All notable changes to Cifrarium will be documented here.
 
 ### Fixed
 
+- Hardened Linux production restore with descriptor-relative `openat2`/`renameat2` operations and fail-closed unsupported-platform behavior; `VERSION` remains `0.3.0` pending release classification.
+
 - Restore rollback now removes newly activated files before restoring pre-existing files when a later activation fails; `VERSION` remains `0.3.0` pending release classification.
 - `Vault.Save` now rolls back snapshot, catalog, and head files when a write or keyring-head update fails; `VERSION` remains `0.3.0` pending release classification.
 - Git uploads now require a successful private-repository verifier before writing remote ciphertext; `VERSION` remains `0.3.0` pending release classification.
