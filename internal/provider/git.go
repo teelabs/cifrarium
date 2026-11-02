@@ -139,6 +139,9 @@ func (g Git) CheckRemoteAccess(ctx context.Context) error {
 // the operator's gh authentication. The token is owned by gh and is never
 // passed as an argument or persisted by Cifrarium.
 func (g Git) VerifyPrivate(ctx context.Context) error {
+	if g.Remote == "" {
+		return nil
+	}
 	remote, err := g.remoteURL(ctx)
 	if err != nil {
 		return &RemoteAccessError{Err: err}
