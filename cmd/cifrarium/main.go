@@ -29,10 +29,15 @@ func main() {
 	home, _ := os.UserHomeDir()
 	root := flag.String("root", filepath.Join(home, ".local", "share", "cifrarium"), "encrypted vault directory")
 	cmd := flag.String("command", "status", "status or snapshot")
-	providerDir := flag.String("provider-dir", "", "local Git provider directory (daemon only)")
-	providerRemote := flag.String("provider-remote", "", "HTTPS GitHub remote URL (daemon only; no embedded credentials)")
+	providerDir := flag.String("provider-dir", os.Getenv("CIFRARIUM_PROVIDER_DIR"), "local Git provider directory (daemon only)")
+	providerRemote := flag.String("provider-remote", os.Getenv("CIFRARIUM_PROVIDER_REMOTE"), "HTTPS GitHub remote URL (daemon only; no embedded credentials)")
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
+	for _, name := range []string{"CIFRARIUM_RECOVERY_SHARE_1", "CIFRARIUM_RECOVERY_SHARE_2"} {
+		if value := os.Getenv(name); value != "" {
+			recoveryValues = append(recoveryValues, value)
+		}
+	}
 	flag.Parse()
 	if *cmd == "provider-health" {
 		if *providerDir == "" || *providerRemote == "" {

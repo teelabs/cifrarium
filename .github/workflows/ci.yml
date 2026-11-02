@@ -55,3 +55,12 @@ jobs:
 
       - name: Verify MCP handshake
         run: go test ./internal/mcp -run TestInitializeHandshake -count=1
+
+      - name: Check systemd installer syntax
+        run: bash -n scripts/install-systemd-user.sh
+
+      - name: Test systemd installer without activation
+        run: |
+          test_home="$(mktemp -d)"
+          XDG_CONFIG_HOME="$test_home/config" HOME="$test_home/home" scripts/install-systemd-user.sh
+          test -f "$test_home/config/systemd/user/cifrarium.service"
