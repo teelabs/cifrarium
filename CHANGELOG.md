@@ -12,6 +12,7 @@ All notable changes to Cifrarium will be documented here.
 - Encrypted local and provider catalog manifests with the operational-key envelope while retaining Ed25519 verification after decryption.
 - Added explicit `migrate-catalog` conversion for verified pre-encryption catalog metadata before normal vault opening.
 - Added MCP boundary regression coverage for private socket permissions and mutation rejection; version remains 0.3.0 because this is test-only hardening.
+- Added a provider-health CLI command that validates the configured GitHub remote without loading or printing credentials.
 
 ## [0.3.0] - 2026-11-02
 
