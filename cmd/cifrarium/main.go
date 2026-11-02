@@ -34,6 +34,19 @@ func main() {
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	flag.Parse()
 	keyringStore := store.NewKeyring()
+	if *cmd == "recover" {
+		shares, err := parseRecoveryShares(recoveryValues)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		if err := keyringStore.ImportRecovery(shares); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: recovery failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("recovery imported; run status to verify the vault")
+		return
+	}
 	op, sign, err := keyringStore.LoadOrCreate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
@@ -48,6 +61,15 @@ func main() {
 	case "status":
 		b, _ := json.Marshal(map[string]string{"vault": *root, "signer": fmt.Sprintf("%x", sign.Public())})
 		fmt.Println(string(b))
+	case "recovery-shares":
+		shares, err := store.RecoveryShares(op, sign)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		for _, share := range shares {
+			fmt.Printf("%s:%s\n", share.Label, share.Value)
+		}
 	case "snapshot":
 		var all []store.Record
 		for _, a := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
@@ -125,7 +147,22 @@ func main() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot")
+		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot|recovery-shares|recover -recovery-share label:value")
 		os.Exit(2)
 	}
+}
+
+func parseRecoveryShares(values []string) ([]recovery.Share, error) {
+	if len(values) != 2 {
+		return nil, fmt.Errorf("exactly two -recovery-share values are required")
+	}
+	shares := make([]recovery.Share, 0, 2)
+	for _, value := range values {
+		share, err := recovery.ParseShare(value)
+		if err != nil {
+			return nil, err
+		}
+		shares = append(shares, share)
+	}
+	return shares, nil
 }
