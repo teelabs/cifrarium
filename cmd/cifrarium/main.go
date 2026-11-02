@@ -29,6 +29,7 @@ func main() {
 	root := flag.String("root", filepath.Join(home, ".local", "share", "cifrarium"), "encrypted vault directory")
 	cmd := flag.String("command", "status", "status or snapshot")
 	providerDir := flag.String("provider-dir", "", "local Git provider directory (daemon only)")
+	providerRemote := flag.String("provider-remote", "", "HTTPS GitHub remote URL (daemon only; no embedded credentials)")
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	flag.Parse()
@@ -102,7 +103,7 @@ func main() {
 			if *providerDir == "" {
 				return fmt.Errorf("provider is not configured")
 			}
-			return syncvault.UploadGate{OperationalKey: op}.Upload(ctx, provider.Git{Dir: *providerDir}, item.ID, item.Ciphertext, shares)
+			return syncvault.UploadGate{OperationalKey: op}.Upload(ctx, provider.Git{Dir: *providerDir, Remote: *providerRemote}, item.ID, item.Ciphertext, shares)
 		}
 		scheduler := daemon.NewScheduler(snapshot, uploader, queue)
 		scheduler.Persist = func() error { return queue.Save(queuePath, op) }
