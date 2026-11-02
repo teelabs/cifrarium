@@ -54,6 +54,15 @@ func OpenWithGuard(root string, op []byte, signing ed25519.PrivateKey, guard Hea
 	v := NewWithGuard(root, op, signing, guard)
 	m, err := v.LoadHead()
 	if os.IsNotExist(err) {
+		if guard != nil {
+			expected, guardErr := guard.CatalogHead()
+			if guardErr != nil {
+				return nil, guardErr
+			}
+			if expected != "" {
+				return nil, fmt.Errorf("catalog head missing while keyring guard is set")
+			}
+		}
 		return v, nil
 	}
 	if err != nil {

@@ -58,3 +58,13 @@ func TestCatalogGuardRejectsReplayedHead(t *testing.T) {
 		t.Fatalf("replayed head accepted; current=%s old=%s", m2.Snapshot, m1.Snapshot)
 	}
 }
+
+func TestCatalogGuardRejectsMissingHead(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, sign, _ := ed25519.GenerateKey(rand.Reader)
+	guard := &testHeadGuard{head: "known-head"}
+	if _, err := OpenWithGuard(root, op, sign, guard); err == nil {
+		t.Fatal("missing head accepted with keyring guard")
+	}
+}
