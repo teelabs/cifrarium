@@ -80,10 +80,18 @@ func (g Git) Ensure(ctx context.Context) error {
 	if g.Dir == "" {
 		return fmt.Errorf("provider directory is required")
 	}
+	if info, err := os.Lstat(g.Dir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("provider directory symlink rejected")
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := os.MkdirAll(g.Dir, 0700); err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(g.Dir, ".git")); os.IsNotExist(err) {
+	gitDir := filepath.Join(g.Dir, ".git")
+	if info, err := os.Lstat(gitDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("provider .git symlink rejected")
+	} else if os.IsNotExist(err) {
 		if err := g.run(ctx, "init", "--initial-branch=main"); err != nil {
 			return err
 		}
