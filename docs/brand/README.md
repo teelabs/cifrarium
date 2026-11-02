@@ -2,7 +2,7 @@
 
 This directory contains the initial, versioned visual identity proposal for
 Cifrarium. It is a design artifact for repository use and does not constitute
-trademark, domain, or other legal clearance. Issue [#49](https://github.com/teelabs/cifrarium/issues/49)
+trademark, domain, or other legal clearance. [Issue #49](https://github.com/teelabs/cifrarium/issues/49)
 remains the release gate for qualified review before any public branding claim.
 
 ## Assets
@@ -55,5 +55,5 @@ small circular contexts where the index point remains visible.
 The wordmark is supplied as text in the sheet for easy review, using a
 system-font stack. Product packaging may convert it to outlines only after a
 font and licensing decision. Do not present this proposal as an approved
-trademark, registered mark, or cleared domain identity until issue #49 is
+trademark, registered mark, or cleared domain identity until [issue #49](https://github.com/teelabs/cifrarium/issues/49) is
 closed by the responsible human reviewers.
