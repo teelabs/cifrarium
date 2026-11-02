@@ -231,6 +231,17 @@ func (v *Vault) Load(id string) ([]Record, error) {
 	}
 	return records, nil
 }
+func (v *Vault) RecordsFromCiphertext(ciphertext []byte) ([]Record, error) {
+	plain, err := crypt.Open(ciphertext, v.Operational)
+	if err != nil {
+		return nil, err
+	}
+	var records []Record
+	if err := json.Unmarshal(plain, &records); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
 
 // Restore stages the complete tree first. Existing files are moved to a backup
 // directory before staged files are activated; on an activation error the

@@ -16,6 +16,7 @@ All notable changes to Cifrarium will be documented here.
 - Added a keyring-backed catalog head guard to reject replay of an older valid local head.
 - Providers now transport signed catalog manifests alongside encrypted snapshot objects, with verified download helpers.
 - Git provider uploads ciphertext and its manifest in one commit/push when the atomic capability is available.
+- Verified remote restore now decrypts and applies records through the existing atomic local restore path.
 
 ## [0.2.1] - 2026-11-02
 

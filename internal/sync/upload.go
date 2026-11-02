@@ -70,3 +70,14 @@ func DownloadSnapshot(ctx context.Context, p provider.Provider, vault *store.Vau
 	}
 	return ciphertext, m, nil
 }
+func RestoreRemote(ctx context.Context, p provider.Provider, vault *store.Vault, id string, pub ed25519.PublicKey, target, backupRoot string) error {
+	ciphertext, _, err := DownloadSnapshot(ctx, p, vault, id, pub)
+	if err != nil {
+		return err
+	}
+	records, err := vault.RecordsFromCiphertext(ciphertext)
+	if err != nil {
+		return err
+	}
+	return store.Restore(records, target, backupRoot)
+}
