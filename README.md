@@ -13,6 +13,7 @@ The repository contains the MVP security design and a testable Go core:
 - Mode-0600 local MCP socket exposing status and plan-only methods.
 - Signed catalog manifests persist across restarts and verify the snapshot hash chain before activation.
 - Git provider snapshots include their signed catalog manifest; downloads can reject stale heads and hash/signature tampering.
+- Verified remote snapshots can be restored through the staged local restore path with backup creation.
 
 Remote upload is guarded by explicit two-share recovery verification. Restore stages a complete tree, rejects traversal and symlink targets, and preserves a local backup. The daemon command now loads/saves the encrypted queue, runs an initial cycle and pending drain, starts the six-hour scheduler and local MCP socket, and accepts an explicitly configured Git provider. `-provider-remote` accepts only an HTTPS GitHub URL without embedded credentials; repository creation and token provisioning remain operator actions. Do not store `auth.json`, logs, caches, databases, or shell history in the vault.
 
