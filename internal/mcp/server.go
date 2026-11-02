@@ -54,7 +54,7 @@ func handle(c net.Conn) {
 		}
 		switch r.Method {
 		case "initialize":
-			_ = enc.Encode(Response{"2.0", r.ID, map[string]any{"name": "cifrarium", "version": "0.2.1"}, nil})
+			_ = enc.Encode(Response{"2.0", r.ID, map[string]any{"name": "cifrarium", "version": "0.3.0"}, nil})
 		case "status", "snapshot.plan", "restore.plan":
 			_ = enc.Encode(Response{"2.0", r.ID, map[string]any{"readOnly": true, "method": r.Method}, nil})
 		default:

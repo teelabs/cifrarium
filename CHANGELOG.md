@@ -4,6 +4,13 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
+### Added
+
+- Six-hour daemon scheduler contract with retry/backoff, encrypted pending queue integration, recovery snapshot trigger, and incident deduplication.
+- Incident deduplication is bounded to prevent unbounded memory growth.
+
 ## [0.2.1] - 2026-11-02
 
 ### Security

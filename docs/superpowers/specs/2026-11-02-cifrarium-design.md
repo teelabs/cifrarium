@@ -30,7 +30,7 @@ Adapters return canonical paths and bytes from explicit allowlists. Codex includ
 
 ## Restore and daemon
 
-Restore writes a same-filesystem temporary tree, rejects traversal and symlink targets, renames existing files into a local backup, then activates staged files. On an activation failure it restores files already moved. The user daemon has a systemd user unit and a bounded queue of at most 16 encrypted pending objects; six-hour polling, persistent retry/backoff, and incident notification deduplication remain rollout work.
+Restore writes a same-filesystem temporary tree, rejects traversal and symlink targets, renames existing files into a local backup, then activates staged files. On an activation failure it restores files already moved. The user daemon has a systemd user unit, a six-hour scheduler contract, retry/backoff, an encrypted bounded queue of at most 16 pending objects, recovery-snapshot triggering after a missed cycle, and incident notification deduplication. Wiring the scheduler into the installed service remains rollout work.
 
 ## MCP boundary
 
