@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hashicorp/vault/shamir"
+	shamir "github.com/openfort-xyz/shamir-secret-sharing-go"
 )
 
 type Share struct {
@@ -17,7 +17,7 @@ type Share struct {
 }
 
 func Split(key []byte) ([]Share, error) {
-	raw, err := shamir.Split(key, 3, 2)
+	raw, err := shamir.Split(3, 2, key)
 	if err != nil {
 		return nil, err
 	}
