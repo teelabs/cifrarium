@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" role="img" aria-labelledby="title desc">
+  <title id="title">Cifrarium visual identity directions</title>
+  <desc id="desc">Four geometric Cifrarium logo directions with symbols, lowercase wordmarks, light and dark surfaces, and monochrome examples.</desc>
+  <rect width="1600" height="1100" fill="#0B1220"/>
+  <style>
+    .heading { font: 700 44px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .08em; fill: #F4F7FB; }
+    .subheading { font: 400 20px Inter, ui-sans-serif, system-ui, sans-serif; fill: #AAB7C9; }
+    .label { font: 700 18px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .12em; }
+    .wordmark { font: 600 58px Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: .02em; }
+    .caption { font: 400 16px Inter, ui-sans-serif, system-ui, sans-serif; }
+    .cyan { stroke: #58D6CF; fill: none; }
+    .dark { fill: #0B1220; }
+    .light { fill: #F4F7FB; }
+    .ink { stroke: #0B1220; fill: none; }
+    .muted { stroke: #6D7B90; fill: none; }
+  </style>
+
+  <text x="90" y="92" class="heading">CIFRARIUM</text>
+  <text x="90" y="130" class="subheading">four directions for a portable configuration vault</text>
+
+  <!-- A: rounded archive C -->
+  <g transform="translate(70 190)">
+    <rect width="710" height="370" rx="28" fill="#121E32" stroke="#263750" stroke-width="2"/>
+    <text x="42" y="52" class="label" fill="#58D6CF">A / ARCHIVE C</text>
+    <path d="M238 115a92 92 0 1 0 0 140" class="cyan" stroke-width="28" stroke-linecap="round"/>
+    <path d="M170 184h120" class="cyan" stroke-width="16" stroke-linecap="round"/>
+    <circle cx="170" cy="184" r="8" fill="#F4F7FB"/>
+    <text x="355" y="205" class="wordmark" fill="#F4F7FB">cifrarium</text>
+    <text x="42" y="326" class="caption" fill="#AAB7C9">sealed archive / snapshot boundary</text>
+    <g transform="translate(535 302) scale(.42)">
+      <path d="M238 115a92 92 0 1 0 0 140" class="cyan" stroke-width="28" stroke-linecap="round"/>
+      <path d="M170 184h120" class="cyan" stroke-width="16" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- B: layered archive C -->
+  <g transform="translate(820 190)">
+    <rect width="710" height="370" rx="28" fill="#F4F7FB" stroke="#D8E0EB" stroke-width="2"/>
+    <text x="42" y="52" class="label" fill="#0B7E7A">B / LAYERED C</text>
+    <path d="M238 112a92 92 0 1 0 0 144" class="ink" stroke-width="24" stroke-linecap="round"/>
+    <path d="M226 125a78 78 0 1 0 0 118" stroke="#0B7E7A" fill="none" stroke-width="12" stroke-linecap="round"/>
+    <path d="M212 139a64 64 0 1 0 0 90" class="muted" stroke-width="5" stroke-linecap="round"/>
+    <text x="355" y="205" class="wordmark" fill="#0B1220">cifrarium</text>
+    <text x="42" y="326" class="caption" fill="#52647C">layered history / portable snapshot</text>
+    <g transform="translate(535 302) scale(.42)">
+      <path d="M238 112a92 92 0 1 0 0 144" class="ink" stroke-width="24" stroke-linecap="round"/>
+      <path d="M226 125a78 78 0 1 0 0 118" stroke="#0B7E7A" fill="none" stroke-width="12" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- C: folded angular C -->
+  <g transform="translate(70 610)">
+    <rect width="710" height="370" rx="28" fill="#F4F7FB" stroke="#D8E0EB" stroke-width="2"/>
+    <text x="42" y="52" class="label" fill="#0B7E7A">C / FOLDED C</text>
+    <path d="M280 120 228 92 144 138 112 184 144 230 228 276 280 248 214 212 185 184 214 156Z" fill="#0B1220"/>
+    <path d="m178 184 50-28 52 28-52 28Z" fill="#0B7E7A"/>
+    <text x="355" y="205" class="wordmark" fill="#0B1220">cifrarium</text>
+    <text x="42" y="326" class="caption" fill="#52647C">precise fold / monochrome-ready mark</text>
+    <g transform="translate(535 302) scale(.42)">
+      <path d="M280 120 228 92 144 138 112 184 144 230 228 276 280 248 214 212 185 184 214 156Z" fill="#0B1220"/>
+      <path d="m178 184 50-28 52 28-52 28Z" fill="#0B7E7A"/>
+    </g>
+  </g>
+
+  <!-- D: indexed circular C -->
+  <g transform="translate(820 610)">
+    <rect width="710" height="370" rx="28" fill="#121E32" stroke="#263750" stroke-width="2"/>
+    <text x="42" y="52" class="label" fill="#58D6CF">D / INDEXED C</text>
+    <circle cx="194" cy="184" r="100" class="cyan" stroke-width="12"/>
+    <path d="M194 84a100 100 0 0 0 0 200" class="dark" stroke="#121E32" stroke-width="28"/>
+    <circle cx="194" cy="184" r="18" fill="#58D6CF"/>
+    <text x="355" y="205" class="wordmark" fill="#F4F7FB">cifrarium</text>
+    <text x="42" y="326" class="caption" fill="#AAB7C9">catalog index / compact status surface</text>
+    <g transform="translate(535 302) scale(.42)">
+      <circle cx="194" cy="184" r="100" class="cyan" stroke-width="12"/>
+      <path d="M194 84a100 100 0 0 0 0 200" class="dark" stroke="#121E32" stroke-width="28"/>
+      <circle cx="194" cy="184" r="18" fill="#58D6CF"/>
+    </g>
+  </g>
+
+  <text x="90" y="1045" class="subheading">recommended default: A / Archive C · legal clearance remains open</text>
+</svg>
