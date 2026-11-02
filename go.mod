@@ -3,7 +3,7 @@ module github.com/teelabs/cifrarium
 go 1.24.4
 
 require (
-	github.com/hashicorp/vault v1.20.3
+	github.com/openfort-xyz/shamir-secret-sharing-go v0.0.2
 	github.com/zalando/go-keyring v0.2.6
 )
 

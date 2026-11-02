@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hashicorp/vault/shamir"
+	shamir "github.com/openfort-xyz/shamir-secret-sharing-go"
 )
 
 type Share struct {
@@ -17,7 +17,7 @@ type Share struct {
 }
 
 func Split(key []byte) ([]Share, error) {
-	raw, err := shamir.Split(key, 3, 2)
+	raw, err := shamir.Split(3, 2, key)
 	if err != nil {
 		return nil, err
 	}
@@ -41,10 +41,18 @@ func Combine(shares []Share) ([]byte, error) {
 		raw[i] = s.Value
 	}
 	bytes := make([][]byte, 2)
+	var x [2]byte
 	for i, v := range raw {
 		b, err := base64.RawStdEncoding.DecodeString(v)
 		if err != nil {
 			return nil, fmt.Errorf("invalid share: %w", err)
+		}
+		if len(b) < 2 {
+			return nil, fmt.Errorf("invalid share length")
+		}
+		x[i] = b[0]
+		if i > 0 && x[i] == x[i-1] {
+			return nil, fmt.Errorf("duplicate share index")
 		}
 		bytes[i] = b
 	}

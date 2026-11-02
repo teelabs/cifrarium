@@ -4,6 +4,13 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-02
+
+### Security
+
+- Replaced the broad HashiCorp Vault dependency used for recovery shares with a dedicated pure-Go secret-sharing module.
+- Reject duplicate recovery share indexes before interpolation.
+
 ## [0.2.0] - 2026-11-02
 
 ### Added
