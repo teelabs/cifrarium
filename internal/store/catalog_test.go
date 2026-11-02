@@ -68,3 +68,21 @@ func TestCatalogGuardRejectsMissingHead(t *testing.T) {
 		t.Fatal("missing head accepted with keyring guard")
 	}
 }
+
+func TestVerifyHistoricalHeadRequiresActiveChain(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, sign, _ := ed25519.GenerateKey(rand.Reader)
+	v := New(root, op, sign)
+	m1, _ := v.Save([]Record{{Path: "one", Data: []byte("1")}})
+	m2, _ := v.Save([]Record{{Path: "two", Data: []byte("2")}})
+	if err := v.VerifyHistoricalHead(m1.Snapshot, sign.Public().(ed25519.PublicKey)); err != nil {
+		t.Fatalf("historical snapshot rejected: %v", err)
+	}
+	if err := v.VerifyHistoricalHead("not-in-chain", sign.Public().(ed25519.PublicKey)); err == nil {
+		t.Fatal("unanchored historical snapshot accepted")
+	}
+	if v.Head != m2.Snapshot {
+		t.Fatalf("historical verification changed head: %s", v.Head)
+	}
+}

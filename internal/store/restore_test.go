@@ -1,8 +1,10 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,5 +42,42 @@ func TestRestoreCreatesBackup(t *testing.T) {
 	entries, _ := os.ReadDir(backup)
 	if len(entries) != 1 {
 		t.Fatalf("backup count %d", len(entries))
+	}
+}
+
+func TestRestoreRollsBackAfterMidActivationFailure(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "home")
+	backup := filepath.Join(root, "backups")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b"} {
+		if err := os.WriteFile(filepath.Join(target, name), []byte("old-"+name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	activations := 0
+	rename := func(oldPath, newPath string) error {
+		if strings.Contains(oldPath, string(filepath.Separator)+".cifrarium-restore-") {
+			activations++
+			if activations == 2 {
+				return errors.New("injected activation failure")
+			}
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	err := RestoreWithRename([]Record{
+		{Path: "a", Data: []byte("new-a"), Mode: 0600},
+		{Path: "b", Data: []byte("new-b"), Mode: 0600},
+	}, target, backup, rename)
+	if err == nil {
+		t.Fatal("mid-activation failure accepted")
+	}
+	for _, tc := range []struct{ name, want string }{{"a", "old-a"}, {"b", "old-b"}} {
+		got, readErr := os.ReadFile(filepath.Join(target, tc.name))
+		if readErr != nil || string(got) != tc.want {
+			t.Fatalf("rollback %s: %q, %v", tc.name, got, readErr)
+		}
 	}
 }

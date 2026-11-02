@@ -50,7 +50,21 @@ func (g UploadGate) verify(_ context.Context, shares []recovery.Share) error {
 }
 
 func DownloadSnapshot(ctx context.Context, p provider.Provider, vault *store.Vault, id string, pub ed25519.PublicKey) ([]byte, store.Manifest, error) {
-	if err := vault.VerifyCurrentHead(id); err != nil {
+	return downloadSnapshot(ctx, p, vault, id, pub, false)
+}
+
+// DownloadSnapshotAt permits an explicit historical selection while keeping
+// the default DownloadSnapshot current-head-only contract.
+func DownloadSnapshotAt(ctx context.Context, p provider.Provider, vault *store.Vault, id string, pub ed25519.PublicKey) ([]byte, store.Manifest, error) {
+	return downloadSnapshot(ctx, p, vault, id, pub, true)
+}
+
+func downloadSnapshot(ctx context.Context, p provider.Provider, vault *store.Vault, id string, pub ed25519.PublicKey, historical bool) ([]byte, store.Manifest, error) {
+	if historical {
+		if err := vault.VerifyHistoricalHead(id, pub); err != nil {
+			return nil, store.Manifest{}, err
+		}
+	} else if err := vault.VerifyCurrentHead(id); err != nil {
 		return nil, store.Manifest{}, err
 	}
 	ciphertext, err := p.Download(ctx, id)
@@ -70,8 +84,21 @@ func DownloadSnapshot(ctx context.Context, p provider.Provider, vault *store.Vau
 	}
 	return ciphertext, m, nil
 }
+
 func RestoreRemote(ctx context.Context, p provider.Provider, vault *store.Vault, id string, pub ed25519.PublicKey, target, backupRoot string) error {
 	ciphertext, _, err := DownloadSnapshot(ctx, p, vault, id, pub)
+	if err != nil {
+		return err
+	}
+	records, err := vault.RecordsFromCiphertext(ciphertext)
+	if err != nil {
+		return err
+	}
+	return store.Restore(records, target, backupRoot)
+}
+
+func RestoreRemoteAt(ctx context.Context, p provider.Provider, vault *store.Vault, id string, pub ed25519.PublicKey, target, backupRoot string) error {
+	ciphertext, _, err := DownloadSnapshotAt(ctx, p, vault, id, pub)
 	if err != nil {
 		return err
 	}
