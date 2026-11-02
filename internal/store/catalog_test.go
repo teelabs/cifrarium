@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"os"
@@ -27,6 +28,13 @@ func TestCatalogChainSurvivesRestartAndDetectsTamper(t *testing.T) {
 	restarted, err := Open(root, op, sign)
 	if err != nil || restarted.Head != m2.Snapshot {
 		t.Fatalf("restart: %v %s", err, restarted.Head)
+	}
+	rawHead, err := os.ReadFile(filepath.Join(root, "head.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(rawHead, []byte(`"snapshot"`)) || bytes.Contains(rawHead, []byte(m2.Snapshot)) {
+		t.Fatal("catalog metadata is stored in plaintext")
 	}
 	if err := restarted.VerifyCurrentHead(m1.Snapshot); err == nil {
 		t.Fatal("rollback accepted")

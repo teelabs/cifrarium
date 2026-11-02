@@ -112,7 +112,10 @@ func (v *Vault) Save(records []Record) (Manifest, error) {
 	if err = writeAtomic(filepath.Join(dir, sum), ciphertext, 0600); err != nil {
 		return Manifest{}, err
 	}
-	b, _ := json.Marshal(m)
+	b, err := SealManifest(m, v.Operational)
+	if err != nil {
+		return Manifest{}, err
+	}
 	if err = writeAtomic(filepath.Join(v.Root, "catalog", sum+".json"), b, 0600); err != nil {
 		return Manifest{}, err
 	}
@@ -149,11 +152,7 @@ func (v *Vault) LoadHead() (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	var m Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return Manifest{}, err
-	}
-	return m, nil
+	return OpenManifest(raw, v.Operational)
 }
 
 func (v *Vault) VerifyChain(head string, pub ed25519.PublicKey) error {
@@ -170,8 +169,8 @@ func (v *Vault) VerifyChain(head string, pub ed25519.PublicKey) error {
 		if err != nil {
 			return err
 		}
-		var m Manifest
-		if err := json.Unmarshal(raw, &m); err != nil {
+		m, err := OpenManifest(raw, v.Operational)
+		if err != nil {
 			return err
 		}
 		if m.Snapshot != current {
@@ -227,8 +226,8 @@ func (v *Vault) VerifyHistoricalHead(candidate string, pub ed25519.PublicKey) er
 		if err != nil {
 			return err
 		}
-		var m Manifest
-		if err := json.Unmarshal(raw, &m); err != nil {
+		m, err := OpenManifest(raw, v.Operational)
+		if err != nil {
 			return err
 		}
 		current = m.Previous
@@ -245,6 +244,29 @@ func (v *Vault) VerifySnapshot(m Manifest, ciphertext []byte, pub ed25519.Public
 		return fmt.Errorf("snapshot hash mismatch")
 	}
 	return nil
+}
+
+// SealManifest keeps catalog metadata encrypted at rest and in providers.
+// The signature is computed over the plaintext manifest before sealing so a
+// verifier can authenticate it after decrypting with the operational key.
+func SealManifest(m Manifest, operationalKey []byte) ([]byte, error) {
+	plain, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return crypt.Seal(plain, operationalKey)
+}
+
+func OpenManifest(raw, operationalKey []byte) (Manifest, error) {
+	plain, err := crypt.Open(raw, operationalKey)
+	if err != nil {
+		return Manifest{}, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(plain, &m); err != nil {
+		return Manifest{}, err
+	}
+	return m, nil
 }
 
 func (v *Vault) Load(id string) ([]Record, error) {

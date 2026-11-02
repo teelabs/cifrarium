@@ -124,7 +124,7 @@ func main() {
 				return daemon.Item{}, err
 			}
 			ciphertext, err := os.ReadFile(filepath.Join(*root, "snapshots", m.Snapshot))
-			manifest, marshalErr := json.Marshal(m)
+			manifest, marshalErr := store.SealManifest(m, op)
 			if err == nil {
 				err = marshalErr
 			}

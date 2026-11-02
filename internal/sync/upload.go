@@ -3,7 +3,6 @@ package sync
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
 	"fmt"
 
 	"github.com/teelabs/cifrarium/internal/provider"
@@ -23,8 +22,8 @@ func (g UploadGate) Upload(ctx context.Context, p provider.Provider, id string, 
 }
 
 func (g UploadGate) UploadSnapshot(ctx context.Context, p provider.Provider, id string, ciphertext, manifestBytes []byte, shares []recovery.Share) error {
-	var manifest store.Manifest
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+	manifest, err := store.OpenManifest(manifestBytes, g.OperationalKey)
+	if err != nil {
 		return fmt.Errorf("invalid catalog manifest: %w", err)
 	}
 	if manifest.Snapshot != id {
@@ -75,8 +74,8 @@ func downloadSnapshot(ctx context.Context, p provider.Provider, vault *store.Vau
 	if err != nil {
 		return nil, store.Manifest{}, err
 	}
-	var m store.Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
+	m, err := store.OpenManifest(raw, vault.Operational)
+	if err != nil {
 		return nil, store.Manifest{}, err
 	}
 	if err := vault.VerifySnapshot(m, ciphertext, pub); err != nil {
