@@ -406,6 +406,9 @@ func RestoreWithRename(records []Record, target, backupRoot string, rename Renam
 	if filepath.Clean(target) == "." || filepath.Clean(target) == "/" {
 		return fmt.Errorf("unsafe restore target")
 	}
+	if err := rejectSymlinkPath(target); err != nil {
+		return err
+	}
 	stage, err := os.MkdirTemp(filepath.Dir(target), ".cifrarium-restore-")
 	if err != nil {
 		return err
@@ -449,6 +452,9 @@ func RestoreWithRename(records []Record, target, backupRoot string, rename Renam
 		}
 		rel, _ := filepath.Rel(stage, path)
 		dest := filepath.Join(target, rel)
+		if err := rejectSymlinkPath(dest); err != nil {
+			return err
+		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("staged symlink rejected")
 		}
@@ -481,6 +487,38 @@ func RestoreWithRename(records []Record, target, backupRoot string, rename Renam
 	}
 	return nil
 }
+
+func rejectSymlinkPath(path string) error {
+	clean := filepath.Clean(path)
+	absolute := filepath.IsAbs(clean)
+	current := ""
+	if absolute {
+		current = string(filepath.Separator)
+	}
+	components := strings.Split(clean, string(filepath.Separator))
+	for _, component := range components {
+		if component == "" || component == "." {
+			continue
+		}
+		if current == "" {
+			current = component
+		} else {
+			current = filepath.Join(current, component)
+		}
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink path rejected: %s", path)
+		}
+	}
+	return nil
+}
+
 func manifestBytes(m Manifest) []byte { m.Signature = ""; b, _ := json.Marshal(m); return b }
 func sortRecords(r []Record) {
 	for i := range r {

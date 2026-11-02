@@ -16,6 +16,7 @@ All notable changes to Cifrarium will be documented here.
 - Added an opt-in systemd user installer and CI syntax gate; installation does not activate the daemon unless `--enable` is supplied.
 - Added systemd environment-file wiring for provider configuration and explicitly supplied recovery shares, with restrictive service umask and no-new-privileges.
 - Added opt-in GitHub privacy verification through the operator's `gh` authentication without passing tokens to Cifrarium.
+- Hardened restore against symlinked intermediate directories and symlinked restore roots, with adversarial regression coverage.
 
 ## [0.3.0] - 2026-11-02
 

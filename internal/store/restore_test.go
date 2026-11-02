@@ -25,6 +25,23 @@ func TestRestoreRejectsTraversalAndSymlink(t *testing.T) {
 	if err := Restore([]Record{{Path: "link", Data: []byte("x"), Mode: 0600}}, target, backup); err == nil {
 		t.Fatal("symlink target accepted")
 	}
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(target, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore([]Record{{Path: "linked/file", Data: []byte("x"), Mode: 0600}}, target, backup); err == nil {
+		t.Fatal("intermediate symlink accepted")
+	}
+	rootLink := filepath.Join(root, "target-link")
+	if err := os.Symlink(target, rootLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore([]Record{{Path: "file", Data: []byte("x"), Mode: 0600}}, rootLink, backup); err == nil {
+		t.Fatal("symlink restore root accepted")
+	}
 }
 func TestRestoreCreatesBackup(t *testing.T) {
 	root := t.TempDir()
