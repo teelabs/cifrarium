@@ -16,6 +16,7 @@ const service = "cifrarium"
 type secrets struct {
 	Operational    string `json:"operational"`
 	SigningPrivate string `json:"signing_private"`
+	CatalogHead    string `json:"catalog_head,omitempty"`
 }
 type Keyring struct{ User string }
 
@@ -52,10 +53,35 @@ func (k *Keyring) LoadOrCreate() (operational []byte, signing ed25519.PrivateKey
 	if err != nil {
 		return nil, nil, err
 	}
-	s := secrets{base64.RawStdEncoding.EncodeToString(operational), base64.RawStdEncoding.EncodeToString(signing)}
+	s := secrets{Operational: base64.RawStdEncoding.EncodeToString(operational), SigningPrivate: base64.RawStdEncoding.EncodeToString(signing)}
 	b, _ := json.Marshal(s)
 	if err = keyring.Set(service, k.User, string(b)); err != nil {
 		return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
 	}
 	return operational, signing, nil
+}
+
+func (k *Keyring) load() (secrets, error) {
+	raw, err := keyring.Get(service, k.User)
+	if err != nil {
+		return secrets{}, err
+	}
+	var s secrets
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return secrets{}, err
+	}
+	return s, nil
+}
+func (k *Keyring) CatalogHead() (string, error) { s, err := k.load(); return s.CatalogHead, err }
+func (k *Keyring) SetCatalogHead(head string) error {
+	s, err := k.load()
+	if err != nil {
+		return err
+	}
+	s.CatalogHead = head
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	return keyring.Set(service, k.User, string(b))
 }

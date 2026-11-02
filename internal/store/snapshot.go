@@ -32,13 +32,26 @@ type Vault struct {
 	Operational []byte
 	Signing     ed25519.PrivateKey
 	Head        string
+	Guard       HeadGuard
+}
+type HeadGuard interface {
+	CatalogHead() (string, error)
+	SetCatalogHead(string) error
 }
 
 func New(root string, op []byte, signing ed25519.PrivateKey) *Vault {
 	return &Vault{Root: root, Operational: op, Signing: signing}
 }
-func Open(root string, op []byte, signing ed25519.PrivateKey) (*Vault, error) {
+func NewWithGuard(root string, op []byte, signing ed25519.PrivateKey, guard HeadGuard) *Vault {
 	v := New(root, op, signing)
+	v.Guard = guard
+	return v
+}
+func Open(root string, op []byte, signing ed25519.PrivateKey) (*Vault, error) {
+	return OpenWithGuard(root, op, signing, nil)
+}
+func OpenWithGuard(root string, op []byte, signing ed25519.PrivateKey, guard HeadGuard) (*Vault, error) {
+	v := NewWithGuard(root, op, signing, guard)
 	m, err := v.LoadHead()
 	if os.IsNotExist(err) {
 		return v, nil
@@ -48,6 +61,20 @@ func Open(root string, op []byte, signing ed25519.PrivateKey) (*Vault, error) {
 	}
 	if err := v.VerifyChain(m.Snapshot, signing.Public().(ed25519.PublicKey)); err != nil {
 		return nil, err
+	}
+	if guard != nil {
+		expected, err := guard.CatalogHead()
+		if err != nil {
+			return nil, err
+		}
+		if expected != "" && expected != m.Snapshot {
+			return nil, fmt.Errorf("catalog rollback detected")
+		}
+		if expected == "" {
+			if err := guard.SetCatalogHead(m.Snapshot); err != nil {
+				return nil, err
+			}
+		}
 	}
 	v.Head = m.Snapshot
 	return v, nil
@@ -82,6 +109,11 @@ func (v *Vault) Save(records []Record) (Manifest, error) {
 	}
 	if err = writeAtomic(filepath.Join(v.Root, "head.json"), b, 0600); err != nil {
 		return Manifest{}, err
+	}
+	if v.Guard != nil {
+		if err := v.Guard.SetCatalogHead(m.Snapshot); err != nil {
+			return Manifest{}, err
+		}
 	}
 	v.Head = sum
 	return m, nil

@@ -33,12 +33,13 @@ func main() {
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	flag.Parse()
-	op, sign, err := store.NewKeyring().LoadOrCreate()
+	keyringStore := store.NewKeyring()
+	op, sign, err := keyringStore.LoadOrCreate()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 		os.Exit(1)
 	}
-	v, err := store.Open(*root, op, sign)
+	v, err := store.OpenWithGuard(*root, op, sign, keyringStore)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cifrarium: vault integrity check failed: %v\n", err)
 		os.Exit(1)
