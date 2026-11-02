@@ -30,33 +30,52 @@ func (g Git) Upload(ctx context.Context, id string, ciphertext []byte) error {
 	if err := validateID(id); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(g.Dir, "objects"), 0700); err != nil {
+	if err := g.writeObject(ctx, filepath.Join("objects", id), ciphertext); err != nil {
 		return err
 	}
-	p := filepath.Join(g.Dir, "objects", id)
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, ciphertext, 0600); err != nil {
+	return g.commitAndPush(ctx, "snapshot "+id, filepath.Join("objects", id))
+}
+func (g Git) UploadCatalog(ctx context.Context, id string, manifest []byte) error {
+	if err := g.Ensure(ctx); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := validateID(id); err != nil {
 		return err
 	}
-	if err := g.run(ctx, "add", "--", filepath.Join("objects", id)); err != nil {
+	path := filepath.Join("catalog", id+".json")
+	if err := g.writeObject(ctx, path, manifest); err != nil {
 		return err
 	}
-	if err := g.run(ctx, "commit", "-m", "snapshot "+id); err != nil {
+	return g.commitAndPush(ctx, "catalog "+id, path)
+}
+func (g Git) UploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte) error {
+	if err := g.Ensure(ctx); err != nil {
 		return err
 	}
-	if g.Remote != "" {
-		return g.run(ctx, "push", "origin", "HEAD")
+	if err := validateID(id); err != nil {
+		return err
 	}
-	return nil
+	objectPath := filepath.Join("objects", id)
+	catalogPath := filepath.Join("catalog", id+".json")
+	if err := g.writeObject(ctx, objectPath, ciphertext); err != nil {
+		return err
+	}
+	if err := g.writeObject(ctx, catalogPath, manifest); err != nil {
+		return err
+	}
+	return g.commitAndPush(ctx, "snapshot "+id, objectPath, catalogPath)
 }
 func (g Git) Download(ctx context.Context, id string) ([]byte, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
 	return os.ReadFile(filepath.Join(g.Dir, "objects", id))
+}
+func (g Git) DownloadCatalog(ctx context.Context, id string) ([]byte, error) {
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(filepath.Join(g.Dir, "catalog", id+".json"))
 }
 func (g Git) List(ctx context.Context) ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(g.Dir, "objects"))
@@ -72,6 +91,31 @@ func (g Git) List(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 func (g Git) Health(ctx context.Context) error { return g.run(ctx, "status", "--porcelain") }
+
+func (g Git) writeObject(ctx context.Context, relative string, data []byte) error {
+	path := filepath.Join(g.Dir, relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+func (g Git) commitAndPush(ctx context.Context, message string, paths ...string) error {
+	args := append([]string{"add", "--"}, paths...)
+	if err := g.run(ctx, args...); err != nil {
+		return err
+	}
+	if err := g.run(ctx, "commit", "-m", message); err != nil {
+		return err
+	}
+	if g.Remote != "" {
+		return g.run(ctx, "push", "origin", "HEAD")
+	}
+	return nil
+}
 
 // Ensure initializes only the local repository and verifies an existing
 // origin. It never creates a GitHub repository and never accepts credentials

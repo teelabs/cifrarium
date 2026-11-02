@@ -102,13 +102,17 @@ func main() {
 				return daemon.Item{}, err
 			}
 			ciphertext, err := os.ReadFile(filepath.Join(*root, "snapshots", m.Snapshot))
-			return daemon.Item{ID: m.Snapshot, Ciphertext: ciphertext}, err
+			manifest, marshalErr := json.Marshal(m)
+			if err == nil {
+				err = marshalErr
+			}
+			return daemon.Item{ID: m.Snapshot, Ciphertext: ciphertext, Manifest: manifest}, err
 		}
 		uploader := func(ctx context.Context, item daemon.Item) error {
 			if *providerDir == "" {
 				return fmt.Errorf("provider is not configured")
 			}
-			return syncvault.UploadGate{OperationalKey: op}.Upload(ctx, provider.Git{Dir: *providerDir, Remote: *providerRemote}, item.ID, item.Ciphertext, shares)
+			return syncvault.UploadGate{OperationalKey: op}.UploadSnapshot(ctx, provider.Git{Dir: *providerDir, Remote: *providerRemote}, item.ID, item.Ciphertext, item.Manifest, shares)
 		}
 		scheduler := daemon.NewScheduler(snapshot, uploader, queue)
 		scheduler.Persist = func() error { return queue.Save(queuePath, op) }

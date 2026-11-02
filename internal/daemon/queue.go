@@ -13,6 +13,7 @@ const MaxPending = 16
 type Item struct {
 	ID         string
 	Ciphertext []byte
+	Manifest   []byte
 }
 type Queue struct{ items []Item }
 
