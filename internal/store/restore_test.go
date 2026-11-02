@@ -98,3 +98,34 @@ func TestRestoreRollsBackAfterMidActivationFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestRestoreRollsBackNewFilesAfterMidActivationFailure(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "home")
+	backup := filepath.Join(root, "backups")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	activations := 0
+	rename := func(oldPath, newPath string) error {
+		if strings.Contains(oldPath, string(filepath.Separator)+".cifrarium-restore-") {
+			activations++
+			if activations == 2 {
+				return errors.New("injected activation failure")
+			}
+		}
+		return os.Rename(oldPath, newPath)
+	}
+	err := RestoreWithRename([]Record{
+		{Path: "a", Data: []byte("new-a"), Mode: 0600},
+		{Path: "b", Data: []byte("new-b"), Mode: 0600},
+	}, target, backup, rename)
+	if err == nil {
+		t.Fatal("mid-activation failure accepted")
+	}
+	for _, name := range []string{"a", "b"} {
+		if _, statErr := os.Lstat(filepath.Join(target, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("new file %s survived rollback: %v", name, statErr)
+		}
+	}
+}

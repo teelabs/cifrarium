@@ -30,6 +30,10 @@ All notable changes to Cifrarium will be documented here.
 - Added the operator GitHub provisioning runbook with repository-scoped token permissions and pre-upload privacy/recovery gates. Documentation-only; `VERSION` remains `0.3.0`.
 - Hardened recovery import to verify reconstructed keys against the existing signed vault chain before changing the keyring; `VERSION` remains `0.3.0` pending release classification.
 
+### Fixed
+
+- Restore rollback now removes newly activated files before restoring pre-existing files when a later activation fails; `VERSION` remains `0.3.0` pending release classification.
+
 ## [0.3.0] - 2026-11-02
 
 ### Added
