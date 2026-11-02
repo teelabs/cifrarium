@@ -83,3 +83,24 @@ func TestGitCheckRemoteAccessReportsRevokedIdentityStyleFailure(t *testing.T) {
 		t.Fatalf("expected remote access error, got %v", err)
 	}
 }
+
+func TestGitHubRepoSlugValidation(t *testing.T) {
+	for _, tc := range []struct {
+		remote string
+		want   string
+		valid  bool
+	}{
+		{remote: "https://github.com/teelabs/cifrarium.git", want: "teelabs/cifrarium", valid: true},
+		{remote: "https://github.com/teelabs/cifrarium", want: "teelabs/cifrarium", valid: true},
+		{remote: "https://github.com/teelabs", valid: false},
+		{remote: "https://github.com/teelabs/cifrarium/extra", valid: false},
+	} {
+		got, err := githubRepoSlug(tc.remote)
+		if tc.valid && (err != nil || got != tc.want) {
+			t.Fatalf("%s: got=%q err=%v", tc.remote, got, err)
+		}
+		if !tc.valid && err == nil {
+			t.Fatalf("accepted invalid remote %s", tc.remote)
+		}
+	}
+}

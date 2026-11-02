@@ -123,6 +123,30 @@ func (g Git) CheckRemoteAccess(ctx context.Context) error {
 	return nil
 }
 
+// VerifyPrivate optionally checks the GitHub repository privacy flag through
+// the operator's gh authentication. The token is owned by gh and is never
+// passed as an argument or persisted by Cifrarium.
+func (g Git) VerifyPrivate(ctx context.Context) error {
+	remote, err := g.remoteURL(ctx)
+	if err != nil {
+		return &RemoteAccessError{Err: err}
+	}
+	slug, err := githubRepoSlug(remote)
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "gh", "api", "repos/"+slug, "--jq", ".private")
+	cmd.Dir = g.Dir
+	out, err := cmd.Output()
+	if err != nil {
+		return &RemoteAccessError{Err: fmt.Errorf("GitHub privacy check unavailable: %w", err)}
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return fmt.Errorf("GitHub repository %s is not private", slug)
+	}
+	return nil
+}
+
 func (g Git) writeObject(ctx context.Context, relative string, data []byte) error {
 	path := filepath.Join(g.Dir, relative)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -211,6 +235,22 @@ func validateRemote(raw string) error {
 		return fmt.Errorf("remote must be an HTTPS GitHub URL without embedded credentials")
 	}
 	return nil
+}
+
+func githubRepoSlug(raw string) (string, error) {
+	if err := validateRemote(raw); err != nil {
+		return "", err
+	}
+	parts := strings.Split(strings.Trim(uPath(raw), "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("remote must identify one GitHub repository")
+	}
+	return strings.TrimSuffix(parts[0]+"/"+parts[1], ".git"), nil
+}
+
+func uPath(raw string) string {
+	u, _ := url.Parse(raw)
+	return u.Path
 }
 
 func validateID(id string) error {

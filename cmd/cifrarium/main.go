@@ -31,6 +31,7 @@ func main() {
 	cmd := flag.String("command", "status", "status or snapshot")
 	providerDir := flag.String("provider-dir", os.Getenv("CIFRARIUM_PROVIDER_DIR"), "local Git provider directory (daemon only)")
 	providerRemote := flag.String("provider-remote", os.Getenv("CIFRARIUM_PROVIDER_REMOTE"), "HTTPS GitHub remote URL (daemon only; no embedded credentials)")
+	verifyPrivate := flag.Bool("verify-private", false, "verify GitHub repository privacy with gh (provider-health only)")
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	for _, name := range []string{"CIFRARIUM_RECOVERY_SHARE_1", "CIFRARIUM_RECOVERY_SHARE_2"} {
@@ -52,6 +53,12 @@ func main() {
 		if err := gitProvider.CheckRemoteAccess(context.Background()); err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 			os.Exit(1)
+		}
+		if *verifyPrivate {
+			if err := gitProvider.VerifyPrivate(context.Background()); err != nil {
+				fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		fmt.Printf("{\"provider\":\"github\",\"remote\":%q,\"status\":\"ok\"}\n", *providerRemote)
 		return
