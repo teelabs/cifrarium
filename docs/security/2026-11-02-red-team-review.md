@@ -17,7 +17,8 @@ The review covered the local encrypted store, recovery shares, catalog chain, re
 | Snapshot and catalog tampering is detected | `internal/store/catalog_test.go`, `internal/crypto/envelope_test.go` |
 | Catalog rollback and missing guarded head are rejected | `internal/store/catalog_test.go`, `internal/store/snapshot.go` |
 | Historical restore cannot change the active write head | `internal/store/catalog_test.go`, `internal/sync/upload_test.go` |
-| Restore traversal, final symlink, root symlink, and intermediate symlink attacks are rejected | `internal/store/restore_test.go`, `internal/store/snapshot.go` |
+| Restore traversal, final symlink, root symlink, backup-root symlink, and intermediate symlink attacks are rejected | `internal/store/restore_test.go`, `internal/store/snapshot.go`, `internal/store/secure_restore_linux.go` |
+| Production restore uses descriptor-relative directory handles and no-replace renames to prevent path-component TOCTOU redirection | `internal/store/secure_restore_linux.go`, `internal/store/restore_test.go`, issue #56 |
 | Partial activation failure restores moved files and removes newly activated files | `internal/store/restore_test.go`, PR #40 |
 | Snapshot, catalog, and head files roll back when a write or keyring-head update fails | `internal/store/catalog_test.go`, PR #44 |
 | Provider receives opaque ciphertext and encrypted catalog bytes | `internal/provider/provider_test.go`, `internal/provider/git_test.go`, `internal/sync/upload_test.go` |
@@ -53,8 +54,13 @@ Restore previously checked only the final destination for symlinks. A symlinked 
 
 ### Accepted within the current threat model
 
-1. A same-user hostile process can attempt a TOCTOU race between path validation and `os.Rename`. The SDD excludes a compromised running user account. A future Linux-hardening slice may replace this with descriptor-relative `openat`/`renameat2` operations.
-2. Recovery shares supplied to systemd live in the operator-created `daemon.env` and are plaintext to the same user with file access. The file is required to be mode `0600`; the installer never creates or copies it. Shares are never stored in the vault or provider.
+1. Recovery shares supplied to systemd live in the operator-created `daemon.env` and are plaintext to the same user with file access. The file is required to be mode `0600`; the installer never creates or copies it. Shares are never stored in the vault or provider.
+
+The previous restore path TOCTOU residual is remediated for the Linux MVP by
+descriptor-relative production operations. A compromised same-user process can
+still interfere with the operation and cause a fail-closed error or rollback
+failure; it cannot redirect a validated rename through a replaced symlink
+component. Unsupported platforms fail closed.
 
 ### Open before public release
 

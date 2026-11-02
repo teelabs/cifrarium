@@ -42,6 +42,25 @@ func TestRestoreRejectsTraversalAndSymlink(t *testing.T) {
 	if err := Restore([]Record{{Path: "file", Data: []byte("x"), Mode: 0600}}, rootLink, backup); err == nil {
 		t.Fatal("symlink restore root accepted")
 	}
+	backupLink := filepath.Join(root, "backup-link")
+	if err := os.Symlink(backup, backupLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore([]Record{{Path: "file", Data: []byte("x"), Mode: 0600}}, target, backupLink); err == nil {
+		t.Fatal("symlink backup root accepted")
+	}
+}
+
+func TestRestoreRejectsDuplicatePaths(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "home")
+	backup := filepath.Join(root, "backups")
+	if err := Restore([]Record{
+		{Path: "config", Data: []byte("one"), Mode: 0600},
+		{Path: "config", Data: []byte("two"), Mode: 0600},
+	}, target, backup); err == nil {
+		t.Fatal("duplicate restore path accepted")
+	}
 }
 func TestRestoreCreatesBackup(t *testing.T) {
 	root := t.TempDir()
