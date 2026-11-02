@@ -13,9 +13,10 @@ func TestConfigAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(h, ".codex", "config.toml"), []byte("x"), 0600)
+	os.WriteFile(filepath.Join(h, ".codex", "AGENTS.md"), []byte("instructions"), 0600)
 	os.WriteFile(filepath.Join(h, ".codex", "auth.json"), []byte("secret"), 0600)
 	files, err := (Config{}).Collect(h)
-	if err != nil || len(files) != 1 || files[0].Relative != ".codex/config.toml" {
+	if err != nil || len(files) != 2 || files[0].Relative != ".codex/AGENTS.md" || files[1].Relative != ".codex/config.toml" {
 		t.Fatalf("%v %#v", err, files)
 	}
 }
