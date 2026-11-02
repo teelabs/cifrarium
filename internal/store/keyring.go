@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/user"
 
@@ -35,7 +36,18 @@ func NewKeyring() *Keyring {
 	return &Keyring{User: id}
 }
 func (k *Keyring) LoadOrCreate() (operational []byte, signing ed25519.PrivateKey, err error) {
-	raw, err := keyring.Get(service, k.User)
+	return loadOrCreate(
+		k.User,
+		func(service, user string) (string, error) { return keyring.Get(service, user) },
+		func(service, user, password string) error { return keyring.Set(service, user, password) },
+	)
+}
+
+type keyringGet func(service, user string) (string, error)
+type keyringSet func(service, user, password string) error
+
+func loadOrCreate(user string, get keyringGet, set keyringSet) (operational []byte, signing ed25519.PrivateKey, err error) {
+	raw, err := get(service, user)
 	if err == nil {
 		var s secrets
 		if json.Unmarshal([]byte(raw), &s) != nil {
@@ -57,6 +69,9 @@ func (k *Keyring) LoadOrCreate() (operational []byte, signing ed25519.PrivateKey
 		}
 		return operational, ed25519.PrivateKey(p), nil
 	}
+	if !errors.Is(err, keyring.ErrNotFound) {
+		return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
+	}
 	operational = make([]byte, 32)
 	if _, err = rand.Read(operational); err != nil {
 		return nil, nil, err
@@ -67,7 +82,7 @@ func (k *Keyring) LoadOrCreate() (operational []byte, signing ed25519.PrivateKey
 	}
 	s := secrets{Operational: base64.RawStdEncoding.EncodeToString(operational), SigningPrivate: base64.RawStdEncoding.EncodeToString(signing)}
 	b, _ := json.Marshal(s)
-	if err = keyring.Set(service, k.User, string(b)); err != nil {
+	if err = set(service, user, string(b)); err != nil {
 		return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
 	}
 	return operational, signing, nil
