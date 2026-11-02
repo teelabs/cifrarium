@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -10,9 +11,10 @@ import (
 )
 
 type Request struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      any    `json:"id"`
-	Method  string `json:"method"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      any             `json:"id"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
 }
 type Response struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -20,7 +22,20 @@ type Response struct {
 	Result  any    `json:"result,omitempty"`
 	Error   any    `json:"error,omitempty"`
 }
-type Server struct{ Socket string }
+type Handler interface {
+	Handle(context.Context, Request) (any, error)
+}
+
+type HandlerFunc func(context.Context, Request) (any, error)
+
+func (f HandlerFunc) Handle(ctx context.Context, request Request) (any, error) {
+	return f(ctx, request)
+}
+
+type Server struct {
+	Socket  string
+	Handler Handler
+}
 
 func (s Server) Listen() error {
 	if err := os.MkdirAll(filepath.Dir(s.Socket), 0700); err != nil {
@@ -40,10 +55,10 @@ func (s Server) Listen() error {
 		if err != nil {
 			return err
 		}
-		go handle(c)
+		go handle(c, s.Handler)
 	}
 }
-func handle(c net.Conn) {
+func handle(c net.Conn, handler Handler) {
 	defer c.Close()
 	scan := bufio.NewScanner(c)
 	enc := json.NewEncoder(c)
@@ -56,7 +71,16 @@ func handle(c net.Conn) {
 		case "initialize":
 			_ = enc.Encode(Response{"2.0", r.ID, map[string]any{"name": "cifrarium", "version": "0.3.0"}, nil})
 		case "status", "snapshot.plan", "restore.plan":
-			_ = enc.Encode(Response{"2.0", r.ID, map[string]any{"readOnly": true, "method": r.Method}, nil})
+			if handler == nil {
+				_ = enc.Encode(Response{"2.0", r.ID, nil, "daemon handler is unavailable"})
+				continue
+			}
+			result, err := handler.Handle(context.Background(), r)
+			if err != nil {
+				_ = enc.Encode(Response{"2.0", r.ID, nil, err.Error()})
+				continue
+			}
+			_ = enc.Encode(Response{"2.0", r.ID, result, nil})
 		default:
 			_ = enc.Encode(Response{"2.0", r.ID, nil, fmt.Sprintf("method %q is not available", r.Method)})
 		}

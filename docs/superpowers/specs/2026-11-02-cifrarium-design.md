@@ -34,7 +34,7 @@ Restore writes a same-filesystem temporary tree, rejects traversal, symlinked ro
 
 ## MCP boundary
 
-MCP binds to a mode-0600 Unix socket owned by the user. Requests are JSON-RPC-like messages mediated by the daemon. `status`, `snapshot.plan`, and `restore.plan` are read/plan operations. No MCP method mutates the vault or starts an upload; CLI confirmation is required.
+MCP binds to a mode-0600 Unix socket owned by the user. Requests are JSON-RPC-like messages routed through a daemon-supplied handler. `status` reports daemon/vault/provider state; `snapshot.plan` reports the allowlisted adapters; and `restore.plan` requires a selected snapshot and reports a CLI-confirmed restore plan. No MCP method mutates the vault or starts an upload; CLI confirmation is required for change plans.
 
 ## Verification and rollout
 

@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/teelabs/cifrarium/internal/daemon"
+	"github.com/teelabs/cifrarium/internal/mcp"
 	"github.com/teelabs/cifrarium/internal/store"
 )
 
@@ -51,5 +53,23 @@ func TestDaemonWiresRecoverySnapshotAndQueuesIt(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Fatalf("snapshots=%d, want 2", len(entries))
+	}
+}
+
+func TestMCPHandlerReturnsReadOnlyRestorePlan(t *testing.T) {
+	handler := newMCPHandler("/vault", "/provider")
+	result, err := handler.Handle(context.Background(), mcp.Request{
+		Method: "restore.plan",
+		Params: json.RawMessage(`{"snapshot":"snapshot-id"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result=%#v", result)
+	}
+	if plan["readOnly"] != true || plan["requiresCliConfirmation"] != true || plan["snapshot"] != "snapshot-id" {
+		t.Fatalf("unexpected plan=%#v", plan)
 	}
 }
