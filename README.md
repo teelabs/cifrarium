@@ -1,37 +1,115 @@
 # cifrarium
-Local, portable encrypted configuration vault with CLI, daemon, and local MCP integration.
 
-## Current baseline
+Cifrarium is a local, portable encrypted vault for Codex, Oh My Zsh, and
+Starship configuration. It provides a CLI, an optional Linux user daemon, and
+a local read-only MCP interface.
 
-The repository contains the MVP security design and a testable Go core:
+## What it does
 
-- AES-256-GCM envelopes with a fresh data key per snapshot.
-- Linux keyring-backed operational and Ed25519 signing keys.
-- Shamir 2-of-3 recovery primitives with pair coverage tests.
-- Explicit Codex, Oh My Zsh, and Starship adapters that reject symlinks and sensitive paths; Codex captures only `~/.codex/config.toml` and `~/.codex/AGENTS.md`.
-- Opaque Git provider contract and local Git implementation.
-- Mode-0600 local MCP socket exposing daemon-mediated status and structured plan-only methods.
-- Signed catalog manifests persist across restarts and verify the snapshot hash chain before activation.
-- Catalog manifests are encrypted at rest and in the provider; signatures are verified only after local decryption.
-- Git provider snapshots include their signed catalog manifest; downloads can reject stale heads and hash/signature tampering.
-- Verified remote snapshots can be restored through the staged local restore path with backup creation.
+- Captures the supported configuration files into encrypted, versioned
+  snapshots.
+- Keeps keys in the Linux keyring and uses two of three recovery shares for
+  recovery and before remote upload.
+- Uses a private Git repository as the first remote provider; remote setup is
+  operator-managed.
+- Restores snapshots atomically with a local backup and rejects unsafe paths.
+- Exposes local status and change-plan MCP methods through the daemon; it does
+  not accept autonomous mutations.
 
-Remote upload is guarded by explicit two-share recovery verification. Restore stages a complete tree, rejects traversal and symlink targets, and preserves a local backup. The daemon command now loads/saves the encrypted queue, runs an initial cycle and pending drain, starts the six-hour scheduler and local MCP socket, and accepts an explicitly configured Git provider. `-provider-remote` accepts only an HTTPS GitHub URL without embedded credentials; repository creation and token provisioning remain operator actions. Do not store `auth.json`, logs, caches, databases, or shell history in the vault.
+## Requirements
 
-Use `-command=recovery-shares` to print three recovery shares for the current keyring. On a fresh environment, import exactly two with `-command=recover -recovery-share label:value` repeated twice, then run `status` to verify the signed vault chain. Treat these shares as secrets; Cifrarium never stores them in the vault or remote provider.
+- Linux with a user keyring and `systemd --user` for daemon installation.
+- Go version declared in [`go.mod`](go.mod).
+- Git for the local provider and optional GitHub remote.
+- An authenticated `gh` CLI only when running the optional private-repository
+  diagnostic.
 
-If upgrading a pre-encryption development vault, run `-command=migrate-catalog` once and then `status`. The migration verifies the complete signed chain and snapshot hashes before replacing plaintext catalog metadata with encrypted envelopes.
+## Quick start
 
-Provider health performs a read-only `git ls-remote` probe when a GitHub remote is configured. Authentication remains Git's responsibility; failures identify repository or token access problems without embedding or storing credentials. The daemon upload boundary always verifies the GitHub repository is private through the operator's `gh` authentication before writing ciphertext; provider-health's `-verify-private` remains a diagnostic preflight. Provider migration transfers only encrypted objects and signed manifests.
-
-Run `-command=provider-health -provider-dir PATH -provider-remote https://github.com/OWNER/REPO.git` to validate the configured remote. Add `-verify-private` when `gh` is authenticated to verify the repository privacy flag; authentication remains owned by Git/gh and Cifrarium prints no token.
-
-Install the user service with [`scripts/install-systemd-user.sh`](scripts/install-systemd-user.sh); this installs the unit without starting it. Before `--enable`, create `~/.config/cifrarium/daemon.env` with mode `0600`, containing `CIFRARIUM_PROVIDER_DIR`, `CIFRARIUM_PROVIDER_REMOTE`, and exactly two `CIFRARIUM_RECOVERY_SHARE_1/2` values. Treat that file as secret material; the installer never creates it or copies shares.
-
-The local MCP socket accepts `status`, `snapshot.plan`, and `restore.plan`. These methods are daemon-mediated and read-only; restore plans require a snapshot ID and report that CLI confirmation is required. Mutation methods and uploads are rejected.
+Run these commands from a checkout:
 
 ```sh
-go test ./...
 go run ./cmd/cifrarium -command=status
 go run ./cmd/cifrarium -command=snapshot
+go run ./cmd/cifrarium -command=recovery-shares
 ```
+
+The `recovery-shares` command prints three lines such as
+`cifrarium-1:BASE64_VALUE`. Store two different lines in separate protected
+locations. Cifrarium never stores recovery shares in the vault or provider.
+
+## Configure the daemon
+
+Create `~/.config/cifrarium/daemon.env` yourself with mode `0600`:
+
+```dotenv
+CIFRARIUM_PROVIDER_DIR=/home/you/.local/share/cifrarium-provider
+CIFRARIUM_PROVIDER_REMOTE=https://github.com/OWNER/REPO.git
+CIFRARIUM_RECOVERY_SHARE_1='cifrarium-1:BASE64_VALUE_1'
+CIFRARIUM_RECOVERY_SHARE_2='cifrarium-2:BASE64_VALUE_2'
+```
+
+`CIFRARIUM_RECOVERY_SHARE_1` and `CIFRARIUM_RECOVERY_SHARE_2` are two separate
+variable names. The `/` in the shorthand `CIFRARIUM_RECOVERY_SHARE_1/2` is not
+part of a variable name. A `/` or `+` that appears inside the Base64 value is
+normal encoded data; keep the complete `label:value` line and quote it as
+shown. Never put real shares in shell history or commit them.
+
+Install the user service without starting it:
+
+```sh
+./scripts/install-systemd-user.sh
+```
+
+Enable it only after checking the provider and recovery setup:
+
+```sh
+systemctl --user enable --now cifrarium.service
+systemctl --user status cifrarium.service
+```
+
+The complete provider setup and first-upload procedure is in the
+[GitHub provider provisioning runbook](docs/runbooks/github-provider-provisioning.md).
+
+## Check the provider
+
+The health command performs a read-only Git access check. Add
+`-verify-private` to check the GitHub repository privacy setting through the
+operator's `gh` authentication:
+
+```sh
+go run ./cmd/cifrarium -command=provider-health \
+  -provider-dir "$HOME/.local/share/cifrarium-provider" \
+  -provider-remote "https://github.com/OWNER/REPO.git" \
+  -verify-private
+```
+
+## Recover a fresh environment
+
+Set two trusted recovery shares in the environment, then run:
+
+```sh
+go run ./cmd/cifrarium -command=recover
+go run ./cmd/cifrarium -command=status
+```
+
+Recovery verifies the existing vault before importing the reconstructed keys.
+Treat shares as secret material and do not place them in a remote repository.
+
+## Local MCP
+
+The daemon creates a mode-`0600` local socket with read-only `status`,
+`snapshot.plan`, and `restore.plan` methods. Restore plans still require CLI
+confirmation. Remote MCP and autonomous mutation methods are not supported.
+
+## Documentation
+
+- [Canonical design](docs/superpowers/specs/2026-11-02-cifrarium-design.md)
+- [Security and red-team review](docs/security/2026-11-02-red-team-review.md)
+- [Brand guidance](docs/brand/README.md)
+- [Changelog](CHANGELOG.md)
+
+For development checks, run `go test ./...`, `go test -race ./...`, `go vet
+./...`, and `go build ./...`. The full CI workflow also checks formatting,
+secrets, changelog/version consistency, MCP handshake, and the systemd
+installer.
