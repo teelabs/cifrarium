@@ -1,6 +1,9 @@
 package recovery
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
 
 func TestAllPairs(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
@@ -18,5 +21,18 @@ func TestAllPairs(t *testing.T) {
 	}
 	if _, err := Combine([]Share{shares[0]}); err == nil {
 		t.Fatal("one share accepted")
+	}
+}
+func TestRejectsDuplicateShareIndex(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	shares, err := Split(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := base64.RawStdEncoding.DecodeString(shares[0].Value)
+	raw[len(raw)-1] ^= 1
+	shares[1].Value = base64.RawStdEncoding.EncodeToString(raw)
+	if _, err := Combine([]Share{shares[0], shares[1]}); err == nil {
+		t.Fatal("duplicate index accepted")
 	}
 }
