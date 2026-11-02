@@ -12,6 +12,7 @@ The repository contains the MVP security design and a testable Go core:
 - Opaque Git provider contract and local Git implementation.
 - Mode-0600 local MCP socket exposing status and plan-only methods.
 - Signed catalog manifests persist across restarts and verify the snapshot hash chain before activation.
+- Catalog manifests are encrypted at rest and in the provider; signatures are verified only after local decryption.
 - Git provider snapshots include their signed catalog manifest; downloads can reject stale heads and hash/signature tampering.
 - Verified remote snapshots can be restored through the staged local restore path with backup creation.
 

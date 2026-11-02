@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
-	"github.com/teelabs/cifrarium/internal/recovery"
-	"github.com/teelabs/cifrarium/internal/store"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/teelabs/cifrarium/internal/recovery"
+	"github.com/teelabs/cifrarium/internal/store"
 )
 
 type fakeProvider struct {
@@ -51,7 +51,10 @@ func TestRestoreRemoteVerifiesAndRestoresAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	ciphertext, _ := os.ReadFile(filepath.Join(root, "snapshots", m.Snapshot))
-	manifest, _ := json.Marshal(m)
+	manifest, err := store.SealManifest(m, op)
+	if err != nil {
+		t.Fatal(err)
+	}
 	p := &fakeProvider{download: ciphertext, catalog: manifest}
 	target := filepath.Join(t.TempDir(), "home")
 	os.MkdirAll(target, 0700)
@@ -99,7 +102,10 @@ func TestUploadSnapshotRequiresValidManifestAndUploadsCatalog(t *testing.T) {
 	shares, _ := recovery.Split(key)
 	p := &fakeProvider{}
 	g := UploadGate{OperationalKey: key}
-	manifest := []byte(`{"snapshot":"id"}`)
+	manifest, err := store.SealManifest(store.Manifest{Snapshot: "id"}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := g.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, []recovery.Share{shares[0], shares[1]}); err != nil || p.uploads != 1 || p.catalogs != 1 {
 		t.Fatalf("snapshot upload: %v uploads=%d catalogs=%d", err, p.uploads, p.catalogs)
 	}

@@ -14,7 +14,7 @@ The design protects configuration contents, filenames, catalog metadata, recover
 
 Each snapshot is serialized as a deterministic sequence of records and encrypted with a fresh 32-byte random data key using AES-256-GCM. The data key is wrapped by the operational key using AES-256-GCM with a distinct random nonce. The operational key is stored in the Linux Secret Service/keyring under service `cifrarium`, account derived from the current UID. A separate Ed25519 signing key is stored in the same keyring entry namespace. The external fingerprint is SHA-256 of the public signing key; private keys and keyring payloads are never placed in the catalog.
 
-The catalog is encrypted as a regular snapshot and each entry contains the previous entry hash, snapshot hash, creation time, schema version, and signer fingerprint. Verification rejects an invalid signature, broken chain, duplicate sequence, or rollback to a catalog entry older than the active head. Normal remote restore accepts only the active head; an explicit historical restore must identify an entry already anchored in the verified local chain and never changes the write head.
+The catalog is encrypted with the same AES-256-GCM operational-key envelope as snapshot payloads. Each decrypted entry contains the previous entry hash, snapshot hash, creation time, schema version, and signer fingerprint; its Ed25519 signature is verified after decryption. Verification rejects an invalid envelope/signature, broken chain, duplicate sequence, or rollback to a catalog entry older than the active head. Normal remote restore accepts only the active head; an explicit historical restore must identify an entry already anchored in the verified local chain and never changes the write head.
 
 ## Recovery
 
