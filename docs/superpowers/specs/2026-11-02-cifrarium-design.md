@@ -18,7 +18,7 @@ The catalog is encrypted as a regular snapshot and each entry contains the previ
 
 ## Recovery
 
-The operational key is split with Shamir secret sharing into three text shares with threshold two. Before a remote upload, the user must successfully reconstruct the key with two distinct shares and an explicit verification step. Shares contain only an encoded index and share bytes; labels and SHA-256 fingerprints are safe to record in local metadata. One share never recovers the key. Recovery imports shares into a new keyring entry and never requires the old machine.
+The operational key and the Ed25519 signing private key are encoded in a versioned recovery bundle, then split with Shamir secret sharing into three text shares with threshold two. The `recovery-shares` CLI command emits the three opaque `label:value` shares; the `recover` command accepts exactly two and replaces the local keyring entry. Before a remote upload, the user must successfully reconstruct the operational key with two distinct shares and an explicit verification step. Shares contain only encoded indexes and share bytes; labels and SHA-256 fingerprints are safe to record in local metadata. One share never recovers the bundle. Recovery never requires the old machine and resets the keyring catalog-head guard, which is re-established only after the signed local chain is verified.
 
 ## Storage and provider contract
 

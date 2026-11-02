@@ -17,6 +17,8 @@ The repository contains the MVP security design and a testable Go core:
 
 Remote upload is guarded by explicit two-share recovery verification. Restore stages a complete tree, rejects traversal and symlink targets, and preserves a local backup. The daemon command now loads/saves the encrypted queue, runs an initial cycle and pending drain, starts the six-hour scheduler and local MCP socket, and accepts an explicitly configured Git provider. `-provider-remote` accepts only an HTTPS GitHub URL without embedded credentials; repository creation and token provisioning remain operator actions. Do not store `auth.json`, logs, caches, databases, or shell history in the vault.
 
+Use `-command=recovery-shares` to print three recovery shares for the current keyring. On a fresh environment, import exactly two with `-command=recover -recovery-share label:value` repeated twice, then run `status` to verify the signed vault chain. Treat these shares as secrets; Cifrarium never stores them in the vault or remote provider.
+
 ```sh
 go test ./...
 go run ./cmd/cifrarium -command=status

@@ -4,6 +4,10 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added versioned recovery shares that restore both the operational and signing keys on a fresh environment, with explicit `recovery-shares` and `recover` CLI commands.
+
 ## [0.3.0] - 2026-11-02
 
 ### Added
