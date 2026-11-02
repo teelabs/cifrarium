@@ -59,3 +59,45 @@ func TestReadStablePropagatesReadErrors(t *testing.T) {
 		t.Fatalf("err=%v, want %v", err, want)
 	}
 }
+
+func TestZshCollectsNestedCustomFilesAndSkipsHiddenEntries(t *testing.T) {
+	h := t.TempDir()
+	custom := filepath.Join(h, ".oh-my-zsh", "custom")
+	if err := os.MkdirAll(filepath.Join(custom, "theme"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(custom, ".hidden"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for path, data := range map[string]string{
+		filepath.Join(custom, "theme", "prompt.zsh-theme"): "nested",
+		filepath.Join(custom, "plain.zsh"):                 "plain",
+		filepath.Join(custom, ".hidden", "secret.zsh"):     "hidden",
+	} {
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files, err := (Zsh{}).Collect(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || files[0].Relative != ".oh-my-zsh/custom/plain.zsh" || files[1].Relative != ".oh-my-zsh/custom/theme/prompt.zsh-theme" {
+		t.Fatalf("files=%#v", files)
+	}
+}
+
+func TestZshRejectsCustomSymlinks(t *testing.T) {
+	h := t.TempDir()
+	custom := filepath.Join(h, ".oh-my-zsh", "custom")
+	if err := os.MkdirAll(custom, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(h, "outside"), filepath.Join(custom, "linked.zsh")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Zsh{}).Collect(h); err == nil {
+		t.Fatal("custom symlink accepted")
+	}
+}

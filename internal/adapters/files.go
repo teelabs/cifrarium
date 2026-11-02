@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,12 +39,11 @@ func (Zsh) Collect(home string) ([]File, error) {
 		paths = append(paths, ".zprofile")
 	}
 	custom := filepath.Join(home, ".oh-my-zsh", "custom")
-	entries, _ := os.ReadDir(custom)
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), ".") {
-			paths = append(paths, filepath.Join(".oh-my-zsh", "custom", e.Name()))
-		}
+	customPaths, err := collectCustomPaths(custom)
+	if err != nil {
+		return nil, err
 	}
+	paths = append(paths, customPaths...)
 	return collect(home, paths, []string{".oh-my-zsh/oh-my-zsh.sh", ".oh-my-zsh/plugins", ".oh-my-zsh/cache"})
 }
 
@@ -84,6 +84,59 @@ func collect(home string, paths, excluded []string) ([]File, error) {
 	return out, nil
 }
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+func collectCustomPaths(root string) ([]string, error) {
+	info, err := os.Lstat(root)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("symlink rejected: %s", root)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("custom path is not a directory: %s", root)
+	}
+
+	var paths []string
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		for _, component := range strings.Split(rel, string(filepath.Separator)) {
+			if strings.HasPrefix(component, ".") {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink rejected: %s", path)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("unsupported custom entry: %s", path)
+		}
+		paths = append(paths, filepath.Join(".oh-my-zsh", "custom", rel))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return paths, nil
+}
 
 const stableReadAttempts = 3
 
