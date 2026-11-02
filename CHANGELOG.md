@@ -8,6 +8,7 @@ All notable changes to Cifrarium will be documented here.
 
 - Added versioned recovery shares that restore both the operational and signing keys on a fresh environment, with explicit `recovery-shares` and `recover` CLI commands.
 - Added explicit historical restore APIs anchored to the verified local catalog chain and a deterministic mid-activation rollback test seam.
+- Added read-only GitHub remote access diagnostics and opaque provider migration through the atomic snapshot capability.
 
 ## [0.3.0] - 2026-11-02
 

@@ -15,6 +15,13 @@ type Git struct {
 	Remote string
 }
 
+type RemoteAccessError struct{ Err error }
+
+func (e *RemoteAccessError) Error() string {
+	return fmt.Sprintf("GitHub remote access failed; verify repository visibility and token permissions (tokens are never stored by Cifrarium): %v", e.Err)
+}
+func (e *RemoteAccessError) Unwrap() error { return e.Err }
+
 func (g Git) run(ctx context.Context, args ...string) error {
 	c := exec.CommandContext(ctx, "git", args...)
 	c.Dir = g.Dir
@@ -90,7 +97,31 @@ func (g Git) List(ctx context.Context) ([]string, error) {
 	}
 	return out, nil
 }
-func (g Git) Health(ctx context.Context) error { return g.run(ctx, "status", "--porcelain") }
+func (g Git) Health(ctx context.Context) error {
+	if err := g.run(ctx, "status", "--porcelain"); err != nil {
+		return err
+	}
+	if g.Remote != "" {
+		return g.CheckRemoteAccess(ctx)
+	}
+	return nil
+}
+
+// CheckRemoteAccess performs a read-only remote probe. Git remains the
+// credential boundary, so revoked tokens and insufficient repository access
+// are diagnosed without receiving or persisting credentials in Cifrarium.
+func (g Git) CheckRemoteAccess(ctx context.Context) error {
+	if g.Dir == "" {
+		return fmt.Errorf("provider directory is required")
+	}
+	if _, err := g.remoteURL(ctx); err != nil {
+		return &RemoteAccessError{Err: err}
+	}
+	if err := g.run(ctx, "ls-remote", "origin", "HEAD"); err != nil {
+		return &RemoteAccessError{Err: err}
+	}
+	return nil
+}
 
 func (g Git) writeObject(ctx context.Context, relative string, data []byte) error {
 	path := filepath.Join(g.Dir, relative)
