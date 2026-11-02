@@ -1,0 +1,20 @@
+package daemon
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestServiceRunsInitialCycle(t *testing.T) {
+	q := Queue{}
+	calls := 0
+	s := NewScheduler(func(context.Context) (Item, error) { calls++; return Item{ID: "x", Ciphertext: []byte("x")}, nil }, func(context.Context, Item) error { return nil }, &q)
+	s.Interval = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(5 * time.Millisecond); cancel() }()
+	_ = (Service{Scheduler: s}).Run(ctx)
+	if calls == 0 {
+		t.Fatal("initial cycle not run")
+	}
+}

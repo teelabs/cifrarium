@@ -3,7 +3,7 @@ Description=Cifrarium local encrypted configuration vault
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/cifrarium -command=daemon
+ExecStart=%h/.local/bin/cifrarium -command=daemon -root=%h/.local/share/cifrarium
 Restart=on-failure
 RestartSec=30s
 

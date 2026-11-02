@@ -10,6 +10,7 @@ All notable changes to Cifrarium will be documented here.
 
 - Six-hour daemon scheduler contract with retry/backoff, encrypted pending queue integration, recovery snapshot trigger, and incident deduplication.
 - Incident deduplication is bounded to prevent unbounded memory growth.
+- Wired the daemon command to encrypted queue persistence, initial snapshot/drain cycles, configured Git uploads, recovery-share gating, signal shutdown, and the local MCP socket.
 
 ## [0.2.1] - 2026-11-02
 
