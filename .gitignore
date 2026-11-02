@@ -1,0 +1,4 @@
+/cifrarium
+/dist/
+*.tmp
+.DS_Store
