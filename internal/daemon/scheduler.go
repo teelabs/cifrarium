@@ -24,6 +24,7 @@ type Scheduler struct {
 	RecoverySnapshot Snapshotter
 	Pending          *Queue
 	MissedCycles     int
+	Persist          func() error
 }
 
 func NewScheduler(snapshot Snapshotter, upload Uploader, pending *Queue) *Scheduler {
@@ -41,6 +42,11 @@ func (s *Scheduler) Cycle(ctx context.Context) error {
 		if qerr := s.Pending.Push(item); qerr != nil {
 			return fmt.Errorf("upload failed: %v; queue failed: %w", err, qerr)
 		}
+		if s.Persist != nil {
+			if qerr := s.Persist(); qerr != nil {
+				return qerr
+			}
+		}
 		return s.missed(ctx, err)
 	}
 	s.MissedCycles = 0
@@ -49,8 +55,17 @@ func (s *Scheduler) Cycle(ctx context.Context) error {
 func (s *Scheduler) DrainPending(ctx context.Context) error {
 	for s.Pending.Len() > 0 {
 		item, _ := s.Pending.Pop()
+		if s.Persist != nil {
+			if err := s.Persist(); err != nil {
+				_ = s.Pending.Push(item)
+				return err
+			}
+		}
 		if err := s.uploadWithRetry(ctx, item); err != nil {
 			_ = s.Pending.Push(item)
+			if s.Persist != nil {
+				_ = s.Persist()
+			}
 			return err
 		}
 	}
