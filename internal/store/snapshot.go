@@ -128,6 +128,9 @@ func Restore(records []Record, target, backupRoot string) error {
 	if err := os.MkdirAll(backupRoot, 0700); err != nil {
 		return err
 	}
+	if err := os.MkdirAll(target, 0700); err != nil {
+		return err
+	}
 	backup, err := os.MkdirTemp(backupRoot, "restore-")
 	if err != nil {
 		return err

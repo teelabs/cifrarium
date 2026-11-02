@@ -22,6 +22,9 @@ func (g Git) run(ctx context.Context, args ...string) error {
 	return nil
 }
 func (g Git) Upload(ctx context.Context, id string, ciphertext []byte) error {
+	if err := validateID(id); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Join(g.Dir, "objects"), 0700); err != nil {
 		return err
 	}
@@ -45,6 +48,9 @@ func (g Git) Upload(ctx context.Context, id string, ciphertext []byte) error {
 	return nil
 }
 func (g Git) Download(ctx context.Context, id string) ([]byte, error) {
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
 	return os.ReadFile(filepath.Join(g.Dir, "objects", id))
 }
 func (g Git) List(ctx context.Context) ([]string, error) {
@@ -61,3 +67,10 @@ func (g Git) List(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 func (g Git) Health(ctx context.Context) error { return g.run(ctx, "status", "--porcelain") }
+
+func validateID(id string) error {
+	if id == "" || filepath.Base(id) != id || id == "." || id == ".." {
+		return fmt.Errorf("invalid provider object id")
+	}
+	return nil
+}
