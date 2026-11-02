@@ -109,22 +109,50 @@ func (v *Vault) Save(records []Record) (Manifest, error) {
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		return Manifest{}, err
 	}
-	if err = writeAtomic(filepath.Join(dir, sum), ciphertext, 0600); err != nil {
-		return Manifest{}, err
-	}
 	b, err := SealManifest(m, v.Operational)
 	if err != nil {
 		return Manifest{}, err
 	}
-	if err = writeAtomic(filepath.Join(v.Root, "catalog", sum+".json"), b, 0600); err != nil {
+	snapshotPath := filepath.Join(v.Root, "snapshots", sum)
+	catalogPath := filepath.Join(v.Root, "catalog", sum+".json")
+	headPath := filepath.Join(v.Root, "head.json")
+	previousFiles, err := captureFileStates(snapshotPath, catalogPath, headPath)
+	if err != nil {
 		return Manifest{}, err
 	}
-	if err = writeAtomic(filepath.Join(v.Root, "head.json"), b, 0600); err != nil {
-		return Manifest{}, err
+	previousGuardHead := ""
+	if v.Guard != nil {
+		previousGuardHead, err = v.Guard.CatalogHead()
+		if err != nil {
+			return Manifest{}, err
+		}
+	}
+	guardUpdateAttempted := false
+	rollback := func(cause error) (Manifest, error) {
+		rollbackErr := restoreFileStates(previousFiles)
+		if v.Guard != nil && guardUpdateAttempted {
+			if guardErr := v.Guard.SetCatalogHead(previousGuardHead); rollbackErr == nil {
+				rollbackErr = guardErr
+			}
+		}
+		if rollbackErr != nil {
+			return Manifest{}, fmt.Errorf("%w; snapshot rollback failed: %v", cause, rollbackErr)
+		}
+		return Manifest{}, cause
+	}
+	if err = writeAtomic(snapshotPath, ciphertext, 0600); err != nil {
+		return rollback(err)
+	}
+	if err = writeAtomic(catalogPath, b, 0600); err != nil {
+		return rollback(err)
+	}
+	if err = writeAtomic(headPath, b, 0600); err != nil {
+		return rollback(err)
 	}
 	if v.Guard != nil {
+		guardUpdateAttempted = true
 		if err := v.Guard.SetCatalogHead(m.Snapshot); err != nil {
-			return Manifest{}, err
+			return rollback(err)
 		}
 	}
 	v.Head = sum
@@ -561,4 +589,49 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+type fileState struct {
+	path   string
+	exists bool
+	mode   os.FileMode
+	data   []byte
+}
+
+func captureFileStates(paths ...string) ([]fileState, error) {
+	states := make([]fileState, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			states = append(states, fileState{path: path})
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("snapshot path is not a regular file: %s", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, fileState{path: path, exists: true, mode: info.Mode().Perm(), data: data})
+	}
+	return states, nil
+}
+
+func restoreFileStates(states []fileState) error {
+	for _, state := range states {
+		if !state.exists {
+			if err := os.Remove(state.path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			continue
+		}
+		if err := writeAtomic(state.path, state.data, state.mode); err != nil {
+			return err
+		}
+	}
+	return nil
 }

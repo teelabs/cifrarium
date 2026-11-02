@@ -54,6 +54,46 @@ type testHeadGuard struct{ head string }
 
 func (g *testHeadGuard) CatalogHead() (string, error)     { return g.head, nil }
 func (g *testHeadGuard) SetCatalogHead(head string) error { g.head = head; return nil }
+
+type failingHeadGuard struct {
+	head     string
+	attempts int
+}
+
+func (g *failingHeadGuard) CatalogHead() (string, error) { return g.head, nil }
+func (g *failingHeadGuard) SetCatalogHead(head string) error {
+	g.attempts++
+	if g.attempts == 1 {
+		return errors.New("injected keyring head failure")
+	}
+	g.head = head
+	return nil
+}
+
+func TestSaveRollsBackFilesWhenHeadGuardUpdateFails(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, sign, _ := ed25519.GenerateKey(rand.Reader)
+	guard := &failingHeadGuard{}
+	v := NewWithGuard(root, op, sign, guard)
+	_, err := v.Save([]Record{{Path: "one", Data: []byte("1")}})
+	if err == nil {
+		t.Fatal("head guard failure was ignored")
+	}
+	for _, dir := range []string{filepath.Join(root, "snapshots"), filepath.Join(root, "catalog")} {
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil || len(entries) != 0 {
+			t.Fatalf("partial snapshot files survived in %s: entries=%d err=%v", dir, len(entries), readErr)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "head.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("partial head survived: %v", statErr)
+	}
+	if guard.head != "" || guard.attempts != 2 {
+		t.Fatalf("guard was not restored: head=%q attempts=%d", guard.head, guard.attempts)
+	}
+}
+
 func TestCatalogGuardRejectsReplayedHead(t *testing.T) {
 	root := t.TempDir()
 	op := make([]byte, 32)
