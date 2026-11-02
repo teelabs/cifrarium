@@ -119,7 +119,18 @@ func (s *Scheduler) uploadWithRetry(ctx context.Context, item Item) error {
 func (s *Scheduler) missed(ctx context.Context, err error) error {
 	s.MissedCycles++
 	if s.MissedCycles == 1 && s.RecoverySnapshot != nil {
-		_, _ = s.RecoverySnapshot(ctx)
+		recovery, recoveryErr := s.RecoverySnapshot(ctx)
+		if recoveryErr != nil {
+			return fmt.Errorf("%w; recovery snapshot failed: %v", err, recoveryErr)
+		}
+		if queueErr := s.Pending.Push(recovery); queueErr != nil {
+			return fmt.Errorf("%w; recovery snapshot queue failed: %v", err, queueErr)
+		}
+		if s.Persist != nil {
+			if persistErr := s.Persist(); persistErr != nil {
+				return fmt.Errorf("%w; recovery snapshot persistence failed: %v", err, persistErr)
+			}
+		}
 	}
 	return err
 }

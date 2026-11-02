@@ -151,35 +151,14 @@ func main() {
 			}
 			shares = append(shares, share)
 		}
-		snapshot := func(ctx context.Context) (daemon.Item, error) {
-			var records []store.Record
-			for _, a := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
-				files, err := a.Collect(home)
-				if err != nil {
-					return daemon.Item{}, err
-				}
-				for _, f := range files {
-					records = append(records, store.Record{Path: f.Relative, Mode: uint32(f.Mode), Data: f.Data})
-				}
-			}
-			m, err := v.Save(records)
-			if err != nil {
-				return daemon.Item{}, err
-			}
-			ciphertext, err := os.ReadFile(filepath.Join(*root, "snapshots", m.Snapshot))
-			manifest, marshalErr := store.SealManifest(m, op)
-			if err == nil {
-				err = marshalErr
-			}
-			return daemon.Item{ID: m.Snapshot, Ciphertext: ciphertext, Manifest: manifest}, err
-		}
+		snapshot := func(context.Context) (daemon.Item, error) { return captureSnapshot(home, v) }
 		uploader := func(ctx context.Context, item daemon.Item) error {
 			if *providerDir == "" {
 				return fmt.Errorf("provider is not configured")
 			}
 			return syncvault.UploadGate{OperationalKey: op}.UploadSnapshot(ctx, provider.Git{Dir: *providerDir, Remote: *providerRemote}, item.ID, item.Ciphertext, item.Manifest, shares)
 		}
-		scheduler := daemon.NewScheduler(snapshot, uploader, queue)
+		scheduler := newDaemonScheduler(snapshot, uploader, queue)
 		scheduler.Persist = func() error { return queue.Save(queuePath, op) }
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -193,6 +172,38 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot|recovery-shares|recover|migrate-catalog|provider-health -recovery-share label:value")
 		os.Exit(2)
 	}
+}
+
+func captureSnapshot(home string, vault *store.Vault) (daemon.Item, error) {
+	var records []store.Record
+	for _, a := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
+		files, err := a.Collect(home)
+		if err != nil {
+			return daemon.Item{}, err
+		}
+		for _, f := range files {
+			records = append(records, store.Record{Path: f.Relative, Mode: uint32(f.Mode), Data: f.Data})
+		}
+	}
+	m, err := vault.Save(records)
+	if err != nil {
+		return daemon.Item{}, err
+	}
+	ciphertext, err := os.ReadFile(filepath.Join(vault.Root, "snapshots", m.Snapshot))
+	if err != nil {
+		return daemon.Item{}, err
+	}
+	manifest, err := store.SealManifest(m, vault.Operational)
+	if err != nil {
+		return daemon.Item{}, err
+	}
+	return daemon.Item{ID: m.Snapshot, Ciphertext: ciphertext, Manifest: manifest}, nil
+}
+
+func newDaemonScheduler(snapshot daemon.Snapshotter, uploader daemon.Uploader, queue *daemon.Queue) *daemon.Scheduler {
+	scheduler := daemon.NewScheduler(snapshot, uploader, queue)
+	scheduler.RecoverySnapshot = snapshot
+	return scheduler
 }
 
 func parseRecoveryShares(values []string) ([]recovery.Share, error) {
