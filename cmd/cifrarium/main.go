@@ -34,6 +34,23 @@ func main() {
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	flag.Parse()
+	if *cmd == "provider-health" {
+		if *providerDir == "" || *providerRemote == "" {
+			fmt.Fprintln(os.Stderr, "cifrarium: provider-health requires -provider-dir and -provider-remote")
+			os.Exit(2)
+		}
+		gitProvider := provider.Git{Dir: *providerDir, Remote: *providerRemote}
+		if err := gitProvider.Ensure(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: provider setup failed: %v\n", err)
+			os.Exit(1)
+		}
+		if err := gitProvider.CheckRemoteAccess(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("{\"provider\":\"github\",\"remote\":%q,\"status\":\"ok\"}\n", *providerRemote)
+		return
+	}
 	keyringStore := store.NewKeyring()
 	if *cmd == "recover" {
 		shares, err := parseRecoveryShares(recoveryValues)
@@ -161,7 +178,7 @@ func main() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot|recovery-shares|recover|migrate-catalog -recovery-share label:value")
+		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot|recovery-shares|recover|migrate-catalog|provider-health -recovery-share label:value")
 		os.Exit(2)
 	}
 }

@@ -24,6 +24,8 @@ If upgrading a pre-encryption development vault, run `-command=migrate-catalog` 
 
 Provider health performs a read-only `git ls-remote` probe when a GitHub remote is configured. Authentication remains Git's responsibility; failures identify repository or token access problems without embedding or storing credentials. Provider migration transfers only encrypted objects and signed manifests.
 
+Run `-command=provider-health -provider-dir PATH -provider-remote https://github.com/OWNER/REPO.git` to validate the configured remote. The command delegates authentication to Git and prints only the provider, remote URL, and status.
+
 ```sh
 go test ./...
 go run ./cmd/cifrarium -command=status
