@@ -101,6 +101,6 @@ disabling the recovery gate.
 ## Release boundary
 
 This runbook proves the operator procedure, not ownership of a domain or legal
-brand clearance. Public release still requires the separate brand/legal review,
-human security approval, and a fresh audit of token scope and repository
-privacy.
+brand clearance. Public release still requires the separate [brand/legal and
+security release gate](https://github.com/teelabs/cifrarium/issues/49), human
+security approval, and a fresh audit of token scope and repository privacy.
