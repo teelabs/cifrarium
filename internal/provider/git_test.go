@@ -121,3 +121,17 @@ func TestGitRejectsSymlinkedProviderObjectsOnRead(t *testing.T) {
 		t.Fatal("download followed symlink")
 	}
 }
+
+func TestGitRejectsProviderRootSymlinkOnRead(t *testing.T) {
+	dir := t.TempDir()
+	if err := (Git{Dir: dir}).Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "linked-checkout")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Git{Dir: link}).Download(context.Background(), "id"); err == nil {
+		t.Fatal("provider root symlink accepted on read")
+	}
+}

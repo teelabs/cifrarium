@@ -25,6 +25,7 @@ All notable changes to Cifrarium will be documented here.
 - Hardened keyring startup so only `ErrNotFound` initializes new keys; backend failures now stop with an actionable error. `VERSION` remains `0.3.0` pending release classification.
 - Fixed Oh My Zsh custom capture to recurse through regular files while skipping hidden entries and rejecting symlinks. `VERSION` remains `0.3.0` pending release classification.
 - Hardened Git provider reads and writes against symlinked `objects` and `catalog` paths. `VERSION` remains `0.3.0` pending release classification.
+- Hardened Git provider reads against a symlinked checkout root. `VERSION` remains `0.3.0` pending release classification.
 
 ## [0.3.0] - 2026-11-02
 
