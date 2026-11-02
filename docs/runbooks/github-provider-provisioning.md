@@ -78,12 +78,24 @@ go run ./cmd/cifrarium -command=provider-health \
   -verify-private
 ```
 
-Before enabling the daemon, generate three recovery shares and verify two
-distinct shares reconstruct the current key bundle. The daemon refuses remote
-upload without exactly two valid shares matching the active operational key or
-a successful private-repository verification. The first upload is therefore
-an explicit operator action after privacy, remote-access, and recovery checks
-are green; the daemon repeats the privacy check at the upload boundary.
+Before enabling the daemon, generate three recovery shares and place two
+complete `label:value` lines in the operator-created environment file:
+
+```dotenv
+CIFRARIUM_RECOVERY_SHARE_1='cifrarium-1:BASE64_VALUE_1'
+CIFRARIUM_RECOVERY_SHARE_2='cifrarium-2:BASE64_VALUE_2'
+```
+
+These are two separate variable names; the slash in the shorthand
+`CIFRARIUM_RECOVERY_SHARE_1/2` is not part of a variable name. The share value
+is unpadded Base64, so `/` and `+` may appear inside it. Keep the file at mode
+`0600`, quote the complete values, and never put real shares in shell history.
+
+The daemon refuses remote upload without exactly two valid, distinct shares
+matching the active operational key and a successful private-repository
+verification. The first upload is therefore an explicit operator action after
+privacy, remote-access, and recovery checks are green; the daemon repeats the
+privacy check at the upload boundary.
 
 ## 5. Revocation and incident response
 
