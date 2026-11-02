@@ -166,7 +166,9 @@ func main() {
 		scheduler.Persist = func() error { return queue.Save(queuePath, op) }
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		go func() { _ = (mcp.Server{Socket: socket}).Listen() }()
+		go func() {
+			_ = (mcp.Server{Socket: socket, Handler: newMCPHandler(*root, *providerDir)}).Listen()
+		}()
 		fmt.Printf("cifrarium daemon listening on %s\n", socket)
 		if err := (daemon.Service{Scheduler: scheduler}).Run(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -208,6 +210,45 @@ func newDaemonScheduler(snapshot daemon.Snapshotter, uploader daemon.Uploader, q
 	scheduler := daemon.NewScheduler(snapshot, uploader, queue)
 	scheduler.RecoverySnapshot = snapshot
 	return scheduler
+}
+
+func newMCPHandler(root, providerDir string) mcp.Handler {
+	return mcp.HandlerFunc(func(_ context.Context, request mcp.Request) (any, error) {
+		result := map[string]any{
+			"method":   request.Method,
+			"readOnly": true,
+		}
+		switch request.Method {
+		case "status":
+			result["daemon"] = "running"
+			result["vault"] = root
+			result["providerConfigured"] = providerDir != ""
+			return result, nil
+		case "snapshot.plan":
+			result["action"] = "capture"
+			result["adapters"] = []string{"codex", "oh-my-zsh", "starship"}
+			result["requiresCliConfirmation"] = true
+			return result, nil
+		case "restore.plan":
+			var params struct {
+				Snapshot string `json:"snapshot"`
+			}
+			if len(request.Params) > 0 && string(request.Params) != "null" {
+				if err := json.Unmarshal(request.Params, &params); err != nil {
+					return nil, fmt.Errorf("invalid restore plan parameters: %w", err)
+				}
+			}
+			if params.Snapshot == "" {
+				return nil, fmt.Errorf("restore plan requires a snapshot")
+			}
+			result["action"] = "restore"
+			result["snapshot"] = params.Snapshot
+			result["requiresCliConfirmation"] = true
+			return result, nil
+		default:
+			return nil, fmt.Errorf("method %q is not available", request.Method)
+		}
+	})
 }
 
 func parseRecoveryShares(values []string) ([]recovery.Share, error) {

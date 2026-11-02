@@ -34,6 +34,10 @@ All notable changes to Cifrarium will be documented here.
 
 - Restore rollback now removes newly activated files before restoring pre-existing files when a later activation fails; `VERSION` remains `0.3.0` pending release classification.
 
+### Changed
+
+- Routed allowed MCP status and plan methods through a daemon-supplied handler with structured read-only results; `VERSION` remains `0.3.0` pending release classification.
+
 ## [0.3.0] - 2026-11-02
 
 ### Added
