@@ -6,7 +6,7 @@ Review date: 2026-11-02.
 
 ## Scope
 
-The review covered the local encrypted store, recovery shares, catalog chain, remote snapshot verification, restore activation, provider boundary, daemon queue, systemd user boundary, adapters, and local MCP server. The source of truth is the reconciled `main` branch at `377476050a461ce056d0f2879f688f1f4702380d`.
+The review covered the local encrypted store, recovery shares, catalog chain, remote snapshot verification, restore activation, provider boundary, daemon queue, systemd user boundary, adapters, local MCP server, and the current repository release evidence. The source of truth is the reconciled `main` branch at `555dceffbea704424064d44c4aab8c0d04370298`.
 
 ## Evidence matrix
 
@@ -43,7 +43,7 @@ git diff --check
 ./scripts/verify-secrets.sh
 ```
 
-The GitHub Actions `verify` job passed these gates on `main` in run `41509291305`, including the MCP handshake and systemd installer checks.
+The GitHub Actions `verify` job passed these gates on `main` in run `41511270630`, including the MCP handshake and systemd installer checks. The visual identity proposal is versioned under `docs/brand/`; it makes no legal-clearance claim, and qualified review remains tracked in issue #49.
 
 ## Findings and residuals
 
