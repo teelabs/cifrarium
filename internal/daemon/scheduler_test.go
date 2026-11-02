@@ -59,4 +59,10 @@ func TestIncidentDeduper(t *testing.T) {
 	if !d.First("keyring") {
 		t.Fatal("distinct incident suppressed")
 	}
+	for i := 0; i < MaxIncidentKeys+10; i++ {
+		d.First("incident-" + string(rune(i)))
+	}
+	if len(d.seen) > MaxIncidentKeys {
+		t.Fatalf("deduper grew beyond bound: %d", len(d.seen))
+	}
 }

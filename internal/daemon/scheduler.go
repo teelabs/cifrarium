@@ -110,9 +110,12 @@ func (s *Scheduler) missed(ctx context.Context, err error) error {
 }
 
 type IncidentDeduper struct {
-	mu   sync.Mutex
-	seen map[string]struct{}
+	mu    sync.Mutex
+	seen  map[string]struct{}
+	order []string
 }
+
+const MaxIncidentKeys = 128
 
 func (d *IncidentDeduper) First(id string) bool {
 	d.mu.Lock()
@@ -123,6 +126,11 @@ func (d *IncidentDeduper) First(id string) bool {
 	if _, ok := d.seen[id]; ok {
 		return false
 	}
+	if len(d.order) >= MaxIncidentKeys {
+		delete(d.seen, d.order[0])
+		d.order = d.order[1:]
+	}
 	d.seen[id] = struct{}{}
+	d.order = append(d.order, id)
 	return true
 }
