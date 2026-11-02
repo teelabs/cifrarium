@@ -6,7 +6,7 @@ Review date: 2026-11-02.
 
 ## Scope
 
-The review covered the local encrypted store, recovery shares, catalog chain, remote snapshot verification, restore activation, provider boundary, daemon queue, systemd user boundary, adapters, and local MCP server. The source of truth is the current `main` branch at `4008d24`.
+The review covered the local encrypted store, recovery shares, catalog chain, remote snapshot verification, restore activation, provider boundary, daemon queue, systemd user boundary, adapters, and local MCP server. The source of truth is the reconciled `main` branch at `acd1d80b375831cec69b02336603adbb81262360`.
 
 ## Evidence matrix
 
@@ -18,18 +18,19 @@ The review covered the local encrypted store, recovery shares, catalog chain, re
 | Catalog rollback and missing guarded head are rejected | `internal/store/catalog_test.go`, `internal/store/snapshot.go` |
 | Historical restore cannot change the active write head | `internal/store/catalog_test.go`, `internal/sync/upload_test.go` |
 | Restore traversal, final symlink, root symlink, and intermediate symlink attacks are rejected | `internal/store/restore_test.go`, `internal/store/snapshot.go` |
-| Partial activation failure restores moved files | `internal/store/restore_test.go` |
+| Partial activation failure restores moved files and removes newly activated files | `internal/store/restore_test.go`, PR #40 |
+| Snapshot, catalog, and head files roll back when a write or keyring-head update fails | `internal/store/catalog_test.go`, PR #44 |
 | Provider receives opaque ciphertext and encrypted catalog bytes | `internal/provider/provider_test.go`, `internal/provider/git_test.go`, `internal/sync/upload_test.go` |
 | Remote access and privacy failures are actionable without token arguments | `internal/provider/git.go`, `internal/provider/provider_test.go`, `cmd/cifrarium/main.go` |
 | Provider migration preserves opaque objects and atomic capability | `internal/provider/provider.go`, `internal/provider/provider_test.go` |
 | Pending queue is encrypted and bounded to 16 items | `internal/daemon/queue.go`, `internal/daemon/queue_test.go` |
 | Retry, missed-cycle recovery snapshot, persistence failure, and alert deduplication are covered | `internal/daemon/scheduler_test.go`, `internal/daemon/service_test.go` |
-| MCP is local, mode 0600, plan-only, and rejects mutation methods | `internal/mcp/server.go`, `internal/mcp/server_test.go` |
+| MCP is local, mode 0600, daemon-mediated, structured plan-only, and rejects mutation methods | `internal/mcp/server.go`, `internal/mcp/server_test.go`, `cmd/cifrarium/main.go`, PR #42 |
 | Adapter allowlists exclude sensitive application state and reject symlinks | `internal/adapters/files_test.go` |
 
 ## Verification run
 
-The following gates passed on the review branch before publication:
+The following gates passed locally against the reconciled `main` before publication:
 
 ```text
 go test ./...
@@ -41,7 +42,7 @@ git diff --check
 ./scripts/verify-secrets.sh
 ```
 
-The GitHub Actions `verify` job also passed these gates on `main`, including the MCP handshake and systemd installer checks.
+The GitHub Actions `verify` job passed these gates on `main` in run `41507996239`, including the MCP handshake and systemd installer checks.
 
 ## Findings and residuals
 
@@ -56,7 +57,7 @@ Restore previously checked only the final destination for symlinks. A symlinked 
 
 ### Open before public release
 
-1. GitHub repository creation and fine-grained token issuance remain explicit operator actions and require a documented provisioning runbook.
+1. GitHub repository creation and fine-grained token issuance remain explicit operator actions; the provisioning runbook is now present at `docs/runbooks/github-provider-provisioning.md`.
 2. Domain/trademark clearance requires a registrar check and qualified legal review; the brand preflight is only technical evidence.
 3. Human security and release approval has not been granted by this report.
 
