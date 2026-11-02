@@ -178,6 +178,13 @@ func (g Git) safePath(relative string) (string, error) {
 	if relative == "" || filepath.IsAbs(relative) || filepath.Clean(relative) != relative || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
 		return "", fmt.Errorf("unsafe provider path")
 	}
+	root, err := os.Lstat(g.Dir)
+	if err != nil {
+		return "", err
+	}
+	if root.Mode()&os.ModeSymlink != 0 || !root.IsDir() {
+		return "", fmt.Errorf("provider directory path rejected")
+	}
 	path := filepath.Join(g.Dir, relative)
 	current := g.Dir
 	for _, component := range strings.Split(relative, string(filepath.Separator)) {
