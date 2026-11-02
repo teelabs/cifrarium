@@ -18,6 +18,7 @@ All notable changes to Cifrarium will be documented here.
 - Added opt-in GitHub privacy verification through the operator's `gh` authentication without passing tokens to Cifrarium.
 - Hardened restore against symlinked intermediate directories and symlinked restore roots, with adversarial regression coverage.
 - Recorded a primary-source brand and namespace preflight; no legal clearance is claimed. Documentation-only change; `VERSION` remains `0.3.0`.
+- Recorded the red-team evidence matrix and explicit security/release residuals; documentation-only change, `VERSION` remains `0.3.0`.
 
 ## [0.3.0] - 2026-11-02
 
