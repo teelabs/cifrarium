@@ -80,9 +80,10 @@ go run ./cmd/cifrarium -command=provider-health \
 
 Before enabling the daemon, generate three recovery shares and verify two
 distinct shares reconstruct the current key bundle. The daemon refuses remote
-upload without exactly two valid shares matching the active operational key.
-The first upload is therefore an explicit operator action after privacy,
-remote-access, and recovery checks are green.
+upload without exactly two valid shares matching the active operational key or
+a successful private-repository verification. The first upload is therefore
+an explicit operator action after privacy, remote-access, and recovery checks
+are green; the daemon repeats the privacy check at the upload boundary.
 
 ## 5. Revocation and incident response
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,6 +16,8 @@ import (
 type fakeProvider struct {
 	uploads, catalogs int
 	download, catalog []byte
+	privateCalls      int
+	privateErr        error
 }
 
 func (f *fakeProvider) Upload(context.Context, string, []byte) error        { f.uploads++; return nil }
@@ -25,6 +28,35 @@ func (f *fakeProvider) DownloadCatalog(context.Context, string) ([]byte, error) 
 }
 func (f *fakeProvider) List(context.Context) ([]string, error) { return nil, nil }
 func (f *fakeProvider) Health(context.Context) error           { return nil }
+func (f *fakeProvider) VerifyPrivate(context.Context) error {
+	f.privateCalls++
+	return f.privateErr
+}
+
+func TestUploadRequiresPrivateProviderBeforeCiphertext(t *testing.T) {
+	key := []byte("01234567890123456789012345678901")
+	shares, err := recovery.Split(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.SealManifest(store.Manifest{Snapshot: "id"}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &fakeProvider{privateErr: errors.New("repository is public")}
+	g := UploadGate{OperationalKey: key}
+	if err := g.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, []recovery.Share{shares[0], shares[1]}); err == nil {
+		t.Fatal("public provider accepted")
+	}
+	if p.privateCalls != 1 || p.uploads != 0 || p.catalogs != 0 {
+		t.Fatalf("privacy gate calls=%d uploads=%d catalogs=%d", p.privateCalls, p.uploads, p.catalogs)
+	}
+	p.privateErr = nil
+	if err := g.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, []recovery.Share{shares[0], shares[1]}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUploadRequiresRecovery(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	shares, err := recovery.Split(key)

@@ -18,6 +18,9 @@ func (g UploadGate) Upload(ctx context.Context, p provider.Provider, id string, 
 	if err := g.verify(ctx, shares); err != nil {
 		return err
 	}
+	if err := verifyPrivate(ctx, p); err != nil {
+		return err
+	}
 	return p.Upload(ctx, id, ciphertext)
 }
 
@@ -32,6 +35,9 @@ func (g UploadGate) UploadSnapshot(ctx context.Context, p provider.Provider, id 
 	if err := g.verify(ctx, shares); err != nil {
 		return err
 	}
+	if err := verifyPrivate(ctx, p); err != nil {
+		return err
+	}
 	if atomic, ok := p.(provider.AtomicSnapshotProvider); ok {
 		return atomic.UploadSnapshot(ctx, id, ciphertext, manifestBytes)
 	}
@@ -40,6 +46,18 @@ func (g UploadGate) UploadSnapshot(ctx context.Context, p provider.Provider, id 
 	}
 	return p.UploadCatalog(ctx, id, manifestBytes)
 }
+
+func verifyPrivate(ctx context.Context, p provider.Provider) error {
+	verifier, ok := p.(provider.PrivateVerifier)
+	if !ok {
+		return nil
+	}
+	if err := verifier.VerifyPrivate(ctx); err != nil {
+		return fmt.Errorf("private repository verification required before upload: %w", err)
+	}
+	return nil
+}
+
 func (g UploadGate) verify(_ context.Context, shares []recovery.Share) error {
 	key, err := recovery.Combine(shares)
 	if err != nil || string(key) != string(g.OperationalKey) {

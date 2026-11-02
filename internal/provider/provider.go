@@ -18,6 +18,13 @@ type AtomicSnapshotProvider interface {
 	UploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte) error
 }
 
+// PrivateVerifier is implemented by providers whose remote visibility is a
+// confidentiality boundary. Upload orchestration must verify it before any
+// ciphertext is written remotely.
+type PrivateVerifier interface {
+	VerifyPrivate(ctx context.Context) error
+}
+
 // Migrate copies opaque provider objects without decrypting or interpreting
 // their contents. The destination's atomic capability is used when present.
 func Migrate(ctx context.Context, source, destination Provider, ids []string) error {
