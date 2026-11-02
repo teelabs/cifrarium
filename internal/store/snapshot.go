@@ -202,6 +202,40 @@ func (v *Vault) VerifyCurrentHead(candidate string) error {
 	}
 	return nil
 }
+
+// VerifyHistoricalHead permits an explicit restore of a snapshot that is
+// already anchored in the verified local catalog chain. It never changes the
+// active head, so selecting history cannot roll the vault's write head back.
+func (v *Vault) VerifyHistoricalHead(candidate string, pub ed25519.PublicKey) error {
+	if candidate == "" || filepath.Base(candidate) != candidate {
+		return fmt.Errorf("invalid catalog snapshot")
+	}
+	if v.Head == "" {
+		return fmt.Errorf("catalog has no active head")
+	}
+	if err := v.VerifyChain(v.Head, pub); err != nil {
+		return err
+	}
+	for current, depth := v.Head, 0; current != ""; depth++ {
+		if depth > 1024 {
+			return fmt.Errorf("catalog chain too deep")
+		}
+		if current == candidate {
+			return nil
+		}
+		raw, err := os.ReadFile(filepath.Join(v.Root, "catalog", current+".json"))
+		if err != nil {
+			return err
+		}
+		var m Manifest
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return err
+		}
+		current = m.Previous
+	}
+	return fmt.Errorf("historical snapshot is not in the active catalog chain")
+}
+
 func (v *Vault) VerifySnapshot(m Manifest, ciphertext []byte, pub ed25519.PublicKey) error {
 	if err := v.Verify(m, pub); err != nil {
 		return err
@@ -246,7 +280,18 @@ func (v *Vault) RecordsFromCiphertext(ciphertext []byte) ([]Record, error) {
 // Restore stages the complete tree first. Existing files are moved to a backup
 // directory before staged files are activated; on an activation error the
 // already moved files are put back.
+type RenameFunc func(oldPath, newPath string) error
+
 func Restore(records []Record, target, backupRoot string) error {
+	return RestoreWithRename(records, target, backupRoot, os.Rename)
+}
+
+// RestoreWithRename is the transactional restore implementation with an
+// injectable rename seam for deterministic failure-path tests.
+func RestoreWithRename(records []Record, target, backupRoot string, rename RenameFunc) error {
+	if rename == nil {
+		return fmt.Errorf("rename function is required")
+	}
 	if filepath.Clean(target) == "." || filepath.Clean(target) == "/" {
 		return fmt.Errorf("unsafe restore target")
 	}
@@ -281,7 +326,7 @@ func Restore(records []Record, target, backupRoot string) error {
 	rollback := func() {
 		for i := len(moved) - 1; i >= 0; i-- {
 			_ = os.MkdirAll(filepath.Dir(moved[i].from), 0700)
-			_ = os.Rename(moved[i].to, moved[i].from)
+			_ = rename(moved[i].to, moved[i].from)
 		}
 	}
 	err = filepath.Walk(stage, func(path string, info os.FileInfo, walkErr error) error {
@@ -304,7 +349,7 @@ func Restore(records []Record, target, backupRoot string) error {
 			if e = os.MkdirAll(filepath.Dir(b), 0700); e != nil {
 				return e
 			}
-			if e = os.Rename(dest, b); e != nil {
+			if e = rename(dest, b); e != nil {
 				return e
 			}
 			moved = append(moved, struct{ from, to string }{dest, b})
@@ -314,7 +359,7 @@ func Restore(records []Record, target, backupRoot string) error {
 		if e := os.MkdirAll(filepath.Dir(dest), 0700); e != nil {
 			return e
 		}
-		if e := os.Rename(path, dest); e != nil {
+		if e := rename(path, dest); e != nil {
 			return e
 		}
 		return nil

@@ -65,6 +65,35 @@ func TestRestoreRemoteVerifiesAndRestoresAtomically(t *testing.T) {
 	}
 }
 
+func TestRestoreRemoteAtAllowsVerifiedHistoricalSelection(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, sign, _ := ed25519.GenerateKey(rand.Reader)
+	v := store.New(root, op, sign)
+	m1, err := v.Save([]store.Record{{Path: "config", Data: []byte("old"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := v.Save([]store.Record{{Path: "config", Data: []byte("new"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCiphertext, _ := os.ReadFile(filepath.Join(root, "snapshots", m1.Snapshot))
+	oldManifest, _ := os.ReadFile(filepath.Join(root, "catalog", m1.Snapshot+".json"))
+	p := &fakeProvider{download: oldCiphertext, catalog: oldManifest}
+	target := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreRemoteAt(context.Background(), p, v, m1.Snapshot, sign.Public().(ed25519.PublicKey), target, filepath.Join(t.TempDir(), "backups")); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(target, "config"))
+	if string(got) != "old" || v.Head != m2.Snapshot {
+		t.Fatalf("historical restore got %q and changed head to %s", got, v.Head)
+	}
+}
+
 func TestUploadSnapshotRequiresValidManifestAndUploadsCatalog(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
 	shares, _ := recovery.Split(key)
