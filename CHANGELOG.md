@@ -17,6 +17,7 @@ All notable changes to Cifrarium will be documented here.
 - Added systemd environment-file wiring for provider configuration and explicitly supplied recovery shares, with restrictive service umask and no-new-privileges.
 - Added opt-in GitHub privacy verification through the operator's `gh` authentication without passing tokens to Cifrarium.
 - Hardened restore against symlinked intermediate directories and symlinked restore roots, with adversarial regression coverage.
+- Recorded a primary-source brand and namespace preflight; no legal clearance is claimed. Documentation-only change; `VERSION` remains `0.3.0`.
 
 ## [0.3.0] - 2026-11-02
 
