@@ -8,7 +8,7 @@ The repository contains the MVP security design and a testable Go core:
 - AES-256-GCM envelopes with a fresh data key per snapshot.
 - Linux keyring-backed operational and Ed25519 signing keys.
 - Shamir 2-of-3 recovery primitives with pair coverage tests.
-- Explicit Codex, Oh My Zsh, and Starship adapters that reject symlinks and sensitive paths.
+- Explicit Codex, Oh My Zsh, and Starship adapters that reject symlinks and sensitive paths; Codex captures only `~/.codex/config.toml` and `~/.codex/AGENTS.md`.
 - Opaque Git provider contract and local Git implementation.
 - Mode-0600 local MCP socket exposing status and plan-only methods.
 - Signed catalog manifests persist across restarts and verify the snapshot hash chain before activation.

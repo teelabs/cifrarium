@@ -26,7 +26,7 @@ type Config struct{}
 
 func (Config) Name() string { return "codex" }
 func (Config) Collect(home string) ([]File, error) {
-	return collect(home, []string{".codex/config.toml"}, []string{".codex/auth.json", ".codex/logs", ".codex/history", ".codex/cache"})
+	return collect(home, []string{".codex/AGENTS.md", ".codex/config.toml"}, []string{".codex/auth.json", ".codex/logs", ".codex/history", ".codex/cache"})
 }
 
 type Zsh struct{}
