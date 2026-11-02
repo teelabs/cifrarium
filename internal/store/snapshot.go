@@ -202,6 +202,16 @@ func (v *Vault) VerifyCurrentHead(candidate string) error {
 	}
 	return nil
 }
+func (v *Vault) VerifySnapshot(m Manifest, ciphertext []byte, pub ed25519.PublicKey) error {
+	if err := v.Verify(m, pub); err != nil {
+		return err
+	}
+	h := sha256.Sum256(ciphertext)
+	if hex.EncodeToString(h[:]) != m.Snapshot {
+		return fmt.Errorf("snapshot hash mismatch")
+	}
+	return nil
+}
 
 func (v *Vault) Load(id string) ([]Record, error) {
 	if id == "" || filepath.Base(id) != id {

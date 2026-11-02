@@ -22,7 +22,7 @@ The operational key is split with Shamir secret sharing into three text shares w
 
 ## Storage and provider contract
 
-The provider interface is capability-oriented: upload, list, download, and health. Snapshot IDs and ciphertext are opaque to providers. The Git provider uses a private repository, a local temporary Git checkout, atomic file writes, and commits that contain only encrypted objects. Provider reads verify the local signature and catalog chain before activation. Future providers must implement the same opaque-object contract and must not receive plaintext.
+The provider interface is capability-oriented: upload, catalog upload, list, download, catalog download, and health. Snapshot IDs, ciphertext, and signed manifests are opaque to providers. The Git provider uses a private repository, a local temporary Git checkout, atomic file writes, and commits that contain only encrypted objects and signed manifests. Provider reads verify the local signature and catalog chain before activation. Future providers must implement the same opaque-object contract and must not receive plaintext.
 
 ## Adapters and consistency
 
