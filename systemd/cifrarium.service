@@ -3,6 +3,9 @@ Description=Cifrarium local encrypted configuration vault
 
 [Service]
 Type=simple
+UMask=0077
+NoNewPrivileges=yes
+EnvironmentFile=-%h/.config/cifrarium/daemon.env
 ExecStart=%h/.local/bin/cifrarium -command=daemon -root=%h/.local/share/cifrarium
 Restart=on-failure
 RestartSec=30s

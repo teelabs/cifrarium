@@ -26,6 +26,8 @@ Provider health performs a read-only `git ls-remote` probe when a GitHub remote 
 
 Run `-command=provider-health -provider-dir PATH -provider-remote https://github.com/OWNER/REPO.git` to validate the configured remote. The command delegates authentication to Git and prints only the provider, remote URL, and status.
 
+Install the user service with `scripts/install-systemd-user.sh`; this installs the unit without starting it. Before `--enable`, create `~/.config/cifrarium/daemon.env` with mode `0600`, containing `CIFRARIUM_PROVIDER_DIR`, `CIFRARIUM_PROVIDER_REMOTE`, and exactly two `CIFRARIUM_RECOVERY_SHARE_1/2` values. Treat that file as secret material; the installer never creates it or copies shares.
+
 ```sh
 go test ./...
 go run ./cmd/cifrarium -command=status
