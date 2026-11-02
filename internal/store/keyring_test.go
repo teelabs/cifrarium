@@ -3,9 +3,11 @@ package store
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"testing"
 
 	"github.com/teelabs/cifrarium/internal/recovery"
+	"github.com/zalando/go-keyring"
 )
 
 func TestRecoverySharesRestoreBothKeyringSecrets(t *testing.T) {
@@ -26,5 +28,30 @@ func TestRecoverySharesRestoreBothKeyringSecrets(t *testing.T) {
 		if err != nil || string(gotOp) != string(op) || string(gotSigning) != string(signing) {
 			t.Fatalf("pair %d: %v", i, err)
 		}
+	}
+}
+
+func TestLoadOrCreateDoesNotInitializeWhenKeyringIsUnavailable(t *testing.T) {
+	want := errors.New("secret service unavailable")
+	_, _, err := loadOrCreate("test",
+		func(string, string) (string, error) { return "", want },
+		func(string, string, string) error { t.Fatal("keyring was written after a backend failure"); return nil },
+	)
+	if !errors.Is(err, want) {
+		t.Fatalf("err=%v, want %v", err, want)
+	}
+}
+
+func TestLoadOrCreateInitializesOnlyWhenSecretIsMissing(t *testing.T) {
+	set := 0
+	op, signing, err := loadOrCreate("test",
+		func(string, string) (string, error) { return "", keyring.ErrNotFound },
+		func(string, string, string) error { set++; return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(op) != 32 || len(signing) != ed25519.PrivateKeySize || set != 1 {
+		t.Fatalf("op=%d signing=%d writes=%d", len(op), len(signing), set)
 	}
 }

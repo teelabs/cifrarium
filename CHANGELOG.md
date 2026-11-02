@@ -22,6 +22,7 @@ All notable changes to Cifrarium will be documented here.
 - Hardened adapter capture with two-pass stable reads, bounded retries, and `O_NOFOLLOW`; `VERSION` remains `0.3.0` pending release classification.
 - Added the allowlisted Codex `~/.codex/AGENTS.md` instructions file alongside `config.toml`; sensitive Codex state remains excluded. `VERSION` remains `0.3.0`.
 - Wired missed-cycle recovery snapshots into the real daemon and queued them for encrypted provider delivery, preserving catalog continuity; `VERSION` remains `0.3.0` pending release classification.
+- Hardened keyring startup so only `ErrNotFound` initializes new keys; backend failures now stop with an actionable error. `VERSION` remains `0.3.0` pending release classification.
 
 ## [0.3.0] - 2026-11-02
 
