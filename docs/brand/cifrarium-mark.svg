@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Cifrarium mark</title>
+  <desc id="desc">A rounded cyan C containing a snapshot boundary, on a dark square field.</desc>
+  <rect width="256" height="256" rx="48" fill="#0B1220"/>
+  <path d="M180 82a76 76 0 1 0 0 92" fill="none" stroke="#58D6CF" stroke-width="24" stroke-linecap="round"/>
+  <path d="M112 128h96" fill="none" stroke="#58D6CF" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="112" cy="128" r="7" fill="#F4F7FB"/>
+</svg>
