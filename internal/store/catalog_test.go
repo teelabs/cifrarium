@@ -1,0 +1,41 @@
+package store
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestCatalogChainSurvivesRestartAndDetectsTamper(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, sign, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := New(root, op, sign)
+	m1, err := v.Save([]Record{{Path: "one", Data: []byte("1"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := v.Save([]Record{{Path: "two", Data: []byte("2"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Open(root, op, sign)
+	if err != nil || restarted.Head != m2.Snapshot {
+		t.Fatalf("restart: %v %s", err, restarted.Head)
+	}
+	if err := restarted.VerifyCurrentHead(m1.Snapshot); err == nil {
+		t.Fatal("rollback accepted")
+	}
+	path := filepath.Join(root, "catalog", m1.Snapshot+".json")
+	raw, _ := os.ReadFile(path)
+	raw[len(raw)-2] ^= 1
+	os.WriteFile(path, raw, 0600)
+	if err := restarted.VerifyChain(m2.Snapshot, sign.Public().(ed25519.PublicKey)); err == nil {
+		t.Fatal("tampered catalog accepted")
+	}
+}

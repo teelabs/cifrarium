@@ -38,7 +38,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 		os.Exit(1)
 	}
-	v := store.New(*root, op, sign)
+	v, err := store.Open(*root, op, sign)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cifrarium: vault integrity check failed: %v\n", err)
+		os.Exit(1)
+	}
 	switch *cmd {
 	case "status":
 		b, _ := json.Marshal(map[string]string{"vault": *root, "signer": fmt.Sprintf("%x", sign.Public())})
