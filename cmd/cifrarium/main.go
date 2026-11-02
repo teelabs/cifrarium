@@ -70,6 +70,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+		if err := store.ValidateRecovery(*root, shares); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: recovery vault verification failed: %v\n", err)
+			os.Exit(1)
+		}
 		if err := keyringStore.ImportRecovery(shares); err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: recovery failed: %v\n", err)
 			os.Exit(1)

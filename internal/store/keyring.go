@@ -126,6 +126,18 @@ func RecoverKeys(shares []recovery.Share) ([]byte, ed25519.PrivateKey, error) {
 	return op, ed25519.PrivateKey(signing), nil
 }
 
+// ValidateRecovery proves that reconstructed keys can open the existing vault
+// before a caller replaces the keyring entry. A fresh vault has no head yet
+// and is intentionally accepted.
+func ValidateRecovery(root string, shares []recovery.Share) error {
+	op, signing, err := RecoverKeys(shares)
+	if err != nil {
+		return err
+	}
+	_, err = Open(root, op, signing)
+	return err
+}
+
 // ImportRecovery replaces the local keyring entry after explicit operator
 // recovery. The catalog head is intentionally reset and re-established by
 // OpenWithGuard after the existing signed chain is verified.

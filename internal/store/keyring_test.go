@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/teelabs/cifrarium/internal/recovery"
@@ -53,5 +55,53 @@ func TestLoadOrCreateInitializesOnlyWhenSecretIsMissing(t *testing.T) {
 	}
 	if len(op) != 32 || len(signing) != ed25519.PrivateKeySize || set != 1 {
 		t.Fatalf("op=%d signing=%d writes=%d", len(op), len(signing), set)
+	}
+}
+
+func TestValidateRecoveryVerifiesExistingVaultBeforeImport(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	if _, err := rand.Read(op); err != nil {
+		t.Fatal(err)
+	}
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := New(root, op, signing)
+	if _, err := vault.Save([]Record{{Path: "config", Data: []byte("safe"), Mode: 0600}}); err != nil {
+		t.Fatal(err)
+	}
+	shares, err := RecoveryShares(op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRecovery(root, []recovery.Share{shares[0], shares[1]}); err != nil {
+		t.Fatalf("valid recovery rejected: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "head.json"), []byte("tampered"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRecovery(root, []recovery.Share{shares[0], shares[1]}); err == nil {
+		t.Fatal("tampered vault accepted for recovery import")
+	}
+}
+
+func TestValidateRecoveryAllowsFreshVault(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	if _, err := rand.Read(op); err != nil {
+		t.Fatal(err)
+	}
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := RecoveryShares(op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRecovery(root, []recovery.Share{shares[0], shares[1]}); err != nil {
+		t.Fatalf("fresh vault rejected: %v", err)
 	}
 }

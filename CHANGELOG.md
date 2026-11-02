@@ -27,6 +27,7 @@ All notable changes to Cifrarium will be documented here.
 - Hardened Git provider reads and writes against symlinked `objects` and `catalog` paths. `VERSION` remains `0.3.0` pending release classification.
 - Hardened Git provider reads against a symlinked checkout root. `VERSION` remains `0.3.0` pending release classification.
 - Added the operator GitHub provisioning runbook with repository-scoped token permissions and pre-upload privacy/recovery gates. Documentation-only; `VERSION` remains `0.3.0`.
+- Hardened recovery import to verify reconstructed keys against the existing signed vault chain before changing the keyring; `VERSION` remains `0.3.0` pending release classification.
 
 ## [0.3.0] - 2026-11-02
 
