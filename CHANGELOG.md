@@ -6,6 +6,10 @@ All notable changes to Cifrarium will be documented here.
 
 ### Fixed
 
+- Removed the repeated installer message prefix and drained piped input after
+  dependency-preflight failures so `curl | bash` does not report a misleading
+  broken-pipe error.
+
 - Fixed the installer deploy workflow so workflow-run deployments preserve the
   resolved release tag through signed-artifact verification.
 

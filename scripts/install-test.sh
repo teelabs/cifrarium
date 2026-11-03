@@ -73,6 +73,21 @@ grep -Fq 'https://docs.sigstore.dev/cosign/system_config/installation/' "$missin
   cat "$missing_output" >&2
   exit 1
 }
+if /usr/bin/curl --fail --silent --show-error --location "file://$ROOT_DIR/scripts/install.sh" \
+  | PATH="$MISSING_BIN" HOME="$HOME_DIR" /bin/bash >"$TEST_ROOT/pipeline-missing-dependencies.txt" 2>&1; then
+  echo 'missing dependencies unexpectedly passed through curl pipe' >&2
+  exit 1
+fi
+if grep -Fq 'curl: (23)' "$TEST_ROOT/pipeline-missing-dependencies.txt"; then
+  echo 'curl broken-pipe noise was not suppressed' >&2
+  cat "$TEST_ROOT/pipeline-missing-dependencies.txt" >&2
+  exit 1
+fi
+if grep -Fq 'cifrarium installer:' "$missing_output"; then
+  echo 'installer prefix was not removed' >&2
+  cat "$missing_output" >&2
+  exit 1
+fi
 [[ ! -e "$PREFIX" ]] || {
   echo 'missing dependency preflight mutated the prefix' >&2
   exit 1
