@@ -4,6 +4,18 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-03
+
+### Added
+
+- Added a read-only `doctor` command that reports vault, keyring, daemon, MCP,
+  adapter, and optional GitHub provider health for humans and agents.
+
+### Changed
+
+- Made `status` human-readable by default and added explicit `-format=json`
+  output for scripts and automation.
+
 ## [0.6.1] - 2026-11-03
 
 ### Fixed
