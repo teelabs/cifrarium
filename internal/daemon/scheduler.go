@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -25,7 +26,13 @@ type Scheduler struct {
 	Pending          *Queue
 	MissedCycles     int
 	Persist          func() error
+	Report           func(error)
 }
+
+type PersistenceError struct{ Err error }
+
+func (e *PersistenceError) Error() string { return fmt.Sprintf("queue persistence failed: %v", e.Err) }
+func (e *PersistenceError) Unwrap() error { return e.Err }
 
 func NewScheduler(snapshot Snapshotter, upload Uploader, pending *Queue) *Scheduler {
 	return &Scheduler{Interval: DefaultInterval, Retry: RetryPolicy{MaxAttempts: 3, BaseDelay: time.Second}, Snapshot: snapshot, Upload: upload, Pending: pending}
@@ -44,7 +51,7 @@ func (s *Scheduler) Cycle(ctx context.Context) error {
 		}
 		if s.Persist != nil {
 			if qerr := s.Persist(); qerr != nil {
-				return qerr
+				return &PersistenceError{Err: qerr}
 			}
 		}
 		return s.missed(ctx, err)
@@ -54,19 +61,16 @@ func (s *Scheduler) Cycle(ctx context.Context) error {
 }
 func (s *Scheduler) DrainPending(ctx context.Context) error {
 	for s.Pending.Len() > 0 {
-		item, _ := s.Pending.Pop()
+		item := s.Pending.items[0]
+		if err := s.uploadWithRetry(ctx, item); err != nil {
+			return err
+		}
+		_, _ = s.Pending.Pop()
 		if s.Persist != nil {
 			if err := s.Persist(); err != nil {
-				_ = s.Pending.Push(item)
-				return err
+				s.Pending.items = append([]Item{item}, s.Pending.items...)
+				return &PersistenceError{Err: err}
 			}
-		}
-		if err := s.uploadWithRetry(ctx, item); err != nil {
-			_ = s.Pending.Push(item)
-			if s.Persist != nil {
-				_ = s.Persist()
-			}
-			return err
 		}
 	}
 	return nil
@@ -83,7 +87,13 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			if err := s.Cycle(ctx); err != nil {
-				continue
+				var persistenceErr *PersistenceError
+				if errors.As(err, &persistenceErr) {
+					return err
+				}
+				if s.Report != nil {
+					s.Report(err)
+				}
 			}
 		}
 	}
@@ -128,7 +138,7 @@ func (s *Scheduler) missed(ctx context.Context, err error) error {
 		}
 		if s.Persist != nil {
 			if persistErr := s.Persist(); persistErr != nil {
-				return fmt.Errorf("%w; recovery snapshot persistence failed: %v", err, persistErr)
+				return &PersistenceError{Err: fmt.Errorf("%w; recovery snapshot persistence failed: %v", err, persistErr)}
 			}
 		}
 	}

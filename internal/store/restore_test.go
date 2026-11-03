@@ -1,11 +1,14 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 func TestRestoreRejectsTraversalAndSymlink(t *testing.T) {
@@ -62,6 +65,14 @@ func TestRestoreRejectsDuplicatePaths(t *testing.T) {
 		t.Fatal("duplicate restore path accepted")
 	}
 }
+
+func TestRestoreRejectsOversizedRecord(t *testing.T) {
+	root := t.TempDir()
+	if err := RestoreWithRename([]Record{{Path: "large", Data: bytes.Repeat([]byte("x"), int(limits.MaxCapturedFileBytes)+1)}}, filepath.Join(root, "home"), filepath.Join(root, "backups"), os.Rename); err == nil {
+		t.Fatal("oversized restore record accepted")
+	}
+}
+
 func TestRestoreCreatesBackup(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "home")

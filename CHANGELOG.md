@@ -4,7 +4,31 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-02
+
+### Security
+
+- Hardened Git/provider execution against repository hooks, unsafe inherited
+  configuration, unsafe local transport settings,
+  credential/recovery-share leakage, path-component symlink races, and
+  unverified migration destinations.
+- Made already-committed Git snapshot retries idempotent and documented the
+  remaining crash-consistency boundary for multi-file restore.
+- Added guarded, serialized recovery import and bounded validation for captured
+  files, snapshots, manifests, queue items, restore records, and MCP request
+  lines.
+- Surfaced daemon initialization, persistence, retry, and MCP listener failures
+  instead of silently treating failed work as healthy.
+
 ### Added
+
+- Added the [human user guide](docs/USER-GUIDE.md), the detailed
+  [agent operating contract](docs/AGENT-USAGE.md), and root [agent routing
+  instructions](AGENTS.md) with setup, provider, daemon, recovery, failure,
+  and scenario examples.
+- Documented the accepted threat-model boundary: restored plaintext and
+  user-owned recovery material are not protected from a compromised same-user
+  process, and GitHub visibility checks are operational rather than atomic.
 
 - Added the initial versioned Cifrarium visual identity proposal with four SVG directions and usage guidance; legal clearance remains tracked separately in [issue #49](https://github.com/teelabs/cifrarium/issues/49) and [`VERSION`](VERSION) remains `0.3.0`.
 - Refreshed the [red-team report](docs/security/2026-11-02-red-team-review.md) to the reconciled `main` commit and post-merge CI evidence after the visual identity slice; documentation-only change, [`VERSION`](VERSION) remains `0.3.0`.

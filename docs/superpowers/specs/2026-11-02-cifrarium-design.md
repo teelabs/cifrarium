@@ -8,7 +8,14 @@ Cifrarium is a Linux-first, single-user, local vault for portable configuration.
 
 ## Threat model
 
-The design protects configuration contents, filenames, catalog metadata, recovery shares, and remote Git history from a stolen disk, remote-provider reader, or untrusted local process without the Unix socket credentials. It does not protect a compromised user account, a running process with access to the keyring, or a user who intentionally grants the daemon access. Plaintext is kept in memory only during capture/restore and temporary files are created with mode 0600.
+The design protects configuration contents, filenames, catalog metadata,
+recovery shares, and remote Git history from a stolen disk, remote-provider
+reader, or untrusted local process without the Unix socket credentials. It does
+not protect a compromised user account, a running process with access to the
+keyring, or a user who intentionally grants the daemon access. Restored files
+are plaintext at their normal application paths by design; a same-user process
+can read or interfere with them. Temporary vault files are created with mode
+0600, while restored-file permissions follow the explicit restore contract.
 
 ## Cryptographic envelope
 
@@ -18,7 +25,18 @@ The catalog is encrypted with the same AES-256-GCM operational-key envelope as s
 
 ## Recovery
 
-The operational key and the Ed25519 signing private key are encoded in a versioned recovery bundle, then split with Shamir secret sharing into three text shares with threshold two. The `recovery-shares` CLI command emits the three opaque `label:value` shares; the `recover` command accepts exactly two and replaces the local keyring entry. Before a remote upload, the user must successfully reconstruct the operational key with two distinct shares and an explicit verification step. Shares contain only encoded indexes and share bytes; labels and SHA-256 fingerprints are safe to record in local metadata. One share never recovers the bundle. Recovery never requires the old machine and resets the keyring catalog-head guard, which is re-established only after the signed local chain is verified.
+The operational key and the Ed25519 signing private key are encoded in a
+versioned recovery bundle, then split with Shamir secret sharing into three
+text shares with threshold two. The `recovery-shares` CLI command emits the
+three opaque `label:value` shares; the `recover` command accepts exactly two
+and replaces the local keyring entry. Before a remote upload, the user must
+successfully reconstruct the operational key with two distinct shares and an
+explicit verification step. Shares contain only encoded indexes and share
+bytes; labels and SHA-256 fingerprints are safe to record in local metadata.
+One share never recovers the bundle. Recovery never requires the old machine.
+When an existing vault is present, recovery preserves and validates its
+catalog-head guard; a fresh vault may establish an empty guard only after the
+signed local chain check.
 
 ## Storage and provider contract
 
@@ -30,7 +48,7 @@ Adapters return canonical paths and bytes from explicit allowlists. Codex includ
 
 ## Restore and daemon
 
-Restore writes a same-filesystem temporary tree, rejects traversal, symlinked roots, and symlinked intermediate or final targets, then uses Linux `openat2` directory descriptors and `renameat2` for descriptor-relative backup and activation. Existing files are renamed into a local backup, and `RENAME_NOREPLACE` prevents a race from replacing a validated destination during activation. On an activation failure it restores files already moved; a deterministic rename seam proves this partial-activation rollback. Unsupported platforms fail closed instead of silently using the weaker path-based implementation. The user daemon has a systemd user unit, and the installed service drains the encrypted queue, runs an initial snapshot, wires the recovery-gated uploader, handles signals, starts the local MCP socket, and enters the six-hour scheduler contract with retry/backoff, an encrypted bounded queue of at most 16 pending objects, recovery-snapshot triggering after a missed cycle, and incident notification deduplication.
+Restore writes a same-filesystem temporary tree, rejects traversal, symlinked roots, and symlinked intermediate or final targets, then uses Linux `openat2` directory descriptors and `renameat2` for descriptor-relative backup and activation. Existing files are renamed into a local backup, and `RENAME_NOREPLACE` prevents a race from replacing a validated destination during activation. On a handled activation failure it restores files already moved; a deterministic rename seam proves this partial-activation rollback. This is not a durable crash journal: abrupt process termination can leave an interrupted activation, so the backup must be preserved and the restore retried. Unsupported platforms fail closed instead of silently using the weaker path-based implementation. The user daemon has a systemd user unit, and the installed service drains the encrypted queue, runs an initial snapshot, wires the recovery-gated uploader, handles signals, starts the local MCP socket, and enters the six-hour scheduler contract with retry/backoff, an encrypted bounded queue of at most 16 pending objects, recovery-snapshot triggering after a missed cycle, and incident notification deduplication.
 
 ## MCP boundary
 

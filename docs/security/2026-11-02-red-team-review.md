@@ -1,12 +1,27 @@
 # Cifrarium red-team review
 
-Status: implementation review evidence; not a release approval.
+Status: implementation review evidence with accepted threat-model residuals; not
+a release approval.
 
 Review date: 2026-11-02.
 
 ## Scope
 
-The review covered the local encrypted store, recovery shares, catalog chain, remote snapshot verification, restore activation, provider boundary, daemon queue, systemd user boundary, adapters, local MCP server, and the current repository release evidence. The source of truth is the reconciled `main` branch at `501bb6ef8dbc88833dd8d603430eccd5bb2a9577`.
+The review covered the local encrypted store, recovery shares, catalog chain, remote snapshot verification, restore activation, provider boundary, daemon queue, systemd user boundary, adapters, local MCP server, and the current repository release evidence. The baseline is `main` at `ee0c907`. This report also covers the uncommitted security-hardening worktree for issue #66; it is evidence of implementation and verification, not a merge or release approval.
+
+TRAG was unavailable during this review, so no repository-history citation is claimed. The independent adversarial pass returned `CHANGES REQUESTED` before the follow-up fixes below.
+
+## Accepted threat-model boundary
+
+Cifrarium protects configuration while it is encrypted in the local vault or
+provider. Restored files are plaintext by design so applications can use them.
+A process running as the same Unix user is therefore outside the vault's
+confidentiality boundary: it may read user files, observe user processes,
+alter user-owned paths, or interfere with a vault operation. The hardening
+rejects unsafe paths and preserves integrity for ordinary failures, but it
+does not promise sandboxing against that process. A same-user interference may
+produce a fail-closed error, require recovery, or require rotating affected
+credentials.
 
 ## Evidence matrix
 
@@ -32,7 +47,7 @@ The review covered the local encrypted store, recovery shares, catalog chain, re
 
 ## Verification run
 
-The following gates passed locally against the reconciled `main` before publication:
+The following gates passed locally in the issue #66 worktree after the follow-up implementation (not a release artifact):
 
 ```text
 go test ./...
@@ -40,13 +55,44 @@ go test -race ./...
 go vet ./...
 go build ./...
 git diff --check
-./scripts/verify-version-changelog.sh
-./scripts/verify-secrets.sh
 ```
 
-The GitHub Actions [`verify` job](https://github.com/teelabs/cifrarium/actions/runs/41513286948) passed these gates on `main` in run `41513286948`, including the MCP handshake and systemd installer checks. The visual identity proposal is versioned under [`docs/brand/`](../brand/); it makes no legal-clearance claim, and qualified review remains tracked in [issue #49](https://github.com/teelabs/cifrarium/issues/49).
+The version/changelog and secret scans also passed after the follow-up work.
+A Darwin/amd64 test compilation passed; runtime execution on Darwin was not
+attempted. The prior GitHub Actions result on `main` does not validate this
+uncommitted hardening worktree. The visual identity proposal is versioned
+under [`docs/brand/`](../brand/); it makes no legal-clearance claim, and
+qualified review remains tracked in [issue #49](https://github.com/teelabs/cifrarium/issues/49).
 
 ## Findings and residuals
+
+### Issue #66 follow-up disposition
+
+| Finding | Disposition and evidence |
+| --- | --- |
+| Git hooks, inherited credential/recovery-share environment, and unsafe local Git filters/helpers | **Resisted for covered cases.** Git commands disable hooks/fsmonitor, strip sensitive environment variables, inspect local config, and reject executable filter/helper/include/transport settings. Regression coverage includes hooks and a malicious local filter. |
+| Provider/adapters/Git path redirection | **Resisted for covered cases.** Linux provider writes/listing, adapter reads, and Git/`gh` subprocess working directories use descriptor-relative `openat2`/`O_NOFOLLOW`; a replacement-path regression test confirms the child remains on the opened directory. Unsupported provider platforms fail closed. |
+| Recovery rollback and concurrent Save/import | **Resisted.** Recovery and Save share an exclusive descriptor-relative lock; recovery validates the signed chain twice, preserves an existing guard, and anchors a previously unguarded existing head. Regression tests cover valid historical rollback, missing-guard anchoring, and lock symlink/alias rejection. |
+| Migration to a destination without a privacy boundary | **Resisted.** Migration requires `PrivateVerifier`; GitHub privacy verification rejects local-only Git destinations. |
+| Oversized files, records, manifests, queue items, provider listings, daemon snapshot reads, and MCP lines | **Resisted for covered cases.** Central limits are enforced before retention/decryption where applicable, including the CLI snapshot handoff, with focused rejection tests. |
+| Queue loss after upload/removal persistence failure | **Resisted for covered cases.** Pending items remain durable until upload succeeds; only then are they removed and persisted. If removal persistence fails, the item is restored in memory and remains in the previous durable queue. Git retries tolerate an already-committed snapshot and continue to push the current head. Regression coverage reloads the queue after the failure. Scheduled persistence failures terminate the scheduler; if the storage device cannot persist a newly queued item, delivery of that item is not claimed durable and the local encrypted vault remains the source of truth for the next cycle. |
+| Daemon startup/listener/persistence observability | **Resisted.** Initial drain and initial-cycle persistence failures are fatal; MCP readiness is announced only after bind/chmod; malformed MCP input receives a parse error response. |
+| Privacy check versus push race | **Accepted residual.** Privacy is checked immediately before push, but an external GitHub visibility change can still occur between verification and remote acceptance. Organization/repository policy is required when that guarantee matters. |
+
+### Remaining residuals
+
+1. A same-user process with permission to alter the vault root, lock parent, or
+   restored files remains outside the confidentiality boundary and can disrupt
+   operations. The lock itself rejects a symlink and is opened with `O_NOFOLLOW`
+   on Linux; this is integrity/availability hardening, not a same-user sandbox.
+2. This report is evidence, not approval by itself. Commit, push, and merge
+   require the explicit delivery authorization and gates recorded on PR #67;
+   publication and deployment remain outside this delivery.
+3. Abrupt process termination during multi-file restore can occur between
+   descriptor-relative renames. Handled activation errors roll back and leave
+   a backup, but the MVP has no durable restore journal for crash recovery;
+   operators must preserve the backup and retry after an interrupted restore.
+   The follow-up is tracked in [issue #68](https://github.com/teelabs/cifrarium/issues/68).
 
 ### Fixed
 
@@ -60,7 +106,8 @@ The previous restore path TOCTOU residual is remediated for the Linux MVP by
 descriptor-relative production operations. A compromised same-user process can
 still interfere with the operation and cause a fail-closed error or rollback
 failure; it cannot redirect a validated rename through a replaced symlink
-component. Unsupported platforms fail closed.
+component. Unsupported platforms fail closed. This is accepted because
+restored plaintext is necessarily readable by the same user.
 
 ### Open before public release
 
@@ -70,4 +117,7 @@ component. Unsupported platforms fail closed.
 
 ## Decision
 
-No blocking implementation finding remains in the reviewed code paths. The open residuals above must remain visible in the [release checklist](https://github.com/teelabs/cifrarium/issues/49); this document does not authorize publication, deployment, or public branding.
+Implementation findings from issue #66 are resisted by current evidence. The
+release state is still pending explicit human security/release approval and
+the residual threat-model decision above. This document does not authorize
+publication, deployment, or public branding.

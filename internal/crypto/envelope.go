@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 type Envelope struct {
@@ -17,6 +19,9 @@ type Envelope struct {
 }
 
 func Seal(plaintext, operationalKey []byte) ([]byte, error) {
+	if err := limits.CheckBytes(len(plaintext), limits.MaxSnapshotPlainBytes); err != nil {
+		return nil, err
+	}
 	if len(operationalKey) != 32 {
 		return nil, fmt.Errorf("operational key must be 32 bytes")
 	}
@@ -36,6 +41,9 @@ func Seal(plaintext, operationalKey []byte) ([]byte, error) {
 }
 
 func Open(raw, operationalKey []byte) ([]byte, error) {
+	if err := limits.CheckBytes(len(raw), limits.MaxQueueFileBytes); err != nil {
+		return nil, err
+	}
 	var e Envelope
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return nil, err

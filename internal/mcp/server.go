@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 type Request struct {
@@ -35,6 +37,7 @@ func (f HandlerFunc) Handle(ctx context.Context, request Request) (any, error) {
 type Server struct {
 	Socket  string
 	Handler Handler
+	Ready   func()
 }
 
 func (s Server) Listen() error {
@@ -50,6 +53,9 @@ func (s Server) Listen() error {
 	if err := os.Chmod(s.Socket, 0600); err != nil {
 		return err
 	}
+	if s.Ready != nil {
+		s.Ready()
+	}
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -61,28 +67,46 @@ func (s Server) Listen() error {
 func handle(c net.Conn, handler Handler) {
 	defer c.Close()
 	scan := bufio.NewScanner(c)
+	scan.Buffer(make([]byte, 4096), limits.MaxMCPLineBytes)
 	enc := json.NewEncoder(c)
 	for scan.Scan() {
 		var r Request
-		if json.Unmarshal(scan.Bytes(), &r) != nil {
+		if err := json.Unmarshal(scan.Bytes(), &r); err != nil {
+			if err := enc.Encode(Response{"2.0", nil, nil, fmt.Sprintf("parse error: %v", err)}); err != nil {
+				return
+			}
 			continue
 		}
+		write := func(response Response) bool { return enc.Encode(response) == nil }
 		switch r.Method {
 		case "initialize":
-			_ = enc.Encode(Response{"2.0", r.ID, map[string]any{"name": "cifrarium", "version": "0.3.0"}, nil})
+			if !write(Response{"2.0", r.ID, map[string]any{"name": "cifrarium", "version": "0.3.1"}, nil}) {
+				return
+			}
 		case "status", "snapshot.plan", "restore.plan":
 			if handler == nil {
-				_ = enc.Encode(Response{"2.0", r.ID, nil, "daemon handler is unavailable"})
+				if !write(Response{"2.0", r.ID, nil, "daemon handler is unavailable"}) {
+					return
+				}
 				continue
 			}
 			result, err := handler.Handle(context.Background(), r)
 			if err != nil {
-				_ = enc.Encode(Response{"2.0", r.ID, nil, err.Error()})
+				if !write(Response{"2.0", r.ID, nil, err.Error()}) {
+					return
+				}
 				continue
 			}
-			_ = enc.Encode(Response{"2.0", r.ID, result, nil})
+			if !write(Response{"2.0", r.ID, result, nil}) {
+				return
+			}
 		default:
-			_ = enc.Encode(Response{"2.0", r.ID, nil, fmt.Sprintf("method %q is not available", r.Method)})
+			if !write(Response{"2.0", r.ID, nil, fmt.Sprintf("method %q is not available", r.Method)}) {
+				return
+			}
 		}
+	}
+	if err := scan.Err(); err != nil {
+		_ = enc.Encode(Response{"2.0", nil, nil, fmt.Sprintf("request rejected: %v", err)})
 	}
 }

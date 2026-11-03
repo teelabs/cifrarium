@@ -12,6 +12,7 @@ import (
 	"time"
 
 	crypt "github.com/teelabs/cifrarium/internal/crypto"
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 type Record struct {
@@ -89,6 +90,19 @@ func OpenWithGuard(root string, op []byte, signing ed25519.PrivateKey, guard Hea
 	return v, nil
 }
 func (v *Vault) Save(records []Record) (Manifest, error) {
+	var manifest Manifest
+	err := withVaultLock(v.Root, func() error {
+		var err error
+		manifest, err = v.saveUnlocked(records)
+		return err
+	})
+	return manifest, err
+}
+
+func (v *Vault) saveUnlocked(records []Record) (Manifest, error) {
+	if err := validateRecords(records); err != nil {
+		return Manifest{}, err
+	}
 	if err := os.MkdirAll(v.Root, 0700); err != nil {
 		return Manifest{}, err
 	}
@@ -97,8 +111,14 @@ func (v *Vault) Save(records []Record) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	if err := limits.CheckBytes(len(plain), limits.MaxSnapshotPlainBytes); err != nil {
+		return Manifest{}, err
+	}
 	ciphertext, err := crypt.Seal(plain, v.Operational)
 	if err != nil {
+		return Manifest{}, err
+	}
+	if err := limits.CheckBytes(len(ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
 		return Manifest{}, err
 	}
 	h := sha256.Sum256(ciphertext)
@@ -176,7 +196,7 @@ func (v *Vault) Verify(m Manifest, pub ed25519.PublicKey) error {
 }
 
 func (v *Vault) LoadHead() (Manifest, error) {
-	raw, err := os.ReadFile(filepath.Join(v.Root, "head.json"))
+	raw, err := readLimitedFile(filepath.Join(v.Root, "head.json"), limits.MaxManifestBytes)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -193,7 +213,7 @@ func (v *Vault) VerifyChain(head string, pub ed25519.PublicKey) error {
 			return fmt.Errorf("catalog chain loop or excessive depth")
 		}
 		seen[current] = true
-		raw, err := os.ReadFile(filepath.Join(v.Root, "catalog", current+".json"))
+		raw, err := readLimitedFile(filepath.Join(v.Root, "catalog", current+".json"), limits.MaxManifestBytes)
 		if err != nil {
 			return err
 		}
@@ -207,7 +227,7 @@ func (v *Vault) VerifyChain(head string, pub ed25519.PublicKey) error {
 		if err := v.Verify(m, pub); err != nil {
 			return err
 		}
-		ciphertext, err := os.ReadFile(filepath.Join(v.Root, "snapshots", current))
+		ciphertext, err := readLimitedFile(filepath.Join(v.Root, "snapshots", current), limits.MaxSnapshotCipherBytes)
 		if err != nil {
 			return err
 		}
@@ -250,7 +270,7 @@ func (v *Vault) VerifyHistoricalHead(candidate string, pub ed25519.PublicKey) er
 		if current == candidate {
 			return nil
 		}
-		raw, err := os.ReadFile(filepath.Join(v.Root, "catalog", current+".json"))
+		raw, err := readLimitedFile(filepath.Join(v.Root, "catalog", current+".json"), limits.MaxManifestBytes)
 		if err != nil {
 			return err
 		}
@@ -282,12 +302,21 @@ func SealManifest(m Manifest, operationalKey []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := limits.CheckBytes(len(plain), limits.MaxManifestBytes); err != nil {
+		return nil, err
+	}
 	return crypt.Seal(plain, operationalKey)
 }
 
 func OpenManifest(raw, operationalKey []byte) (Manifest, error) {
+	if err := limits.CheckBytes(len(raw), limits.MaxManifestBytes); err != nil {
+		return Manifest{}, err
+	}
 	plain, err := crypt.Open(raw, operationalKey)
 	if err != nil {
+		return Manifest{}, err
+	}
+	if err := limits.CheckBytes(len(plain), limits.MaxManifestBytes); err != nil {
 		return Manifest{}, err
 	}
 	var m Manifest
@@ -308,7 +337,7 @@ func MigrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey) (
 type catalogWriter func(path string, data []byte, mode os.FileMode) error
 
 func migrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey, write catalogWriter) (bool, error) {
-	headRaw, err := os.ReadFile(filepath.Join(root, "head.json"))
+	headRaw, err := readLimitedFile(filepath.Join(root, "head.json"), limits.MaxManifestBytes)
 	if os.IsNotExist(err) {
 		return false, nil
 	}
@@ -331,7 +360,7 @@ func migrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey, w
 			return false, fmt.Errorf("legacy catalog chain loop or invalid head")
 		}
 		seen[current] = true
-		raw, err := os.ReadFile(filepath.Join(root, "catalog", current+".json"))
+		raw, err := readLimitedFile(filepath.Join(root, "catalog", current+".json"), limits.MaxManifestBytes)
 		if err != nil {
 			return false, err
 		}
@@ -346,7 +375,7 @@ func migrateCatalog(root string, operationalKey []byte, pub ed25519.PublicKey, w
 		if err := v.Verify(m, pub); err != nil {
 			return false, err
 		}
-		ciphertext, err := os.ReadFile(filepath.Join(root, "snapshots", current))
+		ciphertext, err := readLimitedFile(filepath.Join(root, "snapshots", current), limits.MaxSnapshotCipherBytes)
 		if err != nil {
 			return false, err
 		}
@@ -390,27 +419,55 @@ func (v *Vault) Load(id string) ([]Record, error) {
 	if id == "" || filepath.Base(id) != id {
 		return nil, fmt.Errorf("invalid snapshot id")
 	}
-	raw, err := os.ReadFile(filepath.Join(v.Root, "snapshots", id))
+	raw, err := readLimitedFile(filepath.Join(v.Root, "snapshots", id), limits.MaxSnapshotCipherBytes)
 	if err != nil {
+		return nil, err
+	}
+	if err := limits.CheckBytes(len(raw), limits.MaxSnapshotCipherBytes); err != nil {
 		return nil, err
 	}
 	plain, err := crypt.Open(raw, v.Operational)
 	if err != nil {
 		return nil, err
 	}
+	if err := limits.CheckBytes(len(plain), limits.MaxSnapshotPlainBytes); err != nil {
+		return nil, err
+	}
 	var records []Record
 	if err := json.Unmarshal(plain, &records); err != nil {
+		return nil, err
+	}
+	if err := validateRecords(records); err != nil {
 		return nil, err
 	}
 	return records, nil
 }
+
+// SnapshotCiphertext returns an opaque encrypted snapshot bounded by the same
+// limit used by provider and restore ingestion paths.
+func (v *Vault) SnapshotCiphertext(id string) ([]byte, error) {
+	if id == "" || filepath.Base(id) != id {
+		return nil, fmt.Errorf("invalid snapshot id")
+	}
+	return readLimitedFile(filepath.Join(v.Root, "snapshots", id), limits.MaxSnapshotCipherBytes)
+}
+
 func (v *Vault) RecordsFromCiphertext(ciphertext []byte) ([]Record, error) {
+	if err := limits.CheckBytes(len(ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
+		return nil, err
+	}
 	plain, err := crypt.Open(ciphertext, v.Operational)
 	if err != nil {
 		return nil, err
 	}
+	if err := limits.CheckBytes(len(plain), limits.MaxSnapshotPlainBytes); err != nil {
+		return nil, err
+	}
 	var records []Record
 	if err := json.Unmarshal(plain, &records); err != nil {
+		return nil, err
+	}
+	if err := validateRecords(records); err != nil {
 		return nil, err
 	}
 	return records, nil
@@ -431,6 +488,9 @@ func Restore(records []Record, target, backupRoot string) error {
 func RestoreWithRename(records []Record, target, backupRoot string, rename RenameFunc) error {
 	if rename == nil {
 		return fmt.Errorf("rename function is required")
+	}
+	if err := validateRecords(records); err != nil {
+		return err
 	}
 	if filepath.Clean(target) == "." || filepath.Clean(target) == "/" {
 		return fmt.Errorf("unsafe restore target")
@@ -529,6 +589,34 @@ func validateRestoreRecordPath(path string) error {
 	return nil
 }
 
+func validateRecords(records []Record) error {
+	if len(records) > limits.MaxCapturedFiles {
+		return fmt.Errorf("snapshot contains too many records")
+	}
+	var total int64
+	seen := make(map[string]struct{}, len(records))
+	for _, record := range records {
+		if err := validateRestoreRecordPath(record.Path); err != nil {
+			return err
+		}
+		if _, ok := seen[record.Path]; ok {
+			return fmt.Errorf("duplicate snapshot path %q", record.Path)
+		}
+		seen[record.Path] = struct{}{}
+		if len(record.Path) > limits.MaxPathBytes || len(strings.Split(record.Path, string(filepath.Separator))) > limits.MaxPathDepth {
+			return fmt.Errorf("snapshot path exceeds limits")
+		}
+		if err := limits.CheckBytes(len(record.Data), limits.MaxCapturedFileBytes); err != nil {
+			return err
+		}
+		total += int64(len(record.Data))
+		if total > limits.MaxSnapshotPlainBytes {
+			return fmt.Errorf("snapshot exceeds plaintext limit")
+		}
+	}
+	return nil
+}
+
 func rejectSymlinkPath(path string) error {
 	clean := filepath.Clean(path)
 	absolute := filepath.IsAbs(clean)
@@ -620,13 +708,22 @@ func captureFileStates(paths ...string) ([]fileState, error) {
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("snapshot path is not a regular file: %s", path)
 		}
-		data, err := os.ReadFile(path)
+		data, err := readLimitedFile(path, limits.MaxSnapshotCipherBytes)
 		if err != nil {
 			return nil, err
 		}
 		states = append(states, fileState{path: path, exists: true, mode: info.Mode().Perm(), data: data})
 	}
 	return states, nil
+}
+
+func readLimitedFile(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return limits.ReadAll(f, max)
 }
 
 func restoreFileStates(states []fileState) error {

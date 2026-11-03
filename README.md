@@ -11,7 +11,8 @@ a CLI, an optional Linux user daemon, and a local read-only MCP interface.
   recovery and before remote upload.
 - Uses a private Git repository as the first remote provider; remote setup is
   operator-managed.
-- Restores snapshots atomically with a local backup and rejects unsafe paths.
+- Restores snapshots with rollback protection and a local backup, while
+  rejecting unsafe paths.
 - Exposes local status and change-plan MCP methods through the daemon; it does
   not accept autonomous mutations.
 
@@ -107,10 +108,24 @@ confirmation. Remote MCP and autonomous mutation methods are not supported.
 
 ## Documentation
 
+- [Human user guide](docs/USER-GUIDE.md)
+- [Contrato operacional para agentes](docs/AGENT-USAGE.md)
+- [Instruções locais para agentes](AGENTS.md)
 - [Canonical design](docs/superpowers/specs/2026-11-02-cifrarium-design.md)
 - [Security and red-team review](docs/security/2026-11-02-red-team-review.md)
 - [Brand guidance](docs/brand/README.md)
 - [Changelog](CHANGELOG.md)
+
+## Choose a path
+
+- For local-only testing, start with the [human user guide](docs/USER-GUIDE.md#3-first-local-use-without-a-provider).
+- For recurring private backup, read the [GitHub provider runbook](docs/runbooks/github-provider-provisioning.md) and then the daemon workflow in the guide.
+- For an agent or automation, read the [agent contract](docs/AGENT-USAGE.md) before running any command.
+
+The vault protects configuration while it is encrypted at rest. Restored files
+are plaintext by design so applications can use them; a process running as the
+same user is outside Cifrarium's confidentiality boundary. The security review
+records this residual and the separate GitHub visibility race explicitly.
 
 For development checks, run `go test ./...`, `go test -race ./...`, `go vet
 ./...`, and `go build ./...`. The full CI workflow also checks formatting,

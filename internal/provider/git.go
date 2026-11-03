@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
@@ -8,11 +9,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 type Git struct {
 	Dir    string
 	Remote string
+}
+
+type gitObject struct {
+	path string
+	data []byte
 }
 
 type RemoteAccessError struct{ Err error }
@@ -23,12 +31,80 @@ func (e *RemoteAccessError) Error() string {
 func (e *RemoteAccessError) Unwrap() error { return e.Err }
 
 func (g Git) run(ctx context.Context, args ...string) error {
-	c := exec.CommandContext(ctx, "git", args...)
-	c.Dir = g.Dir
+	if err := g.validateRepositoryConfig(ctx); err != nil {
+		return err
+	}
+	c, cleanup, err := g.commandAtDir(ctx, "git", args...)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	if out, err := c.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %v: %w (%s)", args, err, out)
 	}
 	return nil
+}
+
+func (g Git) output(ctx context.Context, args ...string) ([]byte, error) {
+	if err := g.validateRepositoryConfig(ctx); err != nil {
+		return nil, err
+	}
+	c, cleanup, err := g.commandAtDir(ctx, "git", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	return c.Output()
+}
+
+func (g Git) command(ctx context.Context, executable string, args ...string) *exec.Cmd {
+	if executable == "git" {
+		args = hardenedGitArgs(args)
+	}
+	c := exec.CommandContext(ctx, executable, args...)
+	c.Env = hardenedCommandEnv(executable)
+	return c
+}
+
+func (g Git) commandAtDir(ctx context.Context, executable string, args ...string) (*exec.Cmd, func(), error) {
+	if executable == "git" {
+		args = hardenedGitArgs(args)
+	}
+	f, err := openGitDir(g.Dir)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	c := anchoredGitCommand(ctx, executable, args, hardenedCommandEnv(executable), g.Dir, f)
+	return c, func() { _ = f.Close() }, nil
+}
+
+func hardenedGitArgs(args []string) []string {
+	return append([]string{
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false",
+		"-c", "core.attributesFile=/dev/null",
+		"-c", "core.sshCommand=",
+		"-c", "credential.helper=!/usr/bin/gh auth git-credential",
+		"-c", "commit.gpgSign=false",
+	}, args...)
+}
+
+func hardenedCommandEnv(executable string) []string {
+	env := make([]string, 0, len(os.Environ())+4)
+	for _, value := range os.Environ() {
+		name, _, _ := strings.Cut(value, "=")
+		if strings.HasPrefix(name, "GIT_") || strings.HasPrefix(name, "SSH_") ||
+			strings.HasPrefix(name, "GH_") || name == "GITHUB_TOKEN" ||
+			strings.HasPrefix(name, "CIFRARIUM_RECOVERY_SHARE_") {
+			continue
+		}
+		env = append(env, value)
+	}
+	env = append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	if executable == "gh" {
+		env = append(env, "GH_PROMPT_DISABLED=1")
+	}
+	return env
 }
 func (g Git) Upload(ctx context.Context, id string, ciphertext []byte) error {
 	if err := g.Ensure(ctx); err != nil {
@@ -40,7 +116,7 @@ func (g Git) Upload(ctx context.Context, id string, ciphertext []byte) error {
 	if err := g.writeObject(ctx, filepath.Join("objects", id), ciphertext); err != nil {
 		return err
 	}
-	return g.commitAndPush(ctx, "snapshot "+id, filepath.Join("objects", id))
+	return g.commitAndPush(ctx, "snapshot "+id, gitObject{filepath.Join("objects", id), ciphertext})
 }
 func (g Git) UploadCatalog(ctx context.Context, id string, manifest []byte) error {
 	if err := g.Ensure(ctx); err != nil {
@@ -53,7 +129,7 @@ func (g Git) UploadCatalog(ctx context.Context, id string, manifest []byte) erro
 	if err := g.writeObject(ctx, path, manifest); err != nil {
 		return err
 	}
-	return g.commitAndPush(ctx, "catalog "+id, path)
+	return g.commitAndPush(ctx, "catalog "+id, gitObject{path, manifest})
 }
 func (g Git) UploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte) error {
 	if err := g.Ensure(ctx); err != nil {
@@ -70,44 +146,23 @@ func (g Git) UploadSnapshot(ctx context.Context, id string, ciphertext, manifest
 	if err := g.writeObject(ctx, catalogPath, manifest); err != nil {
 		return err
 	}
-	return g.commitAndPush(ctx, "snapshot "+id, objectPath, catalogPath)
+	return g.commitAndPush(ctx, "snapshot "+id,
+		gitObject{objectPath, ciphertext}, gitObject{catalogPath, manifest})
 }
 func (g Git) Download(ctx context.Context, id string) ([]byte, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
-	path, err := g.safePath(filepath.Join("objects", id))
-	if err != nil {
-		return nil, err
-	}
-	return os.ReadFile(path)
+	return readProviderFileLimited(g.Dir, filepath.Join("objects", id), limits.MaxSnapshotCipherBytes)
 }
 func (g Git) DownloadCatalog(ctx context.Context, id string) ([]byte, error) {
 	if err := validateID(id); err != nil {
 		return nil, err
 	}
-	path, err := g.safePath(filepath.Join("catalog", id+".json"))
-	if err != nil {
-		return nil, err
-	}
-	return os.ReadFile(path)
+	return readProviderFileLimited(g.Dir, filepath.Join("catalog", id+".json"), limits.MaxManifestBytes)
 }
 func (g Git) List(ctx context.Context) ([]string, error) {
-	objects, err := g.safePath("objects")
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(objects)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
-			out = append(out, e.Name())
-		}
-	}
-	return out, nil
+	return listProviderFiles(g.Dir, "objects")
 }
 func (g Git) Health(ctx context.Context) error {
 	if err := g.run(ctx, "status", "--porcelain"); err != nil {
@@ -129,7 +184,11 @@ func (g Git) CheckRemoteAccess(ctx context.Context) error {
 	if _, err := g.remoteURL(ctx); err != nil {
 		return &RemoteAccessError{Err: err}
 	}
-	if err := g.run(ctx, "ls-remote", "origin", "HEAD"); err != nil {
+	remote := "origin"
+	if g.Remote != "" {
+		remote = g.Remote
+	}
+	if err := g.run(ctx, "ls-remote", remote, "HEAD"); err != nil {
 		return &RemoteAccessError{Err: err}
 	}
 	return nil
@@ -140,18 +199,25 @@ func (g Git) CheckRemoteAccess(ctx context.Context) error {
 // passed as an argument or persisted by Cifrarium.
 func (g Git) VerifyPrivate(ctx context.Context) error {
 	if g.Remote == "" {
-		return nil
+		return fmt.Errorf("GitHub privacy cannot be verified for a local-only provider")
 	}
-	remote, err := g.remoteURL(ctx)
-	if err != nil {
-		return &RemoteAccessError{Err: err}
+	remote := g.Remote
+	if remote == "" {
+		var err error
+		remote, err = g.remoteURL(ctx)
+		if err != nil {
+			return &RemoteAccessError{Err: err}
+		}
 	}
 	slug, err := githubRepoSlug(remote)
 	if err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "gh", "api", "repos/"+slug, "--jq", ".private")
-	cmd.Dir = g.Dir
+	cmd, cleanup, err := g.commandAtDir(ctx, "gh", "api", "repos/"+slug, "--jq", ".private")
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	out, err := cmd.Output()
 	if err != nil {
 		return &RemoteAccessError{Err: fmt.Errorf("GitHub privacy check unavailable: %w", err)}
@@ -162,62 +228,75 @@ func (g Git) VerifyPrivate(ctx context.Context) error {
 	return nil
 }
 
-func (g Git) writeObject(ctx context.Context, relative string, data []byte) error {
-	path, err := g.safePath(relative)
+func (g Git) validateRepositoryConfig(ctx context.Context) error {
+	if g.Dir == "" {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(g.Dir, ".git")); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	cmd, cleanup, err := g.commandAtDir(ctx, "git", "config", "--local", "--name-only", "--get-regexp", `^(filter\.|credential\.helper$|core\.(sshCommand|attributesFile|hooksPath|fsmonitor)|include\.|url\..*\.(insteadOf|pushInsteadOf)|remote\..*\.(uploadpack|receivepack)|http\.)`)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
+	defer cleanup()
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("cannot inspect local Git configuration: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
+	if strings.TrimSpace(string(out)) != "" {
+		return fmt.Errorf("unsafe local Git configuration rejected")
 	}
-	return os.Rename(tmp, path)
+	return nil
 }
 
-func (g Git) safePath(relative string) (string, error) {
-	if relative == "" || filepath.IsAbs(relative) || filepath.Clean(relative) != relative || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
-		return "", fmt.Errorf("unsafe provider path")
+func (g Git) writeObject(ctx context.Context, relative string, data []byte) error {
+	max := limits.MaxSnapshotCipherBytes
+	if strings.HasPrefix(relative, "catalog"+string(filepath.Separator)) {
+		max = limits.MaxManifestBytes
 	}
-	root, err := os.Lstat(g.Dir)
-	if err != nil {
-		return "", err
-	}
-	if root.Mode()&os.ModeSymlink != 0 || !root.IsDir() {
-		return "", fmt.Errorf("provider directory path rejected")
-	}
-	path := filepath.Join(g.Dir, relative)
-	current := g.Dir
-	for _, component := range strings.Split(relative, string(filepath.Separator)) {
-		if component == "" || component == "." {
-			continue
-		}
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if os.IsNotExist(err) {
-			return path, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("provider symlink path rejected: %s", relative)
-		}
-	}
-	return path, nil
+	return writeProviderFileLimited(g.Dir, relative, data, max)
 }
-func (g Git) commitAndPush(ctx context.Context, message string, paths ...string) error {
-	args := append([]string{"add", "--"}, paths...)
-	if err := g.run(ctx, args...); err != nil {
-		return err
+
+func (g Git) commitAndPush(ctx context.Context, message string, objects ...gitObject) error {
+	for _, object := range objects {
+		cmd, cleanup, err := g.commandAtDir(ctx, "git", "hash-object", "-w", "--stdin")
+		if err != nil {
+			return err
+		}
+		cmd.Stdin = bytes.NewReader(object.data)
+		hash, err := cmd.Output()
+		cleanup()
+		if err != nil {
+			return fmt.Errorf("hash provider object %s: %w", object.path, err)
+		}
+		hashText := strings.TrimSpace(string(hash))
+		if len(hashText) != 40 {
+			return fmt.Errorf("invalid Git object hash for %s", object.path)
+		}
+		if err := g.run(ctx, "update-index", "--add", "--cacheinfo", "100644,"+hashText+","+object.path); err != nil {
+			return err
+		}
 	}
 	if err := g.run(ctx, "commit", "-m", message); err != nil {
-		return err
+		// A retry after a successful remote upload may have nothing new to
+		// commit. Continue to the push so a prior local-only commit is still
+		// delivered, and let the remote remain the idempotency boundary.
+		if !strings.Contains(err.Error(), "nothing to commit") {
+			return err
+		}
 	}
 	if g.Remote != "" {
-		return g.run(ctx, "push", "origin", "HEAD")
+		if err := g.VerifyPrivate(ctx); err != nil {
+			return fmt.Errorf("privacy verification before push failed: %w", err)
+		}
+		return g.run(ctx, "push", g.Remote, "HEAD")
 	}
 	return nil
 }
@@ -270,9 +349,7 @@ func (g Git) Ensure(ctx context.Context) error {
 }
 
 func (g Git) remoteURL(ctx context.Context) (string, error) {
-	c := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
-	c.Dir = g.Dir
-	out, err := c.Output()
+	out, err := g.output(ctx, "remote", "get-url", "origin")
 	if err != nil {
 		return "", err
 	}

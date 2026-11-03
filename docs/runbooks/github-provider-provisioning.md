@@ -5,6 +5,17 @@ does not give Cifrarium a GitHub API token, create repositories automatically,
 or upload plaintext. The daemon continues to use native Git and receives only
 the configured local checkout, remote URL, and recovery shares.
 
+This runbook protects data at rest and the remote provider boundary. It does
+not make restored plaintext safe from a process running as the same Unix user;
+that process can read user files and interfere with the user daemon. The
+provider privacy check is also a pre-push operational check, not an atomic
+GitHub policy lock. Use organization/repository controls when the privacy
+policy must be enforced against other administrators.
+
+For agent-operated work, read [`AGENTS.md`](../../AGENTS.md) and the
+[agent usage contract](../AGENT-USAGE.md). Agents must not activate the
+daemon, import recovery shares, or push without explicit human confirmation.
+
 ## 1. Prepare the local provider checkout
 
 Use a dedicated directory with mode `0700`. It must not contain application

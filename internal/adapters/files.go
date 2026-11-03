@@ -3,14 +3,13 @@ package adapters
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"golang.org/x/sys/unix"
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 type File struct {
@@ -54,7 +53,13 @@ func (Starship) Collect(home string) ([]File, error) {
 	return collect(home, []string{".config/starship.toml"}, nil)
 }
 func collect(home string, paths, excluded []string) ([]File, error) {
+	if len(paths) > limits.MaxCapturedFiles {
+		return nil, fmt.Errorf("capture contains too many files")
+	}
 	for _, p := range paths {
+		if err := validateCapturePath(p); err != nil {
+			return nil, err
+		}
 		for _, x := range excluded {
 			if p == x || strings.HasPrefix(p, x+"/") {
 				return nil, fmt.Errorf("allowlist includes excluded path %s", p)
@@ -129,7 +134,14 @@ func collectCustomPaths(root string) ([]string, error) {
 		if !entry.Type().IsRegular() {
 			return fmt.Errorf("unsupported custom entry: %s", path)
 		}
-		paths = append(paths, filepath.Join(".oh-my-zsh", "custom", rel))
+		if len(paths) >= limits.MaxCapturedFiles {
+			return fmt.Errorf("capture contains too many files")
+		}
+		candidate := filepath.Join(".oh-my-zsh", "custom", rel)
+		if err := validateCapturePath(candidate); err != nil {
+			return err
+		}
+		paths = append(paths, candidate)
 		return nil
 	})
 	if err != nil {
@@ -163,16 +175,12 @@ func readStableWith(read func() ([]byte, error)) ([]byte, error) {
 	return nil, fmt.Errorf("file changed while reading")
 }
 
-func readNoFollow(path string) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, err
+func validateCapturePath(path string) error {
+	if path == "" || filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return fmt.Errorf("unsafe capture path %q", path)
 	}
-	f := os.NewFile(uintptr(fd), path)
-	if f == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("cannot open %s", path)
+	if len(path) > limits.MaxPathBytes || len(strings.Split(path, string(filepath.Separator))) > limits.MaxPathDepth {
+		return fmt.Errorf("capture path exceeds limits")
 	}
-	defer f.Close()
-	return io.ReadAll(f)
+	return nil
 }
