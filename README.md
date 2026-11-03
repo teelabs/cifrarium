@@ -48,41 +48,46 @@ only for the GitHub privacy diagnostic.
 
 ### Recommended installation command
 
-Choose the release version deliberately. The following example installs the
-signed `0.4.0` release from the canonical public origin and verifies the
-installer bundle before executing it:
+Choose the release version deliberately. The normal release flow is a single
+command that streams the release installer from the canonical public origin.
+The installer then downloads and verifies the selected archive, manifest,
+checksum, and Cosign bundle before installing it:
 
 ~~~sh
-set -eu
+bash -o pipefail -c \
+  'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
+  bash 0.4.0
+~~~
 
-CIFRARIUM_VERSION=0.4.0
-CIFRARIUM_INSTALLER=/tmp/cifrarium-install.sh
-CIFRARIUM_INSTALLER_BUNDLE=/tmp/cifrarium-install.sh.bundle
+Equivalent `wget` form:
 
+~~~sh
+bash -o pipefail -c \
+  'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
+  bash 0.4.0
+~~~
+
+The stream form is convenient, but it does not let you inspect the installer
+bundle before execution. For a higher-assurance installation, download
+`install.sh` and `install.sh.bundle`, verify the script with the fixed GitHub
+Actions identity and OIDC issuer, then execute the local script:
+
+~~~sh
 curl --fail --silent --show-error --location \
-  https://usecifrarium.pages.dev/install.sh \
-  --output "$CIFRARIUM_INSTALLER"
+  https://usecifrarium.pages.dev/install.sh -o /tmp/cifrarium-install.sh
 curl --fail --silent --show-error --location \
-  https://usecifrarium.pages.dev/install.sh.bundle \
-  --output "$CIFRARIUM_INSTALLER_BUNDLE"
-
-cosign verify-blob \
-  --bundle "$CIFRARIUM_INSTALLER_BUNDLE" \
+  https://usecifrarium.pages.dev/install.sh.bundle -o /tmp/cifrarium-install.sh.bundle
+cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-identity-regexp \
   '^https://github.com/teelabs/cifrarium/.github/workflows/release.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  "$CIFRARIUM_INSTALLER"
-
-chmod 0755 "$CIFRARIUM_INSTALLER"
-"$CIFRARIUM_INSTALLER" --version "$CIFRARIUM_VERSION"
-"$HOME/.local/bin/cifrarium" --version
+  /tmp/cifrarium-install.sh
+chmod 0755 /tmp/cifrarium-install.sh
+/tmp/cifrarium-install.sh --version 0.4.0
 ~~~
 
-The installer downloads the selected archive and manifest over HTTPS, checks
-the archive checksum, verifies its Cosign bundle, validates archive contents,
-and installs atomically. It refuses invalid metadata, signatures, checksums,
-architectures, or paths. It does not start or enable the daemon unless
-`--enable` is supplied.
+Both forms refuse invalid metadata, signatures, checksums, architectures, or
+paths. Neither form starts or enables the daemon unless `--enable` is supplied.
 
 The default prefix is `$HOME/.local`; the active executable is
 `$HOME/.local/bin/cifrarium`. Add it to `PATH` if needed:
@@ -92,11 +97,12 @@ export PATH="$HOME/.local/bin:$PATH"
 cifrarium --version
 ~~~
 
-Use a different absolute, user-owned prefix when required:
+Use a different absolute, user-owned prefix in the stream form when required:
 
 ~~~sh
-"$CIFRARIUM_INSTALLER" --version "$CIFRARIUM_VERSION" \
-  --prefix "$HOME/opt/cifrarium"
+bash -o pipefail -c \
+  'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
+  bash 0.4.0 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -106,8 +112,12 @@ Install another explicit version to stage it and keep the previous version
 available for rollback:
 
 ~~~sh
-"$CIFRARIUM_INSTALLER" --version 0.4.1
-"$CIFRARIUM_INSTALLER" --rollback 0.4.0
+bash -o pipefail -c \
+  'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
+  bash 0.4.1
+bash -o pipefail -c \
+  'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
+  bash 0.4.0
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch
@@ -115,7 +125,9 @@ or execute a new artifact. Uninstall is destructive to the selected installed
 versions, links, and Cifrarium user service, so it requires an explicit flag:
 
 ~~~sh
-"$CIFRARIUM_INSTALLER" --uninstall --yes
+bash -o pipefail -c \
+  'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --uninstall --prefix "$1" --yes' \
+  bash "$HOME/.local"
 ~~~
 
 Uninstall does not remove the vault, provider checkout, recovery shares, or
