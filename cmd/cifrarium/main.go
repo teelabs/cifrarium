@@ -229,7 +229,11 @@ func runSetup(root, home string, nonInteractive bool, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	vault, err := store.OpenWithGuard(root, op, signing, keyringStore)
+	return runSetupWithKeys(root, home, nonInteractive, output, op, signing, keyringStore)
+}
+
+func runSetupWithKeys(root, home string, nonInteractive bool, output io.Writer, op []byte, signing ed25519.PrivateKey, guard store.HeadGuard) error {
+	vault, err := store.OpenWithGuard(root, op, signing, guard)
 	if err != nil {
 		return err
 	}

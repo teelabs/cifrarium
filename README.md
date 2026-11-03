@@ -60,7 +60,7 @@ side effects:
 
 ~~~sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.5.0 --non-interactive
+  | bash -s -- --version 0.5.1 --non-interactive
 ~~~
 
 The daemon is never enabled by non-interactive installation.
@@ -70,7 +70,7 @@ Equivalent `wget` form:
 ~~~sh
 bash -o pipefail -c \
   'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.5.0
+  bash 0.5.1
 ~~~
 
 The stream form is convenient, but it does not let you inspect the installer
@@ -89,7 +89,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.5.0 --non-interactive
+/tmp/cifrarium-install.sh --version 0.5.1 --non-interactive
 ~~~
 
 Both forms refuse invalid metadata, signatures, checksums, architectures, or
@@ -108,7 +108,7 @@ Use a different absolute, user-owned prefix in the stream form when required:
 ~~~sh
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
-  bash 0.5.0 "$HOME/opt/cifrarium"
+  bash 0.5.1 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -123,7 +123,7 @@ bash -o pipefail -c \
   bash 0.4.1
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
-  bash 0.5.0
+  bash 0.5.1
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch

@@ -90,7 +90,15 @@ func TestMCPHandlerReturnsReadOnlyRestorePlan(t *testing.T) {
 func TestSetupNonInteractiveDoesNotLeakSharesOrCapture(t *testing.T) {
 	root := t.TempDir()
 	var output strings.Builder
-	if err := runSetup(root, t.TempDir(), true, &output); err != nil {
+	op := make([]byte, 32)
+	if _, err := rand.Read(op); err != nil {
+		t.Fatal(err)
+	}
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runSetupWithKeys(root, t.TempDir(), true, &output, op, signing, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "Modo não interativo") {

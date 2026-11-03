@@ -4,6 +4,13 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-03
+
+### Fixed
+
+- Made the guided setup regression test independent of the host Secret Service
+  keyring, so release CI validates the non-interactive contract consistently.
+
 ## [0.5.0] - 2026-11-03
 
 ### Added
