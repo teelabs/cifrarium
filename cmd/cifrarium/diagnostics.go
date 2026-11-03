@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,6 +66,10 @@ type doctorReport struct {
 	MCP      componentReport `json:"mcp"`
 	Adapters []adapterReport `json:"adapters"`
 	Provider componentReport `json:"provider"`
+}
+
+var loadDoctorKeys = func() ([]byte, ed25519.PrivateKey, error) {
+	return store.NewKeyring().LoadExisting()
 }
 
 func (r doctorReport) exitCode() int {
@@ -169,8 +174,7 @@ func runDoctor(root, home, providerDir, providerRemote string, _ io.Writer) (doc
 		Provider: componentReport{Name: "Provider", State: "not-configured", Severity: severityWarning, Detail: "optional"},
 	}
 
-	keyringStore := store.NewKeyring()
-	op, signing, keyErr := keyringStore.LoadExisting()
+	op, signing, keyErr := loadDoctorKeys()
 	if keyErr == nil {
 		if _, err := os.Stat(root); os.IsNotExist(err) {
 			report.Vault.State = "not-initialized"

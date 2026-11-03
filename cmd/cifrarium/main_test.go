@@ -16,6 +16,7 @@ import (
 	"github.com/teelabs/cifrarium/internal/daemon"
 	"github.com/teelabs/cifrarium/internal/mcp"
 	"github.com/teelabs/cifrarium/internal/store"
+	"github.com/zalando/go-keyring"
 )
 
 func TestRenderStatusHumanUsesUsefulLabels(t *testing.T) {
@@ -122,6 +123,11 @@ func TestInspectAdaptersDoesNotReadConfigurationContents(t *testing.T) {
 func TestRunDoctorDoesNotCreateVaultOrKeyringState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "vault")
 	var output bytes.Buffer
+	originalLoadDoctorKeys := loadDoctorKeys
+	loadDoctorKeys = func() ([]byte, ed25519.PrivateKey, error) {
+		return nil, nil, keyring.ErrNotFound
+	}
+	t.Cleanup(func() { loadDoctorKeys = originalLoadDoctorKeys })
 	report, err := runDoctor(root, t.TempDir(), "", "", &output)
 	if err != nil {
 		t.Fatal(err)
@@ -129,8 +135,8 @@ func TestRunDoctorDoesNotCreateVaultOrKeyringState(t *testing.T) {
 	if report.exitCode() != 0 {
 		t.Fatalf("doctor exit code = %d, report=%#v", report.exitCode(), report)
 	}
-	if report.Vault.State != "not-initialized" {
-		t.Fatalf("vault state = %q, want not-initialized", report.Vault.State)
+	if report.Vault.State != "not-configured" {
+		t.Fatalf("vault state = %q, want not-configured", report.Vault.State)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("doctor created vault root: %v", err)
