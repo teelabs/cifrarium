@@ -124,4 +124,3 @@
 - [ ] Run `gofmt`, `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, `git diff --check`, secret scan, and version/changelog verification.
 - [ ] Invoke `version-changelog` before any local commit or integration decision; classify this as security/bugfix and determine the SemVer transition.
 - [ ] Obtain an independent red-team and contract/test review. Critical or important open findings block readiness.
-

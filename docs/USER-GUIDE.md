@@ -263,4 +263,3 @@ restore.plan is planning only. Agents must state this clearly.
 - publish, merge, or deploy merely because local tests pass.
 
 For development, use the checks described in the README and the root AGENTS.md.
-

@@ -41,4 +41,3 @@ git diff --check
 
 Before claiming completion, cite the exact command, result, changed paths, and
 remaining residuals.
-

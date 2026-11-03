@@ -264,4 +264,3 @@ An agent may claim a Cifrarium task complete only when:
 
 Passing tests is evidence for code changes, not permission to push, merge,
 publish, deploy, activate the daemon, or import recovery keys.
-
