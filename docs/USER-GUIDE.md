@@ -39,7 +39,7 @@ Check the current interface before copying examples:
 go run ./cmd/cifrarium -h
 ~~~
 
-The main commands are status, snapshot, recovery-shares, recover,
+The main commands are status, doctor, snapshot, recovery-shares, recover,
 migrate-catalog, provider-health, and daemon.
 
 ## 3. First local use without a provider
@@ -171,6 +171,21 @@ A running process is not proof that an upload succeeded. Check logs, queue
 state, and provider-health.
 
 ## 7. Common failures and response
+
+### Read-only health check
+
+To see the state of the local vault, keyring, daemon, MCP socket, adapters, and
+provider in one report, run:
+
+~~~sh
+ROOT="$HOME/.local/share/cifrarium"
+cifrarium -root "$ROOT" -command=doctor
+~~~
+
+The command is read-only. It does not initialize missing keyring material,
+create a vault, enable the daemon, or send data. If the provider is configured,
+it performs the remote access and private-repository checks as part of the
+report. Use `-format=json` for scripts and agents.
 
 ### Provider unavailable
 

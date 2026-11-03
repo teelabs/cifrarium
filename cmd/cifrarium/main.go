@@ -36,12 +36,13 @@ func main() {
 	}
 	home, _ := os.UserHomeDir()
 	root := flag.String("root", filepath.Join(home, ".local", "share", "cifrarium"), "encrypted vault directory")
-	cmd := flag.String("command", "status", "status or snapshot")
+	cmd := flag.String("command", "status", "status, doctor, or snapshot")
 	providerDir := flag.String("provider-dir", os.Getenv("CIFRARIUM_PROVIDER_DIR"), "local Git provider directory (daemon only)")
 	providerRemote := flag.String("provider-remote", os.Getenv("CIFRARIUM_PROVIDER_REMOTE"), "HTTPS GitHub remote URL (daemon only; no embedded credentials)")
 	verifyPrivate := flag.Bool("verify-private", false, "verify GitHub repository privacy with gh (provider-health only)")
 	showVersion := flag.Bool("version", false, "print the Cifrarium version")
 	nonInteractive := flag.Bool("non-interactive", false, "never prompt, capture, upload, or enable services")
+	formatValue := flag.String("format", "human", "output format: human or json (status and doctor)")
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	for _, name := range []string{"CIFRARIUM_RECOVERY_SHARE_1", "CIFRARIUM_RECOVERY_SHARE_2"} {
@@ -50,6 +51,11 @@ func main() {
 		}
 	}
 	flag.Parse()
+	format, err := parseOutputFormat(*formatValue)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cifrarium:", err)
+		os.Exit(2)
+	}
 	if *showVersion {
 		fmt.Println(version)
 		return
@@ -75,6 +81,21 @@ func main() {
 			}
 		}
 		fmt.Printf("{\"provider\":\"github\",\"remote\":%q,\"status\":\"ok\"}\n", *providerRemote)
+		return
+	}
+	if *cmd == "doctor" {
+		report, err := runDoctor(*root, home, *providerDir, *providerRemote, os.Stdout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: doctor failed: %v\n", err)
+			os.Exit(1)
+		}
+		if err := renderDoctor(os.Stdout, report, format); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(2)
+		}
+		if code := report.exitCode(); code != 0 {
+			os.Exit(code)
+		}
 		return
 	}
 	keyringStore := store.NewKeyring()
@@ -123,8 +144,19 @@ func main() {
 	}
 	switch *cmd {
 	case "status":
-		b, _ := json.Marshal(map[string]string{"vault": *root, "signer": fmt.Sprintf("%x", sign.Public())})
-		fmt.Println(string(b))
+		report := statusReport{
+			Vault:        *root,
+			VaultState:   "ready",
+			KeyringState: "available",
+			Snapshots:    countSnapshots(*root),
+			Head:         v.Head,
+			Pending:      countPending(*root, op),
+			Signer:       fmt.Sprintf("%x", sign.Public()),
+		}
+		if err := renderStatus(os.Stdout, report, format); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(2)
+		}
 	case "recovery-shares":
 		shares, err := store.RecoveryShares(op, sign)
 		if err != nil {
@@ -218,9 +250,17 @@ func main() {
 		default:
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cifrarium setup | -command=status|snapshot|recovery-shares|recover|migrate-catalog|provider-health -recovery-share label:value")
+		fmt.Fprintln(os.Stderr, "usage: cifrarium setup | -command=status|doctor|snapshot|recovery-shares|recover|migrate-catalog|provider-health -format=human|json -recovery-share label:value")
 		os.Exit(2)
 	}
+}
+
+func parseOutputFormat(value string) (outputFormat, error) {
+	format := outputFormat(value)
+	if format != outputHuman && format != outputJSON {
+		return "", fmt.Errorf("unsupported output format %q; use human or json", value)
+	}
+	return format, nil
 }
 
 func runSetup(root, home string, nonInteractive bool, output io.Writer) error {

@@ -53,7 +53,8 @@ credentials. It is sufficient to check whether required variables are present.
 
 | Operation | Classification | Agent default |
 | --- | --- | --- |
-| `status` | Read-only | May run and report |
+| `status` | Read-only, human output by default | May run and report; use `-format=json` for parsing |
+| `doctor` | Read-only local and configured-provider diagnostic | May run and report; it never initializes state |
 | `provider-health` | Read-only remote diagnostic | May run with supplied non-secret paths; report result |
 | `snapshot` | Local mutation | Run only when explicitly requested |
 | `recovery-shares` | Secret creation/display | Human-only by default; never capture output |
@@ -112,8 +113,24 @@ Proceed?
 go run ./cmd/cifrarium -root "$ROOT" -command=status
 ~~~
 
-Success means exit code zero and a structured status response. It does not prove
-that the provider is reachable or that a backup exists.
+Success means exit code zero and a readable status response. Use
+`-format=json` for a structured response. It does not prove that the provider
+is reachable or that a backup exists.
+
+### 5.1.1 Run the complete doctor
+
+~~~sh
+cifrarium -root "$ROOT" -command=doctor -format=json
+~~~
+
+`doctor` does not create keyring material, a vault, a provider checkout, a
+socket, or a daemon. It reports vault/keyring integrity, systemd user service
+state, MCP socket reachability, local adapter paths, and provider state. When a
+provider is configured it performs the remote access and GitHub privacy checks.
+
+Exit codes are stable: `0` means healthy or only optional warnings, `1` means a
+required or configured component has a problem, and `2` means invalid CLI use.
+Do not treat an `overall` report as proof that a remote upload completed.
 
 ### 5.2 Create a local snapshot
 

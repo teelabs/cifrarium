@@ -60,7 +60,7 @@ side effects:
 
 ~~~sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.6.1 --non-interactive
+  | bash -s -- --version 0.7.0 --non-interactive
 ~~~
 
 The daemon is never enabled by non-interactive installation.
@@ -76,7 +76,7 @@ Equivalent `wget` form:
 ~~~sh
 bash -o pipefail -c \
   'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.6.1
+  bash 0.7.0
 ~~~
 
 The stream form is convenient, but it does not let you inspect the installer
@@ -95,7 +95,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.6.1 --non-interactive
+/tmp/cifrarium-install.sh --version 0.7.0 --non-interactive
 ~~~
 
 Both forms refuse invalid metadata, signatures, checksums, architectures, or
@@ -114,7 +114,7 @@ Use a different absolute, user-owned prefix in the stream form when required:
 ~~~sh
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
-  bash 0.6.1 "$HOME/opt/cifrarium"
+  bash 0.7.0 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -129,7 +129,7 @@ bash -o pipefail -c \
   bash 0.4.1
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
-  bash 0.6.1
+  bash 0.7.0
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch
@@ -154,11 +154,13 @@ Use a named root so scripts, humans, and agents agree on the data location:
 ROOT="$HOME/.local/share/cifrarium"
 
 cifrarium -root "$ROOT" -command=status
+cifrarium -root "$ROOT" -command=status -format=json
 cifrarium -root "$ROOT" -command=snapshot
 cifrarium -root "$ROOT" -command=status
 ~~~
 
-The first `status` initializes keyring material when the user keyring has no
+The normal `status` output is written for humans. Use `-format=json` when a
+script or agent needs stable fields. The first `status` initializes keyring material when the user keyring has no
 Cifrarium entry. The first `snapshot` is the initial ingestion. Success means
 that it prints a snapshot identifier and the following `status` exits zero.
 The snapshot is encrypted before it is written to the vault; do not inspect
@@ -178,6 +180,31 @@ cache. Symlinks, unsafe paths, unsupported file types, changing files, and
 oversized captures are rejected. There is currently no user-editable adapter
 configuration file: adding a new adapter or changing an allowlist is a code
 change requiring review.
+
+## Diagnose the local installation
+
+Use `doctor` for one read-only report of the vault, keyring, daemon, local MCP
+socket, adapters, and optional GitHub provider:
+
+~~~sh
+cifrarium -root "$ROOT" -command=doctor
+~~~
+
+The report does not create keys, a vault, a provider checkout, a socket, or a
+service. When a GitHub provider is configured, the doctor also checks remote
+access and repository privacy. An unconfigured provider and a disabled
+optional daemon are warnings; a configured provider that cannot be reached,
+an invalid vault, or a running daemon without a working MCP socket is a
+problem and returns exit code 1.
+
+For scripts and agents, request structured output and preserve the exit code:
+
+~~~sh
+cifrarium -root "$ROOT" -command=doctor -format=json
+~~~
+
+The remote path belongs to the provider. Adapters report only their local
+allowlisted paths; they do not have independent remote configuration.
 
 ## Generate and protect recovery shares
 

@@ -44,31 +44,23 @@ func (k *Keyring) LoadOrCreate() (operational []byte, signing ed25519.PrivateKey
 	)
 }
 
+// LoadExisting reads the Cifrarium keyring entry without creating one. It is
+// intended for read-only diagnostics and health checks.
+func (k *Keyring) LoadExisting() (operational []byte, signing ed25519.PrivateKey, err error) {
+	raw, err := keyring.Get(service, k.User)
+	if err != nil {
+		return nil, nil, err
+	}
+	return decodeSecrets(raw)
+}
+
 type keyringGet func(service, user string) (string, error)
 type keyringSet func(service, user, password string) error
 
 func loadOrCreate(user string, get keyringGet, set keyringSet) (operational []byte, signing ed25519.PrivateKey, err error) {
 	raw, err := get(service, user)
 	if err == nil {
-		var s secrets
-		if json.Unmarshal([]byte(raw), &s) != nil {
-			return nil, nil, fmt.Errorf("invalid keyring payload")
-		}
-		operational, err = base64.RawStdEncoding.DecodeString(s.Operational)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(operational) != 32 {
-			return nil, nil, fmt.Errorf("invalid operational key length")
-		}
-		p, err := base64.RawStdEncoding.DecodeString(s.SigningPrivate)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(p) != ed25519.PrivateKeySize {
-			return nil, nil, fmt.Errorf("invalid signing key length")
-		}
-		return operational, ed25519.PrivateKey(p), nil
+		return decodeSecrets(raw)
 	}
 	if !errors.Is(err, keyring.ErrNotFound) {
 		return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
@@ -87,6 +79,28 @@ func loadOrCreate(user string, get keyringGet, set keyringSet) (operational []by
 		return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
 	}
 	return operational, signing, nil
+}
+
+func decodeSecrets(raw string) (operational []byte, signing ed25519.PrivateKey, err error) {
+	var s secrets
+	if json.Unmarshal([]byte(raw), &s) != nil {
+		return nil, nil, fmt.Errorf("invalid keyring payload")
+	}
+	operational, err = base64.RawStdEncoding.DecodeString(s.Operational)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(operational) != 32 {
+		return nil, nil, fmt.Errorf("invalid operational key length")
+	}
+	p, err := base64.RawStdEncoding.DecodeString(s.SigningPrivate)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(p) != ed25519.PrivateKeySize {
+		return nil, nil, fmt.Errorf("invalid signing key length")
+	}
+	return operational, ed25519.PrivateKey(p), nil
 }
 
 // RecoveryShares encodes both keyring secrets so a fresh environment can

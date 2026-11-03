@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -16,6 +17,128 @@ import (
 	"github.com/teelabs/cifrarium/internal/mcp"
 	"github.com/teelabs/cifrarium/internal/store"
 )
+
+func TestRenderStatusHumanUsesUsefulLabels(t *testing.T) {
+	report := statusReport{
+		Vault:        "/home/test/.local/share/cifrarium",
+		VaultState:   "ready",
+		KeyringState: "available",
+		Snapshots:    3,
+		Head:         "snapshot-123",
+		Pending:      2,
+	}
+	var out bytes.Buffer
+	if err := renderStatus(&out, report, outputHuman); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{
+		"Vault: ready",
+		"Path: /home/test/.local/share/cifrarium",
+		"Keyring: available",
+		"Snapshots: 3",
+		"Pending uploads: 2",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("human status missing %q in %q", want, text)
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(text), "{") || strings.Contains(text, "signer") {
+		t.Fatalf("human status leaked machine-oriented output: %q", text)
+	}
+}
+
+func TestRenderStatusJSONIsStructured(t *testing.T) {
+	report := statusReport{Vault: "/vault", VaultState: "ready", KeyringState: "available", Snapshots: 1, Head: "head", Pending: 0}
+	var out bytes.Buffer
+	if err := renderStatus(&out, report, outputJSON); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("json output: %v", err)
+	}
+	if decoded["vault"] != "/vault" || decoded["vaultState"] != "ready" {
+		t.Fatalf("unexpected status JSON: %#v", decoded)
+	}
+}
+
+func TestDoctorExitCodeTreatsOptionalProviderAsWarning(t *testing.T) {
+	report := doctorReport{Provider: componentReport{State: "not-configured", Severity: severityWarning}}
+	if got := report.exitCode(); got != 0 {
+		t.Fatalf("exit code = %d, want 0 for optional provider warning", got)
+	}
+	report.Provider = componentReport{State: "unreachable", Severity: severityProblem}
+	if got := report.exitCode(); got != 1 {
+		t.Fatalf("exit code = %d, want 1 for provider problem", got)
+	}
+}
+
+func TestRenderDoctorHumanIncludesOperationalSections(t *testing.T) {
+	report := doctorReport{
+		Vault:    componentReport{Name: "Vault", State: "ready", Detail: "/vault"},
+		Daemon:   componentReport{Name: "Daemon", State: "disabled", Detail: "systemd user service"},
+		MCP:      componentReport{Name: "MCP", State: "not-running", Detail: "/vault/cifrarium.sock"},
+		Adapters: []adapterReport{{Name: "codex", State: "configured", Paths: []string{"~/.codex/config.toml"}}},
+		Provider: componentReport{Name: "Provider", State: "not-configured", Detail: "optional"},
+	}
+	var out bytes.Buffer
+	if err := renderDoctor(&out, report, outputHuman); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"Vault", "Daemon", "MCP", "Adapters", "Provider", "codex", "disabled", "not-running"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("doctor output missing %q in %q", want, text)
+		}
+	}
+}
+
+func TestInspectAdaptersDoesNotReadConfigurationContents(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte("secret-looking config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reports := inspectAdapters(home)
+	var codex adapterReport
+	for _, report := range reports {
+		if report.Name == "codex" {
+			codex = report
+		}
+	}
+	if codex.State != "partial" {
+		t.Fatalf("codex state = %q, want partial: %#v", codex.State, codex)
+	}
+	for _, path := range codex.Paths {
+		if strings.Contains(path, "secret-looking") {
+			t.Fatalf("adapter diagnostic leaked file contents: %#v", codex)
+		}
+	}
+}
+
+func TestRunDoctorDoesNotCreateVaultOrKeyringState(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "vault")
+	var output bytes.Buffer
+	report, err := runDoctor(root, t.TempDir(), "", "", &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.exitCode() != 0 {
+		t.Fatalf("doctor exit code = %d, report=%#v", report.exitCode(), report)
+	}
+	if report.Vault.State != "not-initialized" {
+		t.Fatalf("vault state = %q, want not-initialized", report.Vault.State)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("doctor created vault root: %v", err)
+	}
+	if strings.Contains(output.String(), "secret") {
+		t.Fatalf("doctor output contains sensitive-looking material: %q", output.String())
+	}
+}
 
 func TestVersionFlag(t *testing.T) {
 	cmd := exec.Command("go", "run", ".", "-version")
