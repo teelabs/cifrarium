@@ -4,6 +4,8 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-03
+
 ### Fixed
 
 - Removed the repeated installer message prefix and drained piped input after
