@@ -39,8 +39,8 @@ name `usecifrarium`.
 
 - `/` serves the bootstrap status page.
 - `/bootstrap.json` serves the same status for automation.
-- `/install.sh` is intentionally absent until a signed installer release is
-  implemented and approved.
+- `/install.sh` returns an explicit 404 until a signed installer release is
+  implemented and approved; it must never fall back to the status page.
 - A future release must deploy the installer, checksums, signatures, and
   manifest as one verified bundle; it must not silently turn the bootstrap
   status into an executable installer.
