@@ -65,6 +65,12 @@ curl -fsSL https://usecifrarium.pages.dev/install.sh \
 
 The daemon is never enabled by non-interactive installation.
 
+The installer audits all dependencies before starting the download. If several
+tools are missing, it lists them together and prints a package-manager command
+or Cosign installation guidance. It never runs those commands or invokes
+`sudo` automatically; install the listed dependencies and run the same command
+again.
+
 Equivalent `wget` form:
 
 ~~~sh
