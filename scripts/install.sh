@@ -17,17 +17,24 @@ enable=0
 confirmed=0
 non_interactive=0
 
+drain_piped_input() {
+  if [[ ! -t 0 ]]; then
+    while IFS= read -r; do :; done || true
+  fi
+}
+
 die() {
-  printf 'cifrarium installer: %s\n' "$*" >&2
+  printf '%s\n' "$*" >&2
+  drain_piped_input
   exit 1
 }
 
 step() {
-  printf 'cifrarium installer: %s...\n' "$*" >&2
+  printf '%s...\n' "$*" >&2
 }
 
 step_done() {
-  printf 'cifrarium installer: %s OK\n' "$*" >&2
+  printf '%s OK\n' "$*" >&2
 }
 
 dependency_suggestions() {
@@ -47,7 +54,7 @@ dependency_suggestions() {
   fi
 
   printf '\n' >&2
-  printf 'cifrarium installer: Install the missing dependencies, then run the command again.\n' >&2
+  printf 'Install the missing dependencies, then run the command again.\n' >&2
   case "$manager" in
     apt)
       printf '  sudo apt-get update && sudo apt-get install -y curl tar coreutils python3\n' >&2
@@ -93,11 +100,12 @@ audit_dependencies() {
     fi
   done
   if ((${#missing_dependencies[@]} > 0)); then
-    printf 'cifrarium installer: missing dependencies:\n' >&2
+    printf 'missing dependencies:\n' >&2
     for command_name in "${missing_dependencies[@]}"; do
       printf '  - %s\n' "$command_name" >&2
     done
     dependency_suggestions
+    drain_piped_input
     exit 1
   fi
 }
