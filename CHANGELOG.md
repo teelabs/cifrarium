@@ -4,6 +4,13 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Expanded the README into the operational entry point for signed Linux
+  installation, prerequisites, first snapshot ingestion, recovery-share
+  handling, GitHub provider setup, daemon activation, troubleshooting, and
+  human/agent safety guidance. Documentation-only; `VERSION` remains `0.4.0`.
+
 ## [0.4.0] - 2026-11-03
 
 ### Added
