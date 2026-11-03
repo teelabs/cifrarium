@@ -1,0 +1,116 @@
+# Linux Installer
+
+The release installer supports Linux `amd64` and `arm64`. It downloads a
+versioned archive from the `usecifrarium` Pages origin and verifies both its
+SHA-256 checksum and its keyless Cosign bundle before extracting anything.
+The installer host must provide `curl`, `tar`, `sha256sum`, `python3`, and
+`cosign`; `systemctl` is needed only with `--enable` or when removing an
+installed user service.
+
+## Install a release
+
+Choose an explicit release version. The installer does not resolve a mutable
+`latest` alias:
+
+```sh
+curl --fail --silent --show-error --location \
+  https://usecifrarium.pages.dev/install.sh \
+  -o /tmp/cifrarium-install.sh
+curl --fail --silent --show-error --location \
+  https://usecifrarium.pages.dev/install.sh.bundle \
+  -o /tmp/cifrarium-install.sh.bundle
+cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
+  --certificate-identity-regexp \
+  '^https://github.com/teelabs/cifrarium/.github/workflows/release.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  /tmp/cifrarium-install.sh
+chmod 0755 /tmp/cifrarium-install.sh
+/tmp/cifrarium-install.sh --version 0.4.0
+```
+
+The default prefix is `$HOME/.local`. The active executable is
+`$HOME/.local/bin/cifrarium`; add `$HOME/.local/bin` to `PATH` if necessary.
+The command installs files but does not start or enable the daemon.
+
+## Custom prefix and daemon activation
+
+Use a user-owned absolute prefix when the default is unsuitable:
+
+```sh
+/tmp/cifrarium-install.sh \
+  --version 0.4.0 \
+  --prefix "$HOME/opt/cifrarium"
+```
+
+After configuring `~/.config/cifrarium/daemon.env` and checking provider and
+recovery-share prerequisites, opt in to activation:
+
+```sh
+/tmp/cifrarium-install.sh --version 0.4.0 --enable
+systemctl --user status cifrarium.service
+```
+
+`--enable` runs `systemctl --user enable --now`. Without that flag no service
+manager command is invoked.
+
+## Upgrade and rollback
+
+Install another explicit version to retain the previous active target:
+
+```sh
+/tmp/cifrarium-install.sh --version 0.4.1
+/tmp/cifrarium-install.sh --rollback 0.4.0
+```
+
+Rollback only selects a version already staged under the prefix. It does not
+download or execute a new artifact.
+
+## Uninstall
+
+Uninstall is deliberately explicit because it removes the active links,
+version directory, and the Cifrarium user service:
+
+```sh
+/tmp/cifrarium-install.sh --uninstall --yes
+```
+
+The installer refuses this operation without `--yes` and does not remove
+files outside the selected prefix or the Cifrarium service path.
+
+## Agent operating contract
+
+Agents may install only an explicit version supplied by the operator or
+approved release policy. They must preserve the command output and report the
+selected prefix, architecture, and version. They must not pass `--enable`
+unless the operator has separately approved daemon activation and the daemon
+environment has been reviewed.
+
+Agents should treat any checksum, signature, archive-member, metadata, or
+platform failure as a hard stop. They must not replace the installer with a
+downloaded shell pipeline, disable TLS verification, use `--yes` implicitly,
+or retry a failed release with a different version.
+
+## Local release validation
+
+Maintainers can build and inspect both supported archives without signing
+credentials:
+
+```sh
+scripts/build-release.sh --out-dir /tmp/cifrarium-release
+scripts/verify-release.sh --dir /tmp/cifrarium-release
+scripts/install-test.sh
+```
+
+The lifecycle harness uses a temporary HTTPS server and a fake Cosign verifier
+only for installer control-flow tests. Production installation still requires
+the real `cosign` binary and a valid release bundle.
+
+## Release controls
+
+Before enabling the release workflows, repository administrators must configure
+the `release` and `installer-production` environments with required reviewers,
+protect or make immutable the `v*.*.*` tag pattern, and provide the deploy
+workflow with `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets. The
+release and deploy jobs reject tags whose commit is not an ancestor of `main`,
+and deploy rejects a tag whose version differs from the manifest. These
+controls are repository policy and cannot be proven by a checkout-only test.

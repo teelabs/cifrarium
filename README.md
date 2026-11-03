@@ -38,6 +38,10 @@ go run ./cmd/cifrarium -command=snapshot
 go run ./cmd/cifrarium -command=recovery-shares
 ```
 
+For a signed Linux release, use the [Linux installer guide](docs/INSTALLER.md).
+The installer requires an explicit version, verifies checksums and Cosign
+signatures, and does not enable the daemon unless `--enable` is supplied.
+
 The `recovery-shares` command prints three lines such as
 `cifrarium-1:BASE64_VALUE`. Store two different lines in separate protected
 locations. Cifrarium never stores recovery shares in the vault or provider.
@@ -109,8 +113,9 @@ confirmation. Remote MCP and autonomous mutation methods are not supported.
 ## Documentation
 
 - [Human user guide](docs/USER-GUIDE.md)
-- [Contrato operacional para agentes](docs/AGENT-USAGE.md)
-- [Instruções locais para agentes](AGENTS.md)
+- [Linux installer guide](docs/INSTALLER.md)
+- [Agent operating contract](docs/AGENT-USAGE.md)
+- [Local agent instructions](AGENTS.md)
 - [Canonical design](docs/superpowers/specs/2026-11-02-cifrarium-design.md)
 - [Security and red-team review](docs/security/2026-11-02-red-team-review.md)
 - [Brand guidance](docs/brand/README.md)

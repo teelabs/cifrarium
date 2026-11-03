@@ -22,6 +22,8 @@ import (
 
 type stringList []string
 
+var version = "dev"
+
 func (s *stringList) String() string     { return fmt.Sprint([]string(*s)) }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
@@ -32,6 +34,7 @@ func main() {
 	providerDir := flag.String("provider-dir", os.Getenv("CIFRARIUM_PROVIDER_DIR"), "local Git provider directory (daemon only)")
 	providerRemote := flag.String("provider-remote", os.Getenv("CIFRARIUM_PROVIDER_REMOTE"), "HTTPS GitHub remote URL (daemon only; no embedded credentials)")
 	verifyPrivate := flag.Bool("verify-private", false, "verify GitHub repository privacy with gh (provider-health only)")
+	showVersion := flag.Bool("version", false, "print the Cifrarium version")
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	for _, name := range []string{"CIFRARIUM_RECOVERY_SHARE_1", "CIFRARIUM_RECOVERY_SHARE_2"} {
@@ -40,6 +43,10 @@ func main() {
 		}
 	}
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	if *cmd == "provider-health" {
 		if *providerDir == "" || *providerRemote == "" {
 			fmt.Fprintln(os.Stderr, "cifrarium: provider-health requires -provider-dir and -provider-remote")
