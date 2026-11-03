@@ -35,10 +35,10 @@
 - Create: `distribution/installer/bootstrap.json`
 - Test: shell file-list and JSON validation checks
 
-- [ ] Write the bootstrap manifest and page with explicit `bootstrap-only`
+- [x] Write the bootstrap manifest and page with explicit `bootstrap-only`
   status and no install command.
-- [ ] Verify the bundle contains only the intended static files and valid JSON.
-- [ ] Verify no `.git`, secret, recovery-share, or executable installer path is
+- [x] Verify the bundle contains only the intended static files and valid JSON.
+- [x] Verify no `.git`, secret, recovery-share, or executable installer path is
   present.
 
 ### Task 2: Documentation and changelog
@@ -49,17 +49,17 @@
 - Modify: `README.md` only if the public bootstrap URL is verified and worth
   linking
 
-- [ ] Record the project name, public contract, and future release boundary.
-- [ ] Classify as deployment/bootstrap infrastructure; retain the current
+- [x] Record the project name, public contract, and future release boundary.
+- [x] Classify as deployment/bootstrap infrastructure; retain the current
   application version unless the release workflow changes it.
 
 ### Task 3: Cloudflare Pages deployment
 
 **External target:** Cloudflare Pages project `usecifrarium`
 
-- [ ] Authenticate Wrangler with the operator's Cloudflare account.
-- [ ] Confirm or create exactly the `usecifrarium` Pages project.
-- [ ] Deploy only `distribution/installer` with the explicit project name.
-- [ ] Fetch the returned public URL, `bootstrap.json`, and `/install.sh` to
+- [x] Authenticate Wrangler with the operator's Cloudflare account.
+- [x] Confirm or create exactly the `usecifrarium` Pages project.
+- [x] Deploy only `distribution/installer` with the explicit project name.
+- [x] Fetch the returned public URL, `bootstrap.json`, and `/install.sh` to
   verify the contract.
-- [ ] Record the deployment URL and deployment identifier in the issue tracker.
+- [x] Record the deployment URL and deployment identifier in the issue tracker.
