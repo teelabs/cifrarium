@@ -238,7 +238,7 @@ func (g Git) validateRepositoryConfig(ctx context.Context) error {
 		}
 		return err
 	}
-	cmd, cleanup, err := g.commandAtDir(ctx, "git", "config", "--local", "--name-only", "--get-regexp", `^(filter\.|credential\.helper$|core\.(sshCommand|attributesFile|hooksPath|fsmonitor)|include\.|url\..*\.(insteadOf|pushInsteadOf)|remote\..*\.(uploadpack|receivepack))`)
+	cmd, cleanup, err := g.commandAtDir(ctx, "git", "config", "--local", "--name-only", "--get-regexp", `^(filter\.|credential\.helper$|core\.(sshCommand|attributesFile|hooksPath|fsmonitor)|include\.|url\..*\.(insteadOf|pushInsteadOf)|remote\..*\.(uploadpack|receivepack)|http\.)`)
 	if err != nil {
 		return err
 	}
@@ -285,7 +285,12 @@ func (g Git) commitAndPush(ctx context.Context, message string, objects ...gitOb
 		}
 	}
 	if err := g.run(ctx, "commit", "-m", message); err != nil {
-		return err
+		// A retry after a successful remote upload may have nothing new to
+		// commit. Continue to the push so a prior local-only commit is still
+		// delivered, and let the remote remain the idempotency boundary.
+		if !strings.Contains(err.Error(), "nothing to commit") {
+			return err
+		}
 	}
 	if g.Remote != "" {
 		if err := g.VerifyPrivate(ctx); err != nil {

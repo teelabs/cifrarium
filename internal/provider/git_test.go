@@ -111,6 +111,22 @@ func TestGitRejectsExecutableLocalConfiguration(t *testing.T) {
 	}
 }
 
+func TestGitRejectsTransportLocalConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	g := Git{Dir: dir}
+	if err := g.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "config", "--local", "http.proxy", "http://attacker.invalid")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("configure transport setting: %v (%s)", err, out)
+	}
+	if err := g.UploadSnapshot(context.Background(), "id", []byte("cipher"), []byte(`{"snapshot":"id"}`)); err == nil {
+		t.Fatal("unsafe local transport configuration accepted")
+	}
+}
+
 func TestGitCommandStaysAnchoredWhenProviderPathIsReplaced(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "provider")
