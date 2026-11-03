@@ -38,6 +38,7 @@ jobs:
             RELEASE_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')"
           fi
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'RELEASE_TAG=%s\n' "$RELEASE_TAG" >>"$GITHUB_ENV"
           if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
             git fetch --unshallow origin
           else
@@ -64,8 +65,7 @@ jobs:
         run: |
           RELEASE_VERSION="$(jq -r '.version' dist/release/manifest.json)"
           test "$RELEASE_VERSION" = "$(tr -d '[:space:]' < VERSION)"
-          test "$RELEASE_VERSION" = "${{ inputs.release_tag }}" || \
-            test "v$RELEASE_VERSION" = "${{ inputs.release_tag }}"
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
           scripts/verify-release.sh --dir dist/release --require-signatures
 
       - name: Assemble Pages payload

@@ -4,6 +4,11 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the installer deploy workflow so workflow-run deployments preserve the
+  resolved release tag through signed-artifact verification.
+
 ## [0.6.0] - 2026-11-03
 
 ### Changed
