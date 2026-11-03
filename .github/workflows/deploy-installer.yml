@@ -7,6 +7,9 @@ on:
         description: Existing signed GitHub release tag to deploy
         required: true
         type: string
+  workflow_run:
+    workflows: ["Release Linux installer"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -14,6 +17,12 @@ permissions:
 jobs:
   deploy:
     name: deploy signed release to usecifrarium
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch != '')
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: installer-production
@@ -24,7 +33,7 @@ jobs:
       - name: Download signed release artifacts
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.workflow_run.head_branch }}
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           git fetch origin main --no-tags
