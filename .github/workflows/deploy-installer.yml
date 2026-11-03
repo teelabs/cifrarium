@@ -107,6 +107,8 @@ jobs:
             https://usecifrarium.pages.dev/install.sh -o "$public_dir/install.sh"
           grep -Fx '#!/usr/bin/env bash' "$public_dir/install.sh"
           curl --fail --silent --show-error --location --retry 8 --retry-delay 3 \
+            https://usecifrarium.pages.dev/install.sh.bundle -o "$public_dir/install.sh.bundle"
+          curl --fail --silent --show-error --location --retry 8 --retry-delay 3 \
             https://usecifrarium.pages.dev/manifest.json -o "$public_dir/manifest.json"
           jq -e '.product == "cifrarium" and (.releases | length == 2)' \
             "$public_dir/manifest.json"
