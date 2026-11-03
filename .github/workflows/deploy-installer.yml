@@ -38,7 +38,11 @@ jobs:
             RELEASE_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')"
           fi
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          git fetch origin main --no-tags
+          if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
+            git fetch --unshallow origin
+          else
+            git fetch origin main --no-tags
+          fi
           git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
           tag_commit="$(git rev-list -n 1 "${RELEASE_TAG}^{commit}")"
           git merge-base --is-ancestor "$tag_commit" origin/main
