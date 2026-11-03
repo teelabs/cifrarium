@@ -1,0 +1,108 @@
+name: Deploy installer channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed GitHub release tag to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy signed release to usecifrarium
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: installer-production
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download signed release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git fetch origin main --no-tags
+          git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          tag_commit="$(git rev-list -n 1 "${RELEASE_TAG}^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
+          mkdir -p dist/release
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'manifest.json' \
+            --pattern 'install.sh' \
+            --pattern 'install.sh.bundle' \
+            --pattern 'cifrarium-*.tar.gz' \
+            --pattern 'cifrarium-*.sha256' \
+            --pattern 'cifrarium-*.bundle' \
+            --dir dist/release
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+      - name: Verify signed release before deployment
+        run: |
+          RELEASE_VERSION="$(jq -r '.version' dist/release/manifest.json)"
+          test "$RELEASE_VERSION" = "$(tr -d '[:space:]' < VERSION)"
+          test "$RELEASE_VERSION" = "${{ inputs.release_tag }}" || \
+            test "v$RELEASE_VERSION" = "${{ inputs.release_tag }}"
+          scripts/verify-release.sh --dir dist/release --require-signatures
+
+      - name: Assemble Pages payload
+        run: |
+          cp dist/release/* distribution/installer/
+          rm -f distribution/installer/_redirects
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('distribution/installer/manifest.json').read_text())
+          status = {
+              'product': 'cifrarium',
+              'channel': 'installer',
+              'status': 'release-available',
+              'installer': '/install.sh',
+              'release': {
+                  'version': manifest['version'],
+                  'manifest': '/manifest.json',
+              },
+          }
+          Path('distribution/installer/bootstrap.json').write_text(
+              json.dumps(status, indent=2) + '\n'
+          )
+          PY
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@9681c2997648301493e78cacbfb790a9f19c833f # v3.9.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy distribution/installer --project-name usecifrarium
+
+      - name: Smoke-test public installer channel
+        run: |
+          public_dir="$RUNNER_TEMP/public-installer"
+          mkdir -p "$public_dir"
+          curl --fail --silent --show-error --location --retry 8 --retry-delay 3 \
+            https://usecifrarium.pages.dev/install.sh -o "$public_dir/install.sh"
+          grep -Fx '#!/usr/bin/env bash' "$public_dir/install.sh"
+          curl --fail --silent --show-error --location --retry 8 --retry-delay 3 \
+            https://usecifrarium.pages.dev/manifest.json -o "$public_dir/manifest.json"
+          jq -e '.product == "cifrarium" and (.releases | length == 2)' \
+            "$public_dir/manifest.json"
+          curl --fail --silent --show-error --location --retry 8 --retry-delay 3 \
+            https://usecifrarium.pages.dev/bootstrap.json | jq -e \
+            '.status == "release-available" and .installer == "/install.sh"'
+          jq -r '.releases[] | [.archive, .bundle] | @tsv' "$public_dir/manifest.json" |
+            while IFS=$'\t' read -r archive bundle; do
+              for artifact in "$archive" "$archive.sha256" "$bundle"; do
+                curl --fail --silent --show-error --location --retry 8 --retry-delay 3 \
+                  "https://usecifrarium.pages.dev/$artifact" -o "$public_dir/$artifact"
+              done
+            done
+          scripts/verify-release.sh --dir "$public_dir" --require-signatures

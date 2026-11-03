@@ -4,11 +4,16 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-03
+
 ### Added
 
 - Added the Cloudflare Pages installer-channel bootstrap for project
   `usecifrarium`. The first bundle is status-only and intentionally does not
   publish an executable installer.
+- Added a versioned Linux installer contract and release builder for signed
+  `amd64` and `arm64` artifacts, with explicit verification, atomic activation,
+  rollback, uninstall, and opt-in daemon enablement.
 
 ## [0.3.1] - 2026-11-02
 

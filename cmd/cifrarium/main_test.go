@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -14,6 +15,17 @@ import (
 	"github.com/teelabs/cifrarium/internal/mcp"
 	"github.com/teelabs/cifrarium/internal/store"
 )
+
+func TestVersionFlag(t *testing.T) {
+	cmd := exec.Command("go", "run", ".", "-version")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "dev\n" {
+		t.Fatalf("version output = %q", out)
+	}
+}
 
 func TestDaemonWiresRecoverySnapshotAndQueuesIt(t *testing.T) {
 	home := t.TempDir()
