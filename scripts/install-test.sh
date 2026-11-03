@@ -52,6 +52,7 @@ chmod 0755 "$FAKE_BIN/cosign" "$FAKE_BIN/systemctl"
 
 export PATH="$FAKE_BIN:$PATH"
 export HOME="$HOME_DIR"
+export XDG_CONFIG_HOME="$HOME_DIR/.config"
 export GOCACHE="$GO_CACHE"
 export GOMODCACHE="$GO_MOD_CACHE"
 export CURL_CA_BUNDLE="$CERT"
