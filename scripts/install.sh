@@ -15,6 +15,7 @@ cosign_identity="$DEFAULT_COSIGN_IDENTITY"
 cosign_issuer="$DEFAULT_COSIGN_ISSUER"
 enable=0
 confirmed=0
+non_interactive=0
 
 die() {
   printf 'cifrarium installer: %s\n' "$*" >&2
@@ -24,7 +25,8 @@ die() {
 usage() {
   cat <<'EOF'
 Usage:
-  install.sh --version VERSION [--prefix DIR] [--base-url URL] [--enable]
+  install.sh [--version VERSION] [--prefix DIR] [--base-url URL]
+             [--non-interactive] [--enable]
   install.sh --rollback VERSION [--prefix DIR] [--enable]
   install.sh --uninstall --prefix DIR --yes
 EOF
@@ -62,6 +64,10 @@ while (($#)); do
       enable=1
       shift
       ;;
+    --non-interactive)
+      non_interactive=1
+      shift
+      ;;
     --yes)
       confirmed=1
       shift
@@ -80,10 +86,11 @@ done
 [[ "$prefix" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "prefix contains unsupported characters"
 [[ "$base_url" =~ ^https://[^[:space:]]+$ ]] || die "base URL must use HTTPS without whitespace"
 base_url=${base_url%/}
+((enable && non_interactive)) && die "--non-interactive cannot activate the daemon"
 
 reject_symlinked_path_components() {
   local path=$1
-  local current= part
+  local current="" part
   local -a components
   IFS=/ read -r -a components <<<"$path"
   for part in "${components[@]}"; do
@@ -106,8 +113,8 @@ valid_version() {
   [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 }
 
-if [[ "$action" != uninstall ]]; then
-  valid_version "$version" || die "version must be an explicit SemVer such as 0.3.1"
+if [[ "$action" == rollback ]]; then
+  valid_version "$version" || die "rollback requires an explicit SemVer such as 0.4.0"
 fi
 
 case "$(uname -s)" in
@@ -151,10 +158,10 @@ atomic_symlink() {
 }
 
 write_unit() {
-  local target=$1 tmp
+  local target=$1 tmp extract_dir=${EXTRACT_DIR:?}
   mkdir -p "$unit_dir"
   tmp="$unit_path.tmp.$$"
-  sed "s|%h/.local/bin/cifrarium|$target|g" "$EXTRACT_DIR/cifrarium.service" >"$tmp"
+  sed "s|%h/.local/bin/cifrarium|$target|g" "$extract_dir/cifrarium.service" >"$tmp"
   install -m 0644 "$tmp" "$unit_path"
   rm -f "$tmp"
 }
@@ -235,10 +242,6 @@ done
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/cifrarium-install.XXXXXX")
 manifest="$work_dir/manifest.json"
-archive_name="$PRODUCT-$version-linux-$arch.tar.gz"
-archive="$work_dir/$archive_name"
-checksum="$work_dir/$archive_name.sha256"
-bundle="$work_dir/$archive_name.bundle"
 
 download() {
   local url=$1 output=$2
@@ -246,6 +249,14 @@ download() {
 }
 
 download "$base_url/manifest.json" "$manifest"
+if [[ -z "$version" ]]; then
+  version=$(python3 - "$manifest" <<'PY'
+import json
+import sys
+print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])
+PY
+  ) || die "could not resolve the published manifest version"
+fi
 manifest_info=$(python3 - "$manifest" "$version" "linux-$arch" <<'PY'
 import json
 import re
@@ -256,6 +267,8 @@ try:
     manifest = json.load(open(path, encoding="utf-8"))
 except (OSError, ValueError) as exc:
     raise SystemExit(f"invalid manifest JSON: {exc}")
+if not version:
+    version = manifest.get("version", "")
 if set(manifest) != {"schema", "product", "version", "releases"}:
     raise SystemExit("manifest has unexpected top-level fields")
 if manifest["schema"] != 1 or manifest["product"] != "cifrarium" or manifest["version"] != version:
@@ -285,6 +298,11 @@ print(selected["archive"], selected["bundle"], selected["sha256"], sep="\t")
 PY
 ) || die "manifest validation failed"
 IFS=$'\t' read -r manifest_archive manifest_bundle manifest_sha <<<"$manifest_info"
+valid_version "$version" || die "manifest did not provide a valid SemVer version"
+archive_name="$PRODUCT-$version-linux-$arch.tar.gz"
+archive="$work_dir/$archive_name"
+checksum="$work_dir/$archive_name.sha256"
+bundle="$work_dir/$archive_name.bundle"
 [[ "$manifest_archive" == "$archive_name" ]] || die "manifest archive mismatch"
 [[ "$manifest_bundle" == "$archive_name.bundle" ]] || die "manifest bundle mismatch"
 
@@ -342,6 +360,13 @@ if [[ -n "$old_target" ]]; then
 fi
 atomic_symlink "../lib/$PRODUCT/versions/$version/cifrarium" "$active_link"
 
+if ((non_interactive == 0)); then
+  if [[ -r /dev/tty && -w /dev/tty && ( -t 0 || -t 1 ) ]]; then
+    "$active_link" setup
+  else
+    printf 'installation completed; no terminal is available for the assistant, run cifrarium setup in a terminal\n' >&2
+  fi
+fi
 if ((enable)); then
   enable_service
 fi

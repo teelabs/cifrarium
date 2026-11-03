@@ -7,8 +7,7 @@ recovery shares, a Git-backed storage provider, and a local read-only MCP
 interface.
 
 The current release channel is Linux-first and supports `amd64` and `arm64`.
-The current release is `0.4.0`; always choose and record an explicit version
-instead of relying on a mutable `latest` alias.
+The installer resolves the published version from the signed manifest.
 
 ## Security model in one minute
 
@@ -48,23 +47,30 @@ only for the GitHub privacy diagnostic.
 
 ### Recommended installation command
 
-Choose the release version deliberately. The normal release flow is a single
-command that streams the release installer from the canonical public origin.
-The installer then downloads and verifies the selected archive, manifest,
-checksum, and Cosign bundle before installing it:
+The normal human flow is one command. It streams the release installer from the
+canonical public origin, resolves the current published version, verifies the
+archive, manifest, checksum, and Cosign bundle, then starts the guided setup:
 
 ~~~sh
-bash -o pipefail -c \
-  'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.4.0
+curl -fsSL https://usecifrarium.pages.dev/install.sh | bash
 ~~~
+
+For a reproducible agent install, pin the version and disable all prompts and
+side effects:
+
+~~~sh
+curl -fsSL https://usecifrarium.pages.dev/install.sh \
+  | bash -s -- --version 0.5.0 --non-interactive
+~~~
+
+The daemon is never enabled by non-interactive installation.
 
 Equivalent `wget` form:
 
 ~~~sh
 bash -o pipefail -c \
   'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.4.0
+  bash 0.5.0
 ~~~
 
 The stream form is convenient, but it does not let you inspect the installer
@@ -83,7 +89,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.4.0
+/tmp/cifrarium-install.sh --version 0.5.0 --non-interactive
 ~~~
 
 Both forms refuse invalid metadata, signatures, checksums, architectures, or
@@ -102,7 +108,7 @@ Use a different absolute, user-owned prefix in the stream form when required:
 ~~~sh
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
-  bash 0.4.0 "$HOME/opt/cifrarium"
+  bash 0.5.0 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -117,7 +123,7 @@ bash -o pipefail -c \
   bash 0.4.1
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
-  bash 0.4.0
+  bash 0.5.0
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch

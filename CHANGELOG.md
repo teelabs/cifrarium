@@ -4,12 +4,26 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-03
+
+### Added
+
+- Added the guided `cifrarium setup` wizard with TTY-based prompts for recovery
+  shares, private backup preparation, first capture, and daemon activation.
+- Added explicit `--non-interactive` behavior that does not display recovery
+  shares, capture data, upload remotely, or enable the daemon.
+
 ### Changed
 
 - Expanded the README into the operational entry point for signed Linux
   installation, prerequisites, first snapshot ingestion, recovery-share
   handling, GitHub provider setup, daemon activation, troubleshooting, and
-  human/agent safety guidance. Documentation-only; `VERSION` remains `0.4.0`.
+  human/agent safety guidance.
+
+### Fixed
+
+- The standalone installer now resolves the published manifest version when no
+  version is supplied and starts the guided setup only when a terminal exists.
 
 ## [0.4.0] - 2026-11-03
 

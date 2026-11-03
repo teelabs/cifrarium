@@ -10,7 +10,8 @@ when release metadata or signatures are invalid.
 ## Goals
 
 - Support Linux `amd64` and `arm64` only.
-- Require an explicit SemVer release; no implicit mutable `latest` install.
+- Resolve the published version from the signed manifest when no version is
+  supplied; agents may pin an explicit SemVer with `--non-interactive`.
 - Download only over HTTPS from the configured Pages origin.
 - Verify SHA-256 and a Cosign keyless signature before extraction.
 - Reject unsafe archive entries and install into a user-writable prefix.

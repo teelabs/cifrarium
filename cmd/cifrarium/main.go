@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/teelabs/cifrarium/internal/adapters"
@@ -28,6 +31,9 @@ func (s *stringList) String() string     { return fmt.Sprint([]string(*s)) }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "setup" {
+		os.Args = append([]string{os.Args[0], "-command=setup"}, os.Args[2:]...)
+	}
 	home, _ := os.UserHomeDir()
 	root := flag.String("root", filepath.Join(home, ".local", "share", "cifrarium"), "encrypted vault directory")
 	cmd := flag.String("command", "status", "status or snapshot")
@@ -35,6 +41,7 @@ func main() {
 	providerRemote := flag.String("provider-remote", os.Getenv("CIFRARIUM_PROVIDER_REMOTE"), "HTTPS GitHub remote URL (daemon only; no embedded credentials)")
 	verifyPrivate := flag.Bool("verify-private", false, "verify GitHub repository privacy with gh (provider-health only)")
 	showVersion := flag.Bool("version", false, "print the Cifrarium version")
+	nonInteractive := flag.Bool("non-interactive", false, "never prompt, capture, upload, or enable services")
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	for _, name := range []string{"CIFRARIUM_RECOVERY_SHARE_1", "CIFRARIUM_RECOVERY_SHARE_2"} {
@@ -99,6 +106,13 @@ func main() {
 			fmt.Println("catalog migration complete; run status to verify the keyring guard")
 		} else {
 			fmt.Println("catalog already uses encrypted metadata")
+		}
+		return
+	}
+	if *cmd == "setup" {
+		if err := runSetup(*root, home, *nonInteractive, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: setup failed: %v\n", err)
+			os.Exit(1)
 		}
 		return
 	}
@@ -204,9 +218,104 @@ func main() {
 		default:
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot|recovery-shares|recover|migrate-catalog|provider-health -recovery-share label:value")
+		fmt.Fprintln(os.Stderr, "usage: cifrarium setup | -command=status|snapshot|recovery-shares|recover|migrate-catalog|provider-health -recovery-share label:value")
 		os.Exit(2)
 	}
+}
+
+func runSetup(root, home string, nonInteractive bool, output io.Writer) error {
+	keyringStore := store.NewKeyring()
+	op, signing, err := keyringStore.LoadOrCreate()
+	if err != nil {
+		return err
+	}
+	vault, err := store.OpenWithGuard(root, op, signing, keyringStore)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(output, "O vault local está pronto.")
+	if nonInteractive {
+		fmt.Fprintln(output, "Modo não interativo: nenhuma chave de recuperação foi exibida, captura feita, conexão remota ou ativação de daemon.")
+		return nil
+	}
+	fmt.Fprintln(output, "Agora vamos guardar suas chaves de recuperação.")
+	shares, err := store.RecoveryShares(op, signing)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(output, "Guarde duas linhas diferentes em locais privados separados. Elas não serão gravadas pelo Cifrarium:")
+	for _, share := range shares {
+		fmt.Fprintf(output, "%s:%s\n", share.Label, share.Value)
+	}
+	if err := requireTTY(); err != nil {
+		return err
+	}
+	ok, err := askSetup("Você já guardou duas chaves de recuperação? [s/N] ")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("configuração cancelada; execute cifrarium setup novamente")
+	}
+	provider, err := askSetup("Você quer configurar backup privado no GitHub agora? [s/N] ")
+	if err != nil {
+		return err
+	}
+	if provider {
+		fmt.Fprintln(output, "Configure um repositório GitHub privado e a pasta local conforme o guia operacional.")
+		fmt.Fprintln(output, "Nenhum dado remoto será enviado sem configuração e confirmação posteriores.")
+	}
+	capture, err := askSetup("Você quer fazer a primeira captura agora? [s/N] ")
+	if err != nil {
+		return err
+	}
+	if capture {
+		if _, err := captureSnapshot(home, vault); err != nil {
+			return fmt.Errorf("primeira captura: %w", err)
+		}
+		fmt.Fprintln(output, "Primeira captura local concluída.")
+	}
+	activate, err := askSetup("Você quer ativar o backup automático? [s/N] ")
+	if err != nil {
+		return err
+	}
+	if activate {
+		command := exec.Command("systemctl", "--user", "enable", "--now", "cifrarium.service")
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("ativação do daemon: %w", err)
+		}
+		fmt.Fprintln(output, "Backup automático ativado.")
+	} else {
+		fmt.Fprintln(output, "O daemon continua desativado.")
+	}
+	return nil
+}
+
+func requireTTY() error {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("não há terminal disponível; execute setup em um terminal ou use --non-interactive")
+	}
+	return tty.Close()
+}
+
+func askSetup(prompt string) (bool, error) {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return false, fmt.Errorf("não há terminal disponível; execute setup em um terminal ou use --non-interactive")
+	}
+	defer tty.Close()
+	if _, err := fmt.Fprint(tty, prompt); err != nil {
+		return false, err
+	}
+	var answer string
+	if _, err := fmt.Fscanln(tty, &answer); err != nil {
+		return false, err
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "s" || answer == "sim" || answer == "y" || answer == "yes", nil
 }
 
 func captureSnapshot(home string, vault *store.Vault) (daemon.Item, error) {

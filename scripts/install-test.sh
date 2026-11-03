@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-VERSION=0.4.0
+VERSION=$(tr -d '[:space:]' <"$ROOT_DIR/VERSION")
 GO_CACHE=$(go env GOCACHE)
 GO_MOD_CACHE=$(go env GOMODCACHE)
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/cifrarium-installer-test.XXXXXX")

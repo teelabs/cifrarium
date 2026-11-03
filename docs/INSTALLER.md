@@ -9,8 +9,22 @@ installed user service.
 
 ## Install a release
 
-Choose an explicit release version. The installer does not resolve a mutable
-`latest` alias:
+For the normal human flow, the installer resolves the current published
+version from the manifest and starts the guided setup:
+
+```sh
+curl -fsSL https://usecifrarium.pages.dev/install.sh | bash
+```
+
+For agents and reproducible installs, pin the version and disable prompts and
+side effects:
+
+```sh
+curl -fsSL https://usecifrarium.pages.dev/install.sh \
+  | bash -s -- --version 0.5.0 --non-interactive
+```
+
+For the highest-assurance path, inspect and verify the installer first:
 
 ```sh
 curl --fail --silent --show-error --location \
@@ -25,12 +39,13 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.4.0
+/tmp/cifrarium-install.sh --version 0.5.0 --non-interactive
 ```
 
 The default prefix is `$HOME/.local`. The active executable is
 `$HOME/.local/bin/cifrarium`; add `$HOME/.local/bin` to `PATH` if necessary.
-The command installs files but does not start or enable the daemon.
+The command installs files and starts the assistant only when a TTY is
+available. It does not start or enable the daemon implicitly.
 
 ## Custom prefix and daemon activation
 
@@ -38,7 +53,7 @@ Use a user-owned absolute prefix when the default is unsuitable:
 
 ```sh
 /tmp/cifrarium-install.sh \
-  --version 0.4.0 \
+  --version 0.5.0 \
   --prefix "$HOME/opt/cifrarium"
 ```
 
@@ -46,7 +61,7 @@ After configuring `~/.config/cifrarium/daemon.env` and checking provider and
 recovery-share prerequisites, opt in to activation:
 
 ```sh
-/tmp/cifrarium-install.sh --version 0.4.0 --enable
+/tmp/cifrarium-install.sh --version 0.5.0 --enable
 systemctl --user status cifrarium.service
 ```
 
@@ -59,7 +74,7 @@ Install another explicit version to retain the previous active target:
 
 ```sh
 /tmp/cifrarium-install.sh --version 0.4.1
-/tmp/cifrarium-install.sh --rollback 0.4.0
+/tmp/cifrarium-install.sh --rollback 0.5.0
 ```
 
 Rollback only selects a version already staged under the prefix. It does not
@@ -80,7 +95,8 @@ files outside the selected prefix or the Cifrarium service path.
 ## Agent operating contract
 
 Agents may install only an explicit version supplied by the operator or
-approved release policy. They must preserve the command output and report the
+approved release policy, or use `--non-interactive` with the published manifest.
+They must preserve the command output and report the
 selected prefix, architecture, and version. They must not pass `--enable`
 unless the operator has separately approved daemon activation and the daemon
 environment has been reviewed.

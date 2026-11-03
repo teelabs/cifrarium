@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/teelabs/cifrarium/internal/daemon"
@@ -83,5 +84,22 @@ func TestMCPHandlerReturnsReadOnlyRestorePlan(t *testing.T) {
 	}
 	if plan["readOnly"] != true || plan["requiresCliConfirmation"] != true || plan["snapshot"] != "snapshot-id" {
 		t.Fatalf("unexpected plan=%#v", plan)
+	}
+}
+
+func TestSetupNonInteractiveDoesNotLeakSharesOrCapture(t *testing.T) {
+	root := t.TempDir()
+	var output strings.Builder
+	if err := runSetup(root, t.TempDir(), true, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Modo não interativo") {
+		t.Fatalf("output=%q", output.String())
+	}
+	if strings.Contains(output.String(), "cifrarium-1:") {
+		t.Fatalf("recovery share leaked: %q", output.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "head.json")); !os.IsNotExist(err) {
+		t.Fatalf("non-interactive setup captured data: %v", err)
 	}
 }
