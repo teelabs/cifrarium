@@ -70,8 +70,9 @@
 - [x] Use keyless Cosign signing with GitHub OIDC and upload bundles.
 - [x] Deploy the complete installer bundle to `usecifrarium` only from main or
   a release workflow after artifact verification.
-- [ ] Smoke-test exact public files and fail if `install.sh` is absent or
-  unsigned after a release deployment.
+- [x] Smoke-test exact public files and fail if `install.sh` is absent or
+  unsigned after a release deployment. Verified against the canonical
+  `usecifrarium.pages.dev` deployment for `v0.4.0` on 2026-11-03.
 
 ### Task 4: Documentation and adversarial review
 
