@@ -1,10 +1,13 @@
 package adapters
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 func TestConfigAllowlist(t *testing.T) {
@@ -99,5 +102,33 @@ func TestZshRejectsCustomSymlinks(t *testing.T) {
 	}
 	if _, err := (Zsh{}).Collect(h); err == nil {
 		t.Fatal("custom symlink accepted")
+	}
+}
+
+func TestConfigRejectsSymlinkedIntermediateDirectory(t *testing.T) {
+	h := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "config.toml"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(h, ".codex")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Config{}).Collect(h); err == nil {
+		t.Fatal("intermediate symlink accepted during capture")
+	}
+}
+
+func TestConfigRejectsOversizedFile(t *testing.T) {
+	h := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(h, ".codex"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.Repeat([]byte("x"), int(limits.MaxCapturedFileBytes)+1)
+	if err := os.WriteFile(filepath.Join(h, ".codex", "config.toml"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Config{}).Collect(h); err == nil {
+		t.Fatal("oversized configuration file accepted")
 	}
 }

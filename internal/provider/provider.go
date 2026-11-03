@@ -28,6 +28,9 @@ type PrivateVerifier interface {
 // Migrate copies opaque provider objects without decrypting or interpreting
 // their contents. The destination's atomic capability is used when present.
 func Migrate(ctx context.Context, source, destination Provider, ids []string) error {
+	if err := verifyDestinationPrivacy(ctx, destination); err != nil {
+		return err
+	}
 	for _, id := range ids {
 		if err := validateID(id); err != nil {
 			return err
@@ -52,6 +55,17 @@ func Migrate(ctx context.Context, source, destination Provider, ids []string) er
 		if err := destination.UploadCatalog(ctx, id, manifest); err != nil {
 			return fmt.Errorf("upload catalog %s: %w", id, err)
 		}
+	}
+	return nil
+}
+
+func verifyDestinationPrivacy(ctx context.Context, destination Provider) error {
+	verifier, ok := destination.(PrivateVerifier)
+	if !ok {
+		return fmt.Errorf("provider migration requires an explicit destination privacy verifier")
+	}
+	if err := verifier.VerifyPrivate(ctx); err != nil {
+		return fmt.Errorf("destination privacy verification failed: %w", err)
 	}
 	return nil
 }

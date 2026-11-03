@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	crypt "github.com/teelabs/cifrarium/internal/crypto"
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 func TestCatalogChainSurvivesRestartAndDetectsTamper(t *testing.T) {
@@ -47,6 +50,53 @@ func TestCatalogChainSurvivesRestartAndDetectsTamper(t *testing.T) {
 	os.WriteFile(path, raw, 0600)
 	if err := restarted.VerifyChain(m2.Snapshot, sign.Public().(ed25519.PublicKey)); err == nil {
 		t.Fatal("tampered catalog accepted")
+	}
+}
+
+func TestSaveRejectsOversizedSnapshotRecord(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, sign, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := New(root, op, sign)
+	if _, err := v.Save([]Record{{Path: "large", Data: bytes.Repeat([]byte("x"), int(limits.MaxCapturedFileBytes)+1)}}); err == nil {
+		t.Fatal("oversized snapshot record accepted")
+	}
+}
+
+func TestRecordsFromCiphertextRejectsOversizedRecord(t *testing.T) {
+	op := make([]byte, 32)
+	_, sign, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := New(t.TempDir(), op, sign)
+	raw, err := json.Marshal([]Record{{Path: "large", Data: bytes.Repeat([]byte("x"), int(limits.MaxCapturedFileBytes)+1)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := crypt.Seal(raw, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.RecordsFromCiphertext(ciphertext); err == nil {
+		t.Fatal("oversized record from ciphertext accepted")
+	}
+}
+
+func TestSnapshotCiphertextRejectsOversizedFileBeforeReading(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "snapshots", "snapshot"), bytes.Repeat([]byte("x"), int(limits.MaxSnapshotCipherBytes)+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	v := New(root, make([]byte, 32), nil)
+	if _, err := v.SnapshotCiphertext("snapshot"); err == nil {
+		t.Fatal("oversized snapshot ciphertext accepted")
 	}
 }
 

@@ -70,11 +70,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
-		if err := store.ValidateRecovery(*root, shares); err != nil {
-			fmt.Fprintf(os.Stderr, "cifrarium: recovery vault verification failed: %v\n", err)
-			os.Exit(1)
-		}
-		if err := keyringStore.ImportRecovery(shares); err != nil {
+		if err := keyringStore.ImportRecovery(*root, shares); err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: recovery failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -164,15 +160,41 @@ func main() {
 		}
 		scheduler := newDaemonScheduler(snapshot, uploader, queue)
 		scheduler.Persist = func() error { return queue.Save(queuePath, op) }
+		scheduler.Report = func(err error) { fmt.Fprintf(os.Stderr, "cifrarium daemon: %v\n", err) }
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		mcpErrors := make(chan error, 1)
+		mcpReady := make(chan struct{})
 		go func() {
-			_ = (mcp.Server{Socket: socket, Handler: newMCPHandler(*root, *providerDir)}).Listen()
+			server := mcp.Server{Socket: socket, Handler: newMCPHandler(*root, *providerDir), Ready: func() { close(mcpReady) }}
+			if err := server.Listen(); err != nil {
+				mcpErrors <- fmt.Errorf("MCP listener failed: %w", err)
+				cancel()
+			}
 		}()
+		select {
+		case <-mcpReady:
+		case err := <-mcpErrors:
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		case <-ctx.Done():
+			if ctx.Err() != context.Canceled {
+				fmt.Fprintln(os.Stderr, ctx.Err())
+			}
+			os.Exit(1)
+		}
 		fmt.Printf("cifrarium daemon listening on %s\n", socket)
 		if err := (daemon.Service{Scheduler: scheduler}).Run(ctx); err != nil && ctx.Err() == nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
+		}
+		select {
+		case err := <-mcpErrors:
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		default:
 		}
 	default:
 		fmt.Fprintln(os.Stderr, "usage: cifrarium -command=status|snapshot|recovery-shares|recover|migrate-catalog|provider-health -recovery-share label:value")
@@ -195,7 +217,7 @@ func captureSnapshot(home string, vault *store.Vault) (daemon.Item, error) {
 	if err != nil {
 		return daemon.Item{}, err
 	}
-	ciphertext, err := os.ReadFile(filepath.Join(vault.Root, "snapshots", m.Snapshot))
+	ciphertext, err := vault.SnapshotCiphertext(m.Snapshot)
 	if err != nil {
 		return daemon.Item{}, err
 	}

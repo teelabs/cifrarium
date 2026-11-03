@@ -69,6 +69,82 @@ func TestGitUploadSnapshotCommitsCiphertextAndCatalogTogether(t *testing.T) {
 	}
 }
 
+func TestGitUploadSnapshotDoesNotExecuteRepositoryHooksOrExposeRecoveryShares(t *testing.T) {
+	dir := t.TempDir()
+	g := Git{Dir: dir}
+	if err := g.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	script := "#!/bin/sh\nprintf '%s' \"$CIFRARIUM_RECOVERY_SHARE_1\" > " + marker + "\n"
+	if err := os.WriteFile(hook, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CIFRARIUM_RECOVERY_SHARE_1", "cifrarium-1:secret")
+	if err := g.UploadSnapshot(context.Background(), "id", []byte("cipher"), []byte(`{"snapshot":"id"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("repository hook executed during provider upload")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
+func TestGitRejectsExecutableLocalConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	g := Git{Dir: dir}
+	if err := g.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "config", "--local", "filter.evil.clean", "printf injected")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("configure malicious filter: %v (%s)", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("objects/* filter=evil\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.UploadSnapshot(context.Background(), "id", []byte("cipher"), []byte(`{"snapshot":"id"}`)); err == nil {
+		t.Fatal("unsafe local Git configuration accepted")
+	}
+}
+
+func TestGitCommandStaysAnchoredWhenProviderPathIsReplaced(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "provider")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "marker"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	g := Git{Dir: dir}
+	cmd, cleanup, err := g.commandAtDir(context.Background(), "cat", "marker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	moved := filepath.Join(parent, "provider-old")
+	if err := os.Rename(dir, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "marker"), []byte("new"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "old" {
+		t.Fatalf("command followed replaced provider path: %q", out)
+	}
+}
+
 func TestGitRejectsObjectAndCatalogDirectorySymlinks(t *testing.T) {
 	for _, name := range []string{"objects", "catalog"} {
 		t.Run(name, func(t *testing.T) {

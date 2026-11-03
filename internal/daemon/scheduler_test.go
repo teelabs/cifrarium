@@ -72,3 +72,45 @@ func TestIncidentDeduper(t *testing.T) {
 		t.Fatalf("deduper grew beyond bound: %d", len(d.seen))
 	}
 }
+
+func TestSchedulerReportsRetryableCycleFailure(t *testing.T) {
+	q := Queue{}
+	reported := make(chan error, 1)
+	s := NewScheduler(func(context.Context) (Item, error) { return Item{}, errors.New("capture failed") }, func(context.Context, Item) error { return nil }, &q)
+	s.Interval = time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	s.Report = func(err error) {
+		select {
+		case reported <- err:
+		default:
+		}
+		cancel()
+	}
+	_ = s.Run(ctx)
+	select {
+	case err := <-reported:
+		if err == nil || err.Error() != "capture failed" {
+			t.Fatalf("reported=%v", err)
+		}
+	default:
+		t.Fatal("cycle failure was not reported")
+	}
+}
+
+func TestSchedulerStopsOnScheduledPersistenceFailure(t *testing.T) {
+	q := Queue{}
+	s := NewScheduler(func(context.Context) (Item, error) {
+		return Item{ID: "snapshot", Ciphertext: []byte("cipher")}, nil
+	}, func(context.Context, Item) error {
+		return errors.New("offline")
+	}, &q)
+	s.Interval = time.Millisecond
+	s.Retry.MaxAttempts = 1
+	s.Persist = func() error { return errors.New("disk full") }
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := s.Run(ctx); err == nil {
+		t.Fatal("scheduled persistence failure was swallowed")
+	}
+}

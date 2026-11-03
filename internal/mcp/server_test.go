@@ -8,8 +8,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 func TestInitializeHandshake(t *testing.T) {
@@ -120,6 +123,30 @@ func TestAllowedMethodsUseDaemonHandler(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("daemon handler was not called")
 	}
+}
+
+func TestOversizedRequestLineReturnsAnError(t *testing.T) {
+	server, client := net.Pipe()
+	defer client.Close()
+	done := make(chan struct{})
+	go func() {
+		handle(server, nil)
+		close(done)
+	}()
+	writeErr := make(chan error, 1)
+	go func() {
+		_, err := client.Write([]byte(strings.Repeat("x", limits.MaxMCPLineBytes+1) + "\n"))
+		writeErr <- err
+	}()
+	var response Response
+	if err := json.NewDecoder(client).Decode(&response); err != nil {
+		t.Fatalf("oversized request did not receive an error response: %v", err)
+	}
+	if response.Error == nil {
+		t.Fatal("oversized request accepted")
+	}
+	_ = <-writeErr
+	<-done
 }
 
 func dialSocket(t *testing.T, socket string) net.Conn {

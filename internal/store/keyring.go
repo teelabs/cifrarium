@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/user"
 
 	"github.com/teelabs/cifrarium/internal/recovery"
@@ -126,35 +127,76 @@ func RecoverKeys(shares []recovery.Share) ([]byte, ed25519.PrivateKey, error) {
 	return op, ed25519.PrivateKey(signing), nil
 }
 
-// ValidateRecovery proves that reconstructed keys can open the existing vault
-// before a caller replaces the keyring entry. A fresh vault has no head yet
-// and is intentionally accepted.
-func ValidateRecovery(root string, shares []recovery.Share) error {
-	op, signing, err := RecoverKeys(shares)
-	if err != nil {
-		return err
-	}
-	_, err = Open(root, op, signing)
-	return err
+// ImportRecovery replaces the local keyring entry after explicit operator
+// recovery while preserving a validated non-empty catalog head guard.
+func (k *Keyring) ImportRecovery(root string, shares []recovery.Share) error {
+	return recoverAndImport(root, k.User, shares,
+		func(service, user string) (string, error) { return keyring.Get(service, user) },
+		func(service, user, password string) error { return keyring.Set(service, user, password) },
+	)
 }
 
-// ImportRecovery replaces the local keyring entry after explicit operator
-// recovery. The catalog head is intentionally reset and re-established by
-// OpenWithGuard after the existing signed chain is verified.
-func (k *Keyring) ImportRecovery(shares []recovery.Share) error {
+func recoverAndImport(root, user string, shares []recovery.Share, get keyringGet, set keyringSet) error {
 	op, signing, err := RecoverKeys(shares)
 	if err != nil {
 		return err
 	}
-	s := secrets{
-		Operational:    base64.RawStdEncoding.EncodeToString(op),
-		SigningPrivate: base64.RawStdEncoding.EncodeToString(signing),
+	return withVaultLock(root, func() error {
+		currentRaw, currentErr := get(service, user)
+		current := secrets{}
+		if currentErr == nil {
+			if err := json.Unmarshal([]byte(currentRaw), &current); err != nil {
+				return fmt.Errorf("invalid current keyring payload: %w", err)
+			}
+		} else if !errors.Is(currentErr, keyring.ErrNotFound) {
+			return fmt.Errorf("keyring unavailable: %w", currentErr)
+		}
+		validatedHead, err := validateRecoveredVault(root, op, signing, current.CatalogHead)
+		if err != nil {
+			return err
+		}
+		if current.CatalogHead == "" {
+			current.CatalogHead = validatedHead
+		}
+		candidate := secrets{
+			Operational:    base64.RawStdEncoding.EncodeToString(op),
+			SigningPrivate: base64.RawStdEncoding.EncodeToString(signing),
+			CatalogHead:    current.CatalogHead,
+		}
+		b, err := json.Marshal(candidate)
+		if err != nil {
+			return err
+		}
+		return set(service, user, string(b))
+	})
+}
+
+func validateRecoveredVault(root string, op []byte, signing ed25519.PrivateKey, guardedHead string) (string, error) {
+	v := New(root, op, signing)
+	m, err := v.LoadHead()
+	if os.IsNotExist(err) {
+		if guardedHead != "" {
+			return "", fmt.Errorf("catalog head missing while keyring guard is set")
+		}
+		return "", nil
 	}
-	b, err := json.Marshal(s)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return keyring.Set(service, k.User, string(b))
+	if guardedHead != "" && guardedHead != m.Snapshot {
+		return "", fmt.Errorf("catalog rollback detected")
+	}
+	if err := v.VerifyChain(m.Snapshot, signing.Public().(ed25519.PublicKey)); err != nil {
+		return "", err
+	}
+	second, err := v.LoadHead()
+	if err != nil {
+		return "", err
+	}
+	if second.Snapshot != m.Snapshot {
+		return "", fmt.Errorf("catalog changed during recovery validation")
+	}
+	return m.Snapshot, nil
 }
 
 func (k *Keyring) load() (secrets, error) {

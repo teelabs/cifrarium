@@ -3,6 +3,8 @@ package store
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -76,13 +78,17 @@ func TestValidateRecoveryVerifiesExistingVaultBeforeImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateRecovery(root, []recovery.Share{shares[0], shares[1]}); err != nil {
+	recoveredOp, recoveredSigning, err := RecoverKeys([]recovery.Share{shares[0], shares[1]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateRecoveredVault(root, recoveredOp, recoveredSigning, ""); err != nil {
 		t.Fatalf("valid recovery rejected: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "head.json"), []byte("tampered"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateRecovery(root, []recovery.Share{shares[0], shares[1]}); err == nil {
+	if _, err := validateRecoveredVault(root, recoveredOp, recoveredSigning, ""); err == nil {
 		t.Fatal("tampered vault accepted for recovery import")
 	}
 }
@@ -101,7 +107,88 @@ func TestValidateRecoveryAllowsFreshVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateRecovery(root, []recovery.Share{shares[0], shares[1]}); err != nil {
+	recoveredOp, recoveredSigning, err := RecoverKeys([]recovery.Share{shares[0], shares[1]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateRecoveredVault(root, recoveredOp, recoveredSigning, ""); err != nil {
 		t.Fatalf("fresh vault rejected: %v", err)
+	}
+}
+
+func TestRecoverAndImportRejectsValidHistoricalRollbackAndPreservesKeyring(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := New(root, op, signing)
+	m1, err := vault.Save([]Record{{Path: "config", Data: []byte("old")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := vault.Save([]Record{{Path: "config", Data: []byte("new")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHead, err := os.ReadFile(filepath.Join(root, "catalog", m1.Snapshot+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "head.json"), oldHead, 0600); err != nil {
+		t.Fatal(err)
+	}
+	shares, err := RecoveryShares(op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentRaw, _ := json.Marshal(secrets{
+		Operational:    base64.RawStdEncoding.EncodeToString(op),
+		SigningPrivate: base64.RawStdEncoding.EncodeToString(signing),
+		CatalogHead:    m2.Snapshot,
+	})
+	setCalls := 0
+	set := func(string, string, string) error {
+		setCalls++
+		return nil
+	}
+	get := func(string, string) (string, error) { return string(currentRaw), nil }
+	if err := recoverAndImport(root, "test", []recovery.Share{shares[0], shares[1]}, get, set); err == nil {
+		t.Fatal("recovery accepted a valid historical rollback")
+	}
+	if setCalls != 0 {
+		t.Fatalf("recovery replaced keyring after rollback validation: set calls=%d", setCalls)
+	}
+}
+
+func TestRecoverAndImportAnchorsExistingVaultWhenKeyringGuardIsMissing(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := New(root, op, signing)
+	m, err := vault.Save([]Record{{Path: "config", Data: []byte("existing")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := RecoveryShares(op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved string
+	set := func(_, _, password string) error { saved = password; return nil }
+	get := func(string, string) (string, error) { return "", keyring.ErrNotFound }
+	if err := recoverAndImport(root, "test", []recovery.Share{shares[0], shares[1]}, get, set); err != nil {
+		t.Fatal(err)
+	}
+	var recovered secrets
+	if err := json.Unmarshal([]byte(saved), &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered.CatalogHead != m.Snapshot {
+		t.Fatalf("recovery guard = %q, want %q", recovered.CatalogHead, m.Snapshot)
 	}
 }
