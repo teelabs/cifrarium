@@ -4,6 +4,8 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-03
+
 ### Changed
 
 - Improved the Linux installer preflight to audit all operation-specific
