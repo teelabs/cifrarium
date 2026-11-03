@@ -92,6 +92,7 @@ qualified review remains tracked in [issue #49](https://github.com/teelabs/cifra
    descriptor-relative renames. Handled activation errors roll back and leave
    a backup, but the MVP has no durable restore journal for crash recovery;
    operators must preserve the backup and retry after an interrupted restore.
+   The follow-up is tracked in [issue #68](https://github.com/teelabs/cifrarium/issues/68).
 
 ### Fixed
 
