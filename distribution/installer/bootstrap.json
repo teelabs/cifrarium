@@ -1,0 +1,8 @@
+{
+  "product": "cifrarium",
+  "channel": "installer",
+  "status": "bootstrap-only",
+  "installer": null,
+  "release": null,
+  "next": "A signed installer release must publish install.sh, checksums, signatures, and a manifest together."
+}

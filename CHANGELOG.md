@@ -4,6 +4,12 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added the Cloudflare Pages installer-channel bootstrap for project
+  `usecifrarium`. The first bundle is status-only and intentionally does not
+  publish an executable installer.
+
 ## [0.3.1] - 2026-11-02
 
 ### Security
