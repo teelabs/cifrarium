@@ -9,8 +9,11 @@ All notable changes to Cifrarium will be documented here.
 ### Security
 
 - Hardened Git/provider execution against repository hooks, unsafe inherited
-  configuration, credential/recovery-share leakage, path-component symlink
-  races, and unverified migration destinations.
+  configuration, unsafe local transport settings,
+  credential/recovery-share leakage, path-component symlink races, and
+  unverified migration destinations.
+- Made already-committed Git snapshot retries idempotent and documented the
+  remaining crash-consistency boundary for multi-file restore.
 - Added guarded, serialized recovery import and bounded validation for captured
   files, snapshots, manifests, queue items, restore records, and MCP request
   lines.

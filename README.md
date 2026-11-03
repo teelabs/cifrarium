@@ -11,7 +11,8 @@ a CLI, an optional Linux user daemon, and a local read-only MCP interface.
   recovery and before remote upload.
 - Uses a private Git repository as the first remote provider; remote setup is
   operator-managed.
-- Restores snapshots atomically with a local backup and rejects unsafe paths.
+- Restores snapshots with rollback protection and a local backup, while
+  rejecting unsafe paths.
 - Exposes local status and change-plan MCP methods through the daemon; it does
   not accept autonomous mutations.
 

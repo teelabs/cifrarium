@@ -75,7 +75,7 @@ qualified review remains tracked in [issue #49](https://github.com/teelabs/cifra
 | Recovery rollback and concurrent Save/import | **Resisted.** Recovery and Save share an exclusive descriptor-relative lock; recovery validates the signed chain twice, preserves an existing guard, and anchors a previously unguarded existing head. Regression tests cover valid historical rollback, missing-guard anchoring, and lock symlink/alias rejection. |
 | Migration to a destination without a privacy boundary | **Resisted.** Migration requires `PrivateVerifier`; GitHub privacy verification rejects local-only Git destinations. |
 | Oversized files, records, manifests, queue items, provider listings, daemon snapshot reads, and MCP lines | **Resisted for covered cases.** Central limits are enforced before retention/decryption where applicable, including the CLI snapshot handoff, with focused rejection tests. |
-| Queue loss after upload/removal persistence failure | **Resisted.** Pending items remain durable until upload succeeds; only then are they removed and persisted. If removal persistence fails, the item is restored in memory and remains in the previous durable queue. Regression coverage reloads the queue after the failure. Scheduled persistence failures terminate the scheduler. |
+| Queue loss after upload/removal persistence failure | **Resisted for covered cases.** Pending items remain durable until upload succeeds; only then are they removed and persisted. If removal persistence fails, the item is restored in memory and remains in the previous durable queue. Git retries tolerate an already-committed snapshot and continue to push the current head. Regression coverage reloads the queue after the failure. Scheduled persistence failures terminate the scheduler; if the storage device cannot persist a newly queued item, delivery of that item is not claimed durable and the local encrypted vault remains the source of truth for the next cycle. |
 | Daemon startup/listener/persistence observability | **Resisted.** Initial drain and initial-cycle persistence failures are fatal; MCP readiness is announced only after bind/chmod; malformed MCP input receives a parse error response. |
 | Privacy check versus push race | **Accepted residual.** Privacy is checked immediately before push, but an external GitHub visibility change can still occur between verification and remote acceptance. Organization/repository policy is required when that guarantee matters. |
 
@@ -85,8 +85,13 @@ qualified review remains tracked in [issue #49](https://github.com/teelabs/cifra
    restored files remains outside the confidentiality boundary and can disrupt
    operations. The lock itself rejects a symlink and is opened with `O_NOFOLLOW`
    on Linux; this is integrity/availability hardening, not a same-user sandbox.
-2. Human security and release approval has not been granted. No commit, push,
-   merge, publication, or deployment is authorized by this report.
+2. This report is evidence, not approval by itself. Commit, push, and merge
+   require the explicit delivery authorization and gates recorded on PR #67;
+   publication and deployment remain outside this delivery.
+3. Abrupt process termination during multi-file restore can occur between
+   descriptor-relative renames. Handled activation errors roll back and leave
+   a backup, but the MVP has no durable restore journal for crash recovery;
+   operators must preserve the backup and retry after an interrupted restore.
 
 ### Fixed
 

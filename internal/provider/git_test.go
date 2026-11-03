@@ -69,6 +69,23 @@ func TestGitUploadSnapshotCommitsCiphertextAndCatalogTogether(t *testing.T) {
 	}
 }
 
+func TestGitUploadSnapshotIsIdempotentAfterCommittedRetry(t *testing.T) {
+	dir := t.TempDir()
+	g := Git{Dir: dir}
+	if err := g.UploadSnapshot(context.Background(), "id", []byte("cipher"), []byte(`{"snapshot":"id"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.UploadSnapshot(context.Background(), "id", []byte("cipher"), []byte(`{"snapshot":"id"}`)); err != nil {
+		t.Fatalf("retry after committed upload failed: %v", err)
+	}
+	cmd := exec.Command("git", "rev-list", "--count", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil || string(out) != "1\n" {
+		t.Fatalf("retry created unexpected history: %q err=%v", out, err)
+	}
+}
+
 func TestGitUploadSnapshotDoesNotExecuteRepositoryHooksOrExposeRecoveryShares(t *testing.T) {
 	dir := t.TempDir()
 	g := Git{Dir: dir}
