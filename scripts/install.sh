@@ -22,6 +22,86 @@ die() {
   exit 1
 }
 
+step() {
+  printf 'cifrarium installer: %s...\n' "$*" >&2
+}
+
+step_done() {
+  printf 'cifrarium installer: %s OK\n' "$*" >&2
+}
+
+dependency_suggestions() {
+  local manager=""
+  if command -v apt-get >/dev/null 2>&1; then
+    manager=apt
+  elif command -v dnf >/dev/null 2>&1; then
+    manager=dnf
+  elif command -v pacman >/dev/null 2>&1; then
+    manager=pacman
+  elif command -v apk >/dev/null 2>&1; then
+    manager=apk
+  elif command -v brew >/dev/null 2>&1; then
+    manager=brew
+  elif command -v nix >/dev/null 2>&1; then
+    manager=nix
+  fi
+
+  printf '\n' >&2
+  printf 'cifrarium installer: Install the missing dependencies, then run the command again.\n' >&2
+  case "$manager" in
+    apt)
+      printf '  sudo apt-get update && sudo apt-get install -y curl tar coreutils python3\n' >&2
+      ;;
+    dnf)
+      printf '  sudo dnf install -y curl tar coreutils python3\n' >&2
+      ;;
+    pacman)
+      printf '  sudo pacman -S --needed curl tar coreutils python\n' >&2
+      ;;
+    apk)
+      printf '  sudo apk add curl tar coreutils python3\n' >&2
+      ;;
+    brew)
+      printf '  brew install curl gnu-tar coreutils python3\n' >&2
+      ;;
+    nix)
+      printf '  nix profile install nixpkgs#curl nixpkgs#gnutar nixpkgs#coreutils nixpkgs#python3\n' >&2
+      ;;
+    *)
+      printf '  Install the listed tools with your Linux distribution package manager.\n' >&2
+      ;;
+  esac
+  if [[ " ${missing_dependencies[*]} " == *' cosign '* ]]; then
+    printf '  Cosign installation options: https://docs.sigstore.dev/cosign/system_config/installation/\n' >&2
+    case "$manager" in
+      pacman) printf '  sudo pacman -S --needed cosign\n' >&2 ;;
+      apk) printf '  sudo apk add cosign\n' >&2 ;;
+      brew) printf '  brew install cosign\n' >&2 ;;
+      nix) printf '  nix profile install nixpkgs#cosign\n' >&2 ;;
+      *) printf '  Follow the official Cosign installation and verification instructions above.\n' >&2 ;;
+    esac
+  fi
+  printf '\n'
+}
+
+audit_dependencies() {
+  local command_name
+  missing_dependencies=()
+  for command_name in "${required_commands[@]}"; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+      missing_dependencies+=("$command_name")
+    fi
+  done
+  if ((${#missing_dependencies[@]} > 0)); then
+    printf 'cifrarium installer: missing dependencies:\n' >&2
+    for command_name in "${missing_dependencies[@]}"; do
+      printf '  - %s\n' "$command_name" >&2
+    done
+    dependency_suggestions
+    exit 1
+  fi
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -117,6 +197,32 @@ if [[ "$action" == rollback ]]; then
   valid_version "$version" || die "rollback requires an explicit SemVer such as 0.4.0"
 fi
 
+required_commands=(uname mkdir rm rmdir)
+case "$action" in
+  install)
+    required_commands+=(mktemp mv ln install dirname sed grep curl tar sha256sum cosign python3)
+    ;;
+  rollback)
+    required_commands+=(mv ln readlink)
+    ;;
+  uninstall)
+    required_commands+=(grep)
+    ;;
+esac
+if ((enable)); then
+  required_commands+=(systemctl)
+fi
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+unit_path="$unit_dir/$PRODUCT.service"
+if [[ "$action" == uninstall && -f "$unit_path" ]]; then
+  required_commands+=(systemctl)
+fi
+
+step 'Checking dependencies'
+audit_dependencies
+step_done 'Checking dependencies'
+
+step 'Checking platform'
 case "$(uname -s)" in
   Linux) ;;
   *) die "only Linux is supported" ;;
@@ -126,18 +232,12 @@ case "$(uname -m)" in
   aarch64|arm64) arch=arm64 ;;
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
-
-command -v mktemp >/dev/null || die "mktemp is required"
-command -v mv >/dev/null || die "mv is required"
-command -v ln >/dev/null || die "ln is required"
-command -v install >/dev/null || die "install is required"
+step_done "Checking platform (Linux $arch)"
 
 state_dir="$prefix/lib/$PRODUCT"
 versions_dir="$state_dir/versions"
 active_link="$prefix/bin/$PRODUCT"
 previous_link="$prefix/bin/$PRODUCT.previous"
-unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-unit_path="$unit_dir/$PRODUCT.service"
 lock_dir="$state_dir/.install.lock"
 
 acquire_lock() {
@@ -244,11 +344,13 @@ work_dir=$(mktemp -d "${TMPDIR:-/tmp}/cifrarium-install.XXXXXX")
 manifest="$work_dir/manifest.json"
 
 download() {
-  local url=$1 output=$2
+  local label=$1 url=$2 output=$3
+  step "Downloading $label"
   curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --retry-delay 1 --output "$output" "$url"
+  step_done "Downloading $label"
 }
 
-download "$base_url/manifest.json" "$manifest"
+download 'manifest' "$base_url/manifest.json" "$manifest"
 if [[ -z "$version" ]]; then
   version=$(python3 - "$manifest" <<'PY'
 import json
@@ -297,6 +399,7 @@ if selected is None:
 print(selected["archive"], selected["bundle"], selected["sha256"], sep="\t")
 PY
 ) || die "manifest validation failed"
+step_done "Selecting version $version for linux-$arch"
 IFS=$'\t' read -r manifest_archive manifest_bundle manifest_sha <<<"$manifest_info"
 valid_version "$version" || die "manifest did not provide a valid SemVer version"
 archive_name="$PRODUCT-$version-linux-$arch.tar.gz"
@@ -306,15 +409,20 @@ bundle="$work_dir/$archive_name.bundle"
 [[ "$manifest_archive" == "$archive_name" ]] || die "manifest archive mismatch"
 [[ "$manifest_bundle" == "$archive_name.bundle" ]] || die "manifest bundle mismatch"
 
-download "$base_url/$archive_name" "$archive"
-download "$base_url/$archive_name.sha256" "$checksum"
-download "$base_url/$archive_name.bundle" "$bundle"
+download 'archive' "$base_url/$archive_name" "$archive"
+download 'checksum' "$base_url/$archive_name.sha256" "$checksum"
+download 'signature bundle' "$base_url/$archive_name.bundle" "$bundle"
 
+step 'Verifying archive checksum'
 (cd "$work_dir" && sha256sum --check "$checksum") || die "archive checksum verification failed"
 read -r actual_sha _ < <(sha256sum "$archive")
 [[ "$actual_sha" == "$manifest_sha" ]] || die "manifest checksum verification failed"
+step_done 'Verifying archive checksum'
+step 'Verifying archive signature'
 cosign verify-blob --bundle "$bundle" --certificate-identity-regexp "$cosign_identity" --certificate-oidc-issuer "$cosign_issuer" "$archive" >/dev/null || die "Cosign signature verification failed"
+step_done 'Verifying archive signature'
 
+step 'Validating archive contents'
 extract_dir="$work_dir/extract"
 mkdir -m 0700 "$extract_dir"
 while IFS= read -r member; do
@@ -334,7 +442,9 @@ done
 [[ -x "$extract_dir/cifrarium" ]] || die "archive binary is not executable"
 grep -Fq "\"version\": \"$version\"" "$extract_dir/release.json" || die "archive version metadata mismatch"
 grep -Fq "\"architecture\": \"linux-$arch\"" "$extract_dir/release.json" || die "archive architecture metadata mismatch"
+step_done 'Validating archive contents'
 
+step 'Installing verified files'
 acquire_lock
 mkdir -p "$versions_dir"
 version_dir="$versions_dir/$version"
@@ -370,4 +480,5 @@ fi
 if ((enable)); then
   enable_service
 fi
+step_done 'Installing verified files'
 printf 'installed %s for linux-%s at %s\n' "$version" "$arch" "$prefix"

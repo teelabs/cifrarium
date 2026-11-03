@@ -28,6 +28,56 @@ mkdir -p "$PUBLIC_DIR" "$HOME_DIR" "$FAKE_BIN"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj /CN=127.0.0.1 -keyout "$KEY" -out "$CERT" >/dev/null 2>&1
 
+MISSING_BIN="$TEST_ROOT/missing-bin"
+mkdir -p "$MISSING_BIN"
+cat >"$MISSING_BIN/uname" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == -s ]]; then
+  printf 'Linux\n'
+else
+  printf 'x86_64\n'
+fi
+EOF
+chmod 0755 "$MISSING_BIN/uname"
+cat >"$MISSING_BIN/apt-get" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+chmod 0755 "$MISSING_BIN/apt-get"
+missing_output="$TEST_ROOT/missing-dependencies.txt"
+if PATH="$MISSING_BIN" HOME="$HOME_DIR" /bin/bash "$ROOT_DIR/scripts/install.sh" \
+  --version "$VERSION" --prefix "$PREFIX" --base-url "https://127.0.0.1:$PORT" \
+  >"$missing_output" 2>&1; then
+  echo 'missing dependencies unexpectedly passed preflight' >&2
+  exit 1
+fi
+for dependency in mktemp mv ln install curl tar sha256sum cosign python3; do
+  grep -Fq "$dependency" "$missing_output" || {
+    echo "missing dependency was not reported: $dependency" >&2
+    cat "$missing_output" >&2
+    exit 1
+  }
+done
+grep -Fq 'Install the missing dependencies' "$missing_output" || {
+  echo 'missing dependency guidance was not reported' >&2
+  cat "$missing_output" >&2
+  exit 1
+}
+grep -Fq 'sudo apt-get update && sudo apt-get install' "$missing_output" || {
+  echo 'package manager guidance was not reported' >&2
+  cat "$missing_output" >&2
+  exit 1
+}
+grep -Fq 'https://docs.sigstore.dev/cosign/system_config/installation/' "$missing_output" || {
+  echo 'Cosign installation guidance was not reported' >&2
+  cat "$missing_output" >&2
+  exit 1
+}
+[[ ! -e "$PREFIX" ]] || {
+  echo 'missing dependency preflight mutated the prefix' >&2
+  exit 1
+}
+
 cat >"$FAKE_BIN/cosign" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -118,16 +168,40 @@ if "$ROOT_DIR/scripts/install.sh" --version "$VERSION" --prefix "$TEST_ROOT/deri
   exit 1
 fi
 
+install_output="$TEST_ROOT/install-output.txt"
 "$ROOT_DIR/scripts/install.sh" --version "$VERSION" --prefix "$PREFIX" \
-  --base-url "https://127.0.0.1:$PORT"
+  --base-url "https://127.0.0.1:$PORT" >"$install_output" 2>&1
 [[ "$("$PREFIX/bin/cifrarium" -version)" == "$VERSION" ]]
 [[ -L "$PREFIX/bin/cifrarium" ]]
 [[ -f "$HOME_DIR/.config/systemd/user/cifrarium.service" ]]
+for step in 'Checking platform' 'Checking dependencies' 'Downloading manifest' 'Verifying archive signature'; do
+  grep -Fq "$step" "$install_output" || {
+    echo "progress step was not reported: $step" >&2
+    cat "$install_output" >&2
+    exit 1
+  }
+done
 if [[ -s "$SYSTEMCTL_LOG" ]]; then
   echo 'installer started systemd without --enable' >&2
   cat "$SYSTEMCTL_LOG" >&2
   exit 1
 fi
+
+NO_SYSTEMCTL_BIN="$TEST_ROOT/no-systemctl-bin"
+mkdir -p "$NO_SYSTEMCTL_BIN"
+for dependency in bash env uname mkdir rm rmdir grep mktemp mv ln install dirname sed curl tar sha256sum python3 readlink; do
+  ln -s "$(command -v "$dependency")" "$NO_SYSTEMCTL_BIN/$dependency"
+done
+ln -s "$FAKE_BIN/cosign" "$NO_SYSTEMCTL_BIN/cosign"
+if PATH="$NO_SYSTEMCTL_BIN" HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" \
+  "$ROOT_DIR/scripts/install.sh" --uninstall --prefix "$PREFIX" --yes \
+  >"$TEST_ROOT/no-systemctl-output.txt" 2>&1; then
+  echo 'uninstall unexpectedly passed without systemctl' >&2
+  exit 1
+fi
+grep -Fq 'systemctl' "$TEST_ROOT/no-systemctl-output.txt"
+[[ -f "$HOME_DIR/.config/systemd/user/cifrarium.service" ]]
+[[ -L "$PREFIX/bin/cifrarium" ]]
 
 "$ROOT_DIR/scripts/build-release.sh" --version 0.4.1 --out-dir "$TEST_ROOT/release-0.4.1"
 cp "$TEST_ROOT/release-0.4.1"/* "$PUBLIC_DIR/"

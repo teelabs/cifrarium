@@ -4,6 +4,12 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Improved the Linux installer preflight to audit all operation-specific
+  dependencies together, print package-manager guidance, and show progress for
+  each verification and installation stage.
+
 ## [0.5.1] - 2026-11-03
 
 ### Fixed

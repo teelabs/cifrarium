@@ -47,6 +47,27 @@ The default prefix is `$HOME/.local`. The active executable is
 The command installs files and starts the assistant only when a TTY is
 available. It does not start or enable the daemon implicitly.
 
+## Missing dependencies and progress output
+
+The installer audits every dependency needed for the selected operation before
+creating its state directory or downloading a release. A normal installation
+needs `curl`, `tar`, `sha256sum`, `python3`, `cosign`, `mktemp`, `mv`, `ln`,
+`install`, `mkdir`, `rm`, `rmdir`, `dirname`, `sed`, and `grep`. `systemctl` is
+added only for `--enable`, and is required when uninstalling an installed user
+service.
+
+If more than one tool is missing, the installer reports all of them in one
+message, detects a supported package manager when possible, and prints a
+copyable suggestion. It never runs the suggestion or invokes `sudo` itself.
+For Cosign, follow the official installation and verification instructions:
+
+<https://docs.sigstore.dev/cosign/system_config/installation/>
+
+After installing the dependencies, run the original command again. During a
+successful run, the installer reports platform checks, manifest and artifact
+downloads, checksum and signature verification, archive validation, and atomic
+installation before starting the assistant.
+
 ## Custom prefix and daemon activation
 
 Use a user-owned absolute prefix when the default is unsuitable:
