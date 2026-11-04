@@ -79,7 +79,9 @@ For Cosign, follow the official installation and verification instructions:
 After installing the dependencies, run the original command again. During a
 successful run, the installer reports platform checks, manifest and artifact
 downloads, checksum and signature verification, archive validation, and atomic
-installation before starting the assistant.
+installation before starting the assistant. On a TTY, each active stage
+updates in place and finishes as one stable line; redirected output uses
+ordinary lines without carriage returns, ANSI, or other terminal controls.
 
 ## Custom prefix and daemon activation
 

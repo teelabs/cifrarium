@@ -4,6 +4,17 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-11-04
+
+### Fixed
+
+- Initial daemon pending-drain failures now use the safe retry flow instead of
+  printing a raw error or appearing stuck.
+- Interactive retry asks before waiting, accepts Enter for an immediate retry,
+  and returns to the console when declined; non-TTY output remains plain.
+- Installer progress updates in place on TTY while redirected output remains
+  free of carriage returns and ANSI control sequences.
+
 ## [0.9.3] - 2026-11-04
 
 ### Fixed

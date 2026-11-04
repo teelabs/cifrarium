@@ -267,7 +267,11 @@ func main() {
 			if *providerDir == "" {
 				return fmt.Errorf("provider is not configured")
 			}
-			return syncvault.UploadGate{OperationalKey: op}.UploadSnapshot(ctx, provider.Git{Dir: *providerDir, Remote: *providerRemote}, item.ID, item.Ciphertext, item.Manifest, shares)
+			activeShares, err := daemonRecoveryShares(home, shares)
+			if err != nil {
+				return err
+			}
+			return syncvault.UploadGate{OperationalKey: op}.UploadSnapshot(ctx, provider.Git{Dir: *providerDir, Remote: *providerRemote}, item.ID, item.Ciphertext, item.Manifest, activeShares)
 		}
 		scheduler := newDaemonScheduler(snapshot, uploader, queue)
 		scheduler.Persist = func() error { return queue.Save(queuePath, op) }
@@ -275,6 +279,9 @@ func main() {
 			newTerminalUI(os.Stderr).Text(colorIdentity, "cifrarium daemon")
 			renderDaemonFailure(os.Stderr, home, err)
 		}
+		retryController := newDaemonRetryController(home, os.Stderr)
+		defer retryController.Close()
+		scheduler.RetryHandler = retryController.Handle
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 		ctx, cancel := context.WithCancel(ctx)
@@ -315,6 +322,25 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: cifrarium setup | status | doctor | snapshot | daemon | migrate-catalog | provider setup|health | recovery shares|import")
 		os.Exit(2)
 	}
+}
+
+func daemonRecoveryShares(home string, fallback []recovery.Share) ([]recovery.Share, error) {
+	_, values, err := readDaemonEnv(home)
+	if err != nil {
+		return nil, fmt.Errorf("recovery configuration unavailable: %w", err)
+	}
+	first, second := values["CIFRARIUM_RECOVERY_SHARE_1"], values["CIFRARIUM_RECOVERY_SHARE_2"]
+	if first == "" && second == "" {
+		return fallback, nil
+	}
+	if first == "" || second == "" {
+		return nil, fmt.Errorf("recovery configuration requires two protected shares")
+	}
+	shares, err := parseRecoveryShares([]string{first, second})
+	if err != nil {
+		return nil, fmt.Errorf("recovery configuration is invalid")
+	}
+	return shares, nil
 }
 
 func canonicalCommand(args []string) (string, []string, error) {
@@ -670,6 +696,10 @@ func captureSnapshot(home string, vault *store.Vault) (daemon.Item, error) {
 func writeDaemonServiceError(w io.Writer, err error) {
 	var captureErr interface{ CaptureFailure() }
 	if errors.As(err, &captureErr) {
+		return
+	}
+	var reportedErr interface{ ReportedFailure() }
+	if errors.As(err, &reportedErr) {
 		return
 	}
 	fmt.Fprintln(w, err)

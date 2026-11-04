@@ -148,6 +148,22 @@ func TestRenderDaemonFailureUsesSafeSymlinkRecoveryInstructions(t *testing.T) {
 	}
 }
 
+func TestRenderDaemonFailureUsesSafePendingRecoveryInstructions(t *testing.T) {
+	var out bytes.Buffer
+	renderDaemonFailure(&out, t.TempDir(), errors.New("recovery verification required before upload"))
+	text := strings.ToLower(out.String())
+	for _, want := range []string{"pending encrypted work", "cifrarium doctor", "protected recovery"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("pending recovery diagnostic missing %q: %q", want, out.String())
+		}
+	}
+	for _, forbidden := range []string{"recovery verification required before upload", "share", "token"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("pending recovery diagnostic leaked %q: %q", forbidden, out.String())
+		}
+	}
+}
+
 func TestRejectedSymlinkPathStopsBeforeRecoverySnapshotSuffix(t *testing.T) {
 	home := t.TempDir()
 	got, ok := rejectedSymlinkPath(home, errors.New("symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: .zshrc"))

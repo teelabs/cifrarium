@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -95,6 +96,83 @@ func TestServiceReturnsInitialDrainFailure(t *testing.T) {
 	s.Retry.MaxAttempts = 1
 	if err := (Service{Scheduler: s}).Run(context.Background()); err == nil {
 		t.Fatal("initial drain failure was swallowed")
+	}
+}
+
+func TestServiceRetriesInitialPendingDrainWhenHandlerAllows(t *testing.T) {
+	q := Queue{}
+	if err := q.Push(Item{ID: "pending", Ciphertext: []byte("c")}); err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int32
+	s := NewScheduler(
+		func(context.Context) (Item, error) {
+			return Item{ID: "new", Ciphertext: []byte("c")}, nil
+		},
+		func(context.Context, Item) error {
+			if attempts.Add(1) == 1 {
+				return errors.New("recovery verification required before upload")
+			}
+			return nil
+		},
+		&q,
+	)
+	s.Retry.MaxAttempts = 1
+	s.Interval = time.Hour
+	s.RetryHandler = func(context.Context, error) RetryDecision { return RetryNow }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for attempts.Load() < 2 {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	if err := (Service{Scheduler: s}).Run(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("service error=%v, want context cancellation after retry", err)
+	}
+	if q.Len() != 0 {
+		t.Fatalf("pending queue length=%d, want drained queue", q.Len())
+	}
+}
+
+func TestServiceReturnsReportedInitialDrainFailureWhenHandlerDeclines(t *testing.T) {
+	q := Queue{}
+	if err := q.Push(Item{ID: "pending", Ciphertext: []byte("c")}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewScheduler(nil, func(context.Context, Item) error {
+		return errors.New("recovery verification required before upload")
+	}, &q)
+	s.Retry.MaxAttempts = 1
+	s.RetryHandler = func(context.Context, error) RetryDecision { return StopRetry }
+	err := (Service{Scheduler: s}).Run(context.Background())
+	if err == nil || !errors.As(err, new(interface{ ReportedFailure() })) {
+		t.Fatalf("service error=%v, want reported initial drain failure", err)
+	}
+	if q.Len() != 1 {
+		t.Fatalf("pending queue length=%d, want item preserved", q.Len())
+	}
+}
+
+func TestServiceDoesNotRetryInitialDrainPersistenceFailure(t *testing.T) {
+	q := Queue{}
+	if err := q.Push(Item{ID: "pending", Ciphertext: []byte("c")}); err != nil {
+		t.Fatal(err)
+	}
+	retried := false
+	s := NewScheduler(nil, func(context.Context, Item) error { return nil }, &q)
+	s.Retry.MaxAttempts = 1
+	s.Persist = func() error { return context.DeadlineExceeded }
+	s.RetryHandler = func(context.Context, error) RetryDecision {
+		retried = true
+		return RetryNow
+	}
+	if err := (Service{Scheduler: s}).Run(context.Background()); err == nil {
+		t.Fatal("initial drain persistence failure was swallowed")
+	}
+	if retried {
+		t.Fatal("initial drain persistence failure entered actionable retry")
 	}
 }
 

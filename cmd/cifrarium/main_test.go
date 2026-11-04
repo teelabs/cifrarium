@@ -16,6 +16,7 @@ import (
 
 	"github.com/teelabs/cifrarium/internal/daemon"
 	"github.com/teelabs/cifrarium/internal/mcp"
+	"github.com/teelabs/cifrarium/internal/recovery"
 	"github.com/teelabs/cifrarium/internal/store"
 	"github.com/zalando/go-keyring"
 )
@@ -415,6 +416,58 @@ func TestWriteDaemonServiceErrorSuppressesAlreadyRenderedCaptureDetails(t *testi
 
 	if out.Len() != 0 {
 		t.Fatalf("raw capture error was printed after sanitized renderer: %q", out.String())
+	}
+}
+
+func TestWriteDaemonServiceErrorSuppressesAlreadyRenderedRetryDetails(t *testing.T) {
+	var out bytes.Buffer
+	err := &daemon.ReportedFailure{Err: errors.New("initial pending drain failed: recovery verification required before upload")}
+
+	writeDaemonServiceError(&out, err)
+
+	if out.Len() != 0 {
+		t.Fatalf("raw retry error was printed after sanitized renderer: %q", out.String())
+	}
+}
+
+func TestDaemonRecoverySharesReloadsProtectedConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	if err := os.MkdirAll(filepath.Join(home, "config", "cifrarium"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	op := make([]byte, 32)
+	if _, err := rand.Read(op); err != nil {
+		t.Fatal(err)
+	}
+	shares, err := recovery.Split(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(home, "config", "cifrarium", "daemon.env")
+	contents := fmt.Sprintf("CIFRARIUM_RECOVERY_SHARE_1=%s\nCIFRARIUM_RECOVERY_SHARE_2=%s\n", shares[0].Label+":"+shares[0].Value, shares[1].Label+":"+shares[1].Value)
+	if err := os.WriteFile(envPath, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := daemonRecoveryShares(home, nil)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("daemonRecoveryShares() = %#v, %v; want two shares", got, err)
+	}
+}
+
+func TestDaemonRecoverySharesRejectsIncompleteProtectedConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	if err := os.MkdirAll(filepath.Join(home, "config", "cifrarium"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(home, "config", "cifrarium", "daemon.env")
+	if err := os.WriteFile(envPath, []byte("CIFRARIUM_RECOVERY_SHARE_1=protected-value\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daemonRecoveryShares(home, nil); err == nil {
+		t.Fatal("incomplete recovery configuration unexpectedly accepted")
 	}
 }
 

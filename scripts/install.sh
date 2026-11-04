@@ -30,11 +30,19 @@ die() {
 }
 
 step() {
-  printf '%s...\n' "$*" >&2
+	if [[ -t 2 ]]; then
+		printf '\r\033[2K%s...' "$*" >&2
+	else
+		printf '%s...\n' "$*" >&2
+	fi
 }
 
 step_done() {
-  printf '%s OK\n' "$*" >&2
+	if [[ -t 2 ]]; then
+		printf '\r\033[2K%s OK\n' "$*" >&2
+	else
+		printf '%s OK\n' "$*" >&2
+	fi
 }
 
 dependency_suggestions() {

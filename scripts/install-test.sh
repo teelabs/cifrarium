@@ -216,6 +216,19 @@ for step in 'Checking platform' 'Checking dependencies' 'Downloading manifest' '
     exit 1
   }
 done
+if grep -Fq $'\033' "$install_output" || grep -Fq $'\r' "$install_output"; then
+  echo 'redirected installer output contains terminal control sequences' >&2
+  cat -v "$install_output" >&2
+  exit 1
+fi
+if command -v script >/dev/null 2>&1; then
+  tty_progress=$(script -qec "bash -c 'source <(sed -n \"32,46p\" \"$ROOT_DIR/scripts/install.sh\"); step test; step_done test'" /dev/null 2>/dev/null)
+  [[ "$tty_progress" == *$'\033[2K'* && "$tty_progress" == *$'\r'* ]] || {
+    echo 'TTY installer progress did not use in-place terminal updates' >&2
+    printf '%s\n' "$tty_progress" | cat -v >&2
+    exit 1
+  }
+fi
 if [[ -s "$SYSTEMCTL_LOG" ]]; then
   echo 'installer started systemd without --enable' >&2
   cat "$SYSTEMCTL_LOG" >&2

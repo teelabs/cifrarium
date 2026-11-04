@@ -195,9 +195,13 @@ TTY output uses the muted semantic foreground palette: headers `#58A6FF`,
 commands `#3FB950`, paths `#79C0FF`, warnings `#D29922`, failures `#F85149`,
 identity `#D2A8FF`, and secondary text `#8B949E`. Copyable command blocks are
 bounded by visible separators and blank lines. A local capture failure ends the
-foreground daemon after this diagnostic; transient provider/upload failures
-remain queued for retry. Redirected output, systemd logs, and JSON remain free
-of ANSI sequences.
+foreground daemon after this diagnostic. Pending recovery-verification and
+provider/upload failures use the retry flow: an interactive daemon asks
+`Retry? [Y/n]`, defaults to yes, explains that the operator should use another
+console, accepts Enter before the countdown ends, and returns to the shell
+when declined. Systemd and other non-TTY runs retry without prompting. The
+encrypted queue is preserved. Redirected output, systemd logs, and JSON remain
+free of ANSI sequences.
 
 ### 5.3 Check a GitHub provider
 
