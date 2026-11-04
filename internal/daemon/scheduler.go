@@ -86,20 +86,22 @@ func (s *Scheduler) Cycle(ctx context.Context) error {
 	return nil
 }
 func (s *Scheduler) DrainPending(ctx context.Context) error {
-	for s.Pending.Len() > 0 {
-		item := s.Pending.items[0]
+	for {
+		item, ok := s.Pending.Peek()
+		if !ok {
+			return nil
+		}
 		if err := s.uploadWithRetry(ctx, item); err != nil {
 			return err
 		}
 		_, _ = s.Pending.Pop()
 		if s.Persist != nil {
 			if err := s.Persist(); err != nil {
-				s.Pending.items = append([]Item{item}, s.Pending.items...)
+				_ = s.Pending.Prepend(item)
 				return &PersistenceError{Err: err}
 			}
 		}
 	}
-	return nil
 }
 func (s *Scheduler) Run(ctx context.Context) error {
 	if s.Interval <= 0 {

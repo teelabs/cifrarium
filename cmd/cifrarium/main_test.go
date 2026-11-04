@@ -13,11 +13,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/teelabs/cifrarium/internal/daemon"
 	"github.com/teelabs/cifrarium/internal/mcp"
 	"github.com/teelabs/cifrarium/internal/recovery"
+	"github.com/teelabs/cifrarium/internal/rpc"
 	"github.com/teelabs/cifrarium/internal/store"
 	"github.com/zalando/go-keyring"
 )
@@ -139,6 +141,16 @@ func TestCanonicalCommandUsesNestedSubcommands(t *testing.T) {
 	}
 }
 
+func TestCanonicalCommandAcceptsDaemonRefresh(t *testing.T) {
+	command, args, err := canonicalCommand([]string{"daemon", "refresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command != "daemon-refresh" || len(args) != 0 {
+		t.Fatalf("canonicalCommand() = %q, %#v; want daemon-refresh, no args", command, args)
+	}
+}
+
 func TestCanonicalCommandRejectsLegacyFlag(t *testing.T) {
 	if _, _, err := canonicalCommand([]string{"-command=doctor"}); err == nil {
 		t.Fatal("legacy -command syntax was accepted")
@@ -185,7 +197,7 @@ func TestCifrariumHelpListsCommandsWithoutConfiguredValues(t *testing.T) {
 		t.Fatalf("help failed: %v\n%s", err, out)
 	}
 	text := string(out)
-	for _, want := range []string{"Usage: cifrarium <command> [flags]", "Commands:", "status", "doctor", "provider setup", "provider health", "recovery shares", "recovery import", "daemon"} {
+	for _, want := range []string{"Usage: cifrarium <command> [flags]", "Commands:", "status", "doctor", "provider setup", "provider health", "recovery shares", "recovery import", "daemon", "daemon refresh"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("help missing %q: %s", want, text)
 		}
@@ -438,8 +450,9 @@ func TestDaemonWiresRecoverySnapshotAndQueuesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	vault := store.New(root, op, signing)
+	backend := &daemon.Backend{Home: home, Vault: vault}
 	snapshot := func(context.Context) (daemon.Item, error) {
-		return captureSnapshot(home, vault)
+		return backend.CaptureSnapshot(context.Background())
 	}
 	scheduler := newDaemonScheduler(snapshot, func(context.Context, daemon.Item) error {
 		return errors.New("offline")
@@ -539,6 +552,54 @@ func TestMCPHandlerReturnsReadOnlyRestorePlan(t *testing.T) {
 	}
 	if plan["readOnly"] != true || plan["requiresCliConfirmation"] != true || plan["snapshot"] != "snapshot-id" {
 		t.Fatalf("unexpected plan=%#v", plan)
+	}
+}
+
+func TestMCPStatusUsesDaemonBackendView(t *testing.T) {
+	root := t.TempDir()
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &daemon.Backend{Vault: store.New(root, []byte("operational-key"), signing), Pending: &daemon.Queue{}}
+	ready := &atomic.Bool{}
+	ready.Store(true)
+	handler := newMCPHandlerWithReadiness(root, "", backend, ready)
+	result, err := handler.Handle(context.Background(), mcp.Request{Method: "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, ok := result.(map[string]any)
+	if !ok || status["vault"] != root || status["vaultState"] != "ready" || status["backend"] != "ready" {
+		t.Fatalf("MCP status = %#v; want daemon backend view", result)
+	}
+}
+
+func TestDaemonControlHandlerRequiresBackendReadiness(t *testing.T) {
+	root := t.TempDir()
+	op := make([]byte, 32)
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := store.New(root, op, signing)
+	backendReady := &atomic.Bool{}
+	mcpReady := &atomic.Bool{}
+	backend := &daemon.Backend{Vault: vault, Operational: op, Signing: signing}
+	handler := newDaemonControlHandler(backend, func(context.Context) (daemon.Item, error) {
+		return daemon.Item{ID: "snapshot"}, nil
+	}, backendReady, mcpReady)
+	_, rpcErr := handler(context.Background(), rpc.Request{JSONRPC: "2.0", ID: "1", Method: "daemon.status"})
+	if rpcErr == nil || rpcErr.Code != -32002 {
+		t.Fatalf("status error = %#v; want backend-not-ready", rpcErr)
+	}
+	backendReady.Store(true)
+	result, rpcErr := handler(context.Background(), rpc.Request{JSONRPC: "2.0", ID: "2", Method: "daemon.status"})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	if result.(daemon.Status).Vault != root {
+		t.Fatalf("status vault = %q; want test root", result.(daemon.Status).Vault)
 	}
 }
 

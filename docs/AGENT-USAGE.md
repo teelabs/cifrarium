@@ -278,6 +278,17 @@ The agent may recommend restarting a service only after the human requests an
 operational intervention. A persistent queue is valuable evidence; preserve it
 during diagnosis.
 
+The daemon is the backend for normal coordinated CLI and MCP operations. After
+the human approves a service refresh, use the copyable command:
+
+~~~sh
+cifrarium daemon refresh
+~~~
+
+This reloads the managed service configuration, restarts the daemon, and checks
+backend and MCP readiness separately. It does not start a second foreground
+daemon. MCP tools remain protocol-level operations and are not CLI subcommands.
+
 ## 6. Failure handling
 
 | Observation | Safe interpretation | Next action |

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/teelabs/cifrarium/internal/limits"
@@ -56,4 +57,21 @@ func TestQueueRejectsOversizedItemID(t *testing.T) {
 	if err := q.Push(Item{ID: strings.Repeat("x", limits.MaxPathBytes+1), Ciphertext: []byte("cipher")}); err == nil {
 		t.Fatal("oversized queue item id accepted")
 	}
+}
+
+func TestQueueConcurrentAccessIsSynchronized(t *testing.T) {
+	q := &Queue{}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				_ = q.Push(Item{ID: "id", Ciphertext: []byte("cipher")})
+				_, _ = q.Pop()
+				_ = q.Len()
+			}
+		}()
+	}
+	wg.Wait()
 }

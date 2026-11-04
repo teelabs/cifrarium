@@ -10,7 +10,10 @@ import (
 // before entering the six-hour scheduler loop. Local capture failures are
 // reported and returned so a foreground daemon exits; retryable upload
 // failures are reported and retained in the encrypted queue.
-type Service struct{ Scheduler *Scheduler }
+type Service struct {
+	Scheduler *Scheduler
+	Ready     func()
+}
 
 func (s Service) Run(ctx context.Context) error {
 	if s.Scheduler == nil {
@@ -57,6 +60,9 @@ func (s Service) Run(ctx context.Context) error {
 			}
 		}
 		break
+	}
+	if s.Ready != nil {
+		s.Ready()
 	}
 	return s.Scheduler.Run(ctx)
 }

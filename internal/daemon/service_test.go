@@ -72,6 +72,28 @@ func TestServiceRunsInitialCycle(t *testing.T) {
 	}
 }
 
+func TestServiceMarksBackendReadyAfterInitialWork(t *testing.T) {
+	ready := make(chan struct{}, 1)
+	scheduler := NewScheduler(
+		func(context.Context) (Item, error) { return Item{ID: "snapshot"}, nil },
+		func(context.Context, Item) error { return nil },
+		&Queue{},
+	)
+	scheduler.Interval = time.Millisecond
+	service := Service{Scheduler: scheduler, Ready: func() { ready <- struct{}{} }}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- service.Run(ctx) }()
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("service did not report readiness after initial work")
+	}
+	cancel()
+	<-done
+}
+
 func TestDrainPendingKeepsItemWhenUploadFails(t *testing.T) {
 	q := Queue{}
 	if err := q.Push(Item{ID: "pending", Ciphertext: []byte("c")}); err != nil {

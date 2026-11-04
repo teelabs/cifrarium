@@ -15,16 +15,17 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
+	"time"
 
-	"github.com/teelabs/cifrarium/internal/adapters"
 	"github.com/teelabs/cifrarium/internal/config"
 	"github.com/teelabs/cifrarium/internal/daemon"
 	"github.com/teelabs/cifrarium/internal/mcp"
 	"github.com/teelabs/cifrarium/internal/provider"
 	"github.com/teelabs/cifrarium/internal/recovery"
+	"github.com/teelabs/cifrarium/internal/rpc"
 	"github.com/teelabs/cifrarium/internal/store"
-	syncvault "github.com/teelabs/cifrarium/internal/sync"
 	"github.com/zalando/go-keyring"
 )
 
@@ -128,6 +129,19 @@ func main() {
 		fmt.Printf("{\"provider\":\"github\",\"remote\":%q,\"status\":\"ok\"}\n", *providerRemote)
 		return
 	}
+	if cmd == "daemon-refresh" {
+		resolvedRoot, rootErr := resolveVaultRoot(cmd, *root, home)
+		if rootErr != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", rootErr)
+			os.Exit(1)
+		}
+		if err := runDaemonRefresh(resolvedRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: daemon refresh failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("daemon refreshed; backend and MCP are ready")
+		return
+	}
 	if cmd == "doctor" {
 		resolvedRoot, rootErr := resolveVaultRoot(cmd, *root, home)
 		if rootErr != nil && !errors.Is(rootErr, errRootNotConfigured) {
@@ -212,16 +226,23 @@ func main() {
 	}
 	switch cmd {
 	case "status":
-		report := statusReport{
-			Vault:        *root,
-			Configured:   true,
-			VaultState:   "ready",
-			KeyringState: "available",
-			Snapshots:    countSnapshots(*root),
-			Head:         v.Head,
-			Pending:      countPending(*root, op),
-			Signer:       fmt.Sprintf("%x", sign.Public()),
+		if report, ok, err := callDaemonStatus(*root); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: daemon status failed: %v\n", err)
+			os.Exit(1)
+		} else if ok {
+			if err := renderStatus(os.Stdout, report, format); err != nil {
+				fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+				os.Exit(2)
+			}
+			return
 		}
+		localBackend := daemon.Backend{Home: home, Vault: v, Operational: op, Signing: sign}
+		backendStatus, err := localBackend.Status()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: status failed: %v\n", err)
+			os.Exit(1)
+		}
+		report := statusReport(backendStatus)
 		if err := renderStatus(os.Stdout, report, format); err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 			os.Exit(2)
@@ -236,25 +257,23 @@ func main() {
 			fmt.Printf("%s:%s\n", share.Label, share.Value)
 		}
 	case "snapshot":
-		var all []store.Record
-		for _, a := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
-			files, err := a.Collect(home)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			for _, f := range files {
-				all = append(all, store.Record{Path: f.Relative, Mode: uint32(f.Mode), Data: f.Data})
-			}
+		if snapshotID, ok, err := callDaemonSnapshot(*root); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: daemon snapshot failed: %v\n", err)
+			os.Exit(1)
+		} else if ok {
+			fmt.Printf("snapshot %s\n", snapshotID)
+			return
 		}
-		m, err := v.Save(all)
+		localBackend := daemon.Backend{Home: home, Vault: v}
+		item, err := localBackend.CaptureSnapshot(context.Background())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Printf("snapshot %s\n", m.Snapshot)
+		fmt.Printf("snapshot %s\n", item.ID)
 	case "daemon":
 		socket := filepath.Join(*root, "cifrarium.sock")
+		controlSocket := filepath.Join(*root, "control.sock")
 		queuePath := filepath.Join(*root, "pending.queue")
 		queue := &daemon.Queue{}
 		if _, err := os.Stat(queuePath); err == nil {
@@ -273,19 +292,26 @@ func main() {
 			}
 			shares = append(shares, share)
 		}
-		snapshot := func(context.Context) (daemon.Item, error) { return captureSnapshot(home, v) }
-		uploader := func(ctx context.Context, item daemon.Item) error {
-			if *providerDir == "" {
-				return fmt.Errorf("provider is not configured")
-			}
-			activeShares, err := daemonRecoveryShares(home, shares)
-			if err != nil {
-				return err
-			}
-			return syncvault.UploadGate{OperationalKey: op}.UploadSnapshot(ctx, provider.Git{Dir: *providerDir, Remote: *providerRemote}, item.ID, item.Ciphertext, item.Manifest, activeShares)
+		activeShares, err := daemonRecoveryShares(home, shares)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(1)
 		}
-		scheduler := newDaemonScheduler(snapshot, uploader, queue)
-		scheduler.Persist = func() error { return queue.Save(queuePath, op) }
+		backend := &daemon.Backend{
+			Home:               home,
+			Vault:              v,
+			Operational:        op,
+			Signing:            sign,
+			Pending:            queue,
+			QueuePath:          queuePath,
+			RecoveryShares:     activeShares,
+			ProviderConfigured: *providerDir != "",
+		}
+		if *providerDir != "" {
+			backend.Provider = provider.Git{Dir: *providerDir, Remote: *providerRemote}
+		}
+		scheduler := newDaemonScheduler(backend.CaptureSnapshot, backend.UploadSnapshot, queue)
+		scheduler.Persist = backend.PersistQueue
 		scheduler.Report = func(err error) {
 			newTerminalUI(os.Stderr).Text(colorIdentity, "cifrarium daemon")
 			renderDaemonFailure(os.Stderr, home, err)
@@ -297,40 +323,68 @@ func main() {
 		defer stop()
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
+		mcpReadyState := &atomic.Bool{}
+		backendReadyState := &atomic.Bool{}
+		controlServer, err := rpc.ListenUnix(controlSocket, newDaemonControlHandler(backend, backend.CaptureSnapshot, backendReadyState, mcpReadyState), nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: control listener failed: %v\n", err)
+			os.Exit(1)
+		}
+		defer controlServer.Close()
+		controlErrors := make(chan error, 1)
+		go func() {
+			if err := controlServer.Serve(ctx); err != nil && ctx.Err() == nil {
+				controlErrors <- err
+				cancel()
+			}
+		}()
 		mcpErrors := make(chan error, 1)
 		mcpReady := make(chan struct{})
 		go func() {
-			server := mcp.Server{Socket: socket, Handler: newMCPHandler(*root, *providerDir), Ready: func() { close(mcpReady) }}
-			if err := server.Listen(); err != nil {
+			server := mcp.Server{Socket: socket, Handler: newMCPHandlerWithReadiness(*root, *providerDir, backend, backendReadyState), Context: ctx, Ready: func() { close(mcpReady) }}
+			if err := server.Listen(); err != nil && ctx.Err() == nil {
 				mcpErrors <- fmt.Errorf("MCP listener failed: %w", err)
 				cancel()
 			}
 		}()
 		select {
 		case <-mcpReady:
+			mcpReadyState.Store(true)
 		case err := <-mcpErrors:
+			_ = controlServer.Close()
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		case <-ctx.Done():
+			_ = controlServer.Close()
 			if ctx.Err() != context.Canceled {
 				fmt.Fprintln(os.Stderr, ctx.Err())
 			}
 			os.Exit(1)
 		}
 		newTerminalUI(os.Stdout).Text(colorIdentity, fmt.Sprintf("cifrarium daemon listening on %s", socket))
-		if err := (daemon.Service{Scheduler: scheduler}).Run(ctx); err != nil && ctx.Err() == nil {
+		service := daemon.Service{Scheduler: scheduler, Ready: func() { backendReadyState.Store(true) }}
+		if err := service.Run(ctx); err != nil && ctx.Err() == nil {
 			writeDaemonServiceError(os.Stderr, err)
 			_ = os.Remove(socket)
+			_ = controlServer.Close()
 			os.Exit(1)
 		}
 		select {
+		case err := <-controlErrors:
+			if ctx.Err() == nil {
+				_ = controlServer.Close()
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 		case err := <-mcpErrors:
+			_ = controlServer.Close()
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		default:
 		}
+		_ = os.Remove(controlSocket)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cifrarium setup | status | doctor | snapshot | daemon | migrate-catalog | provider setup|health | recovery shares|import")
+		fmt.Fprintln(os.Stderr, "usage: cifrarium setup | status | doctor | snapshot | daemon [refresh] | migrate-catalog | provider setup|health | recovery shares|import")
 		os.Exit(2)
 	}
 }
@@ -389,7 +443,15 @@ func canonicalCommand(args []string) (string, []string, error) {
 		default:
 			return "", nil, fmt.Errorf("unknown recovery command %q", args[1])
 		}
-	case "status", "doctor", "setup", "snapshot", "daemon", "migrate-catalog":
+	case "daemon":
+		if len(args) >= 2 && args[1] == "refresh" {
+			return "daemon-refresh", append([]string{}, args[2:]...), nil
+		}
+		if len(args) > 1 {
+			return "", nil, fmt.Errorf("unknown daemon command %q", args[1])
+		}
+		return "daemon", append([]string{}, args[1:]...), nil
+	case "status", "doctor", "setup", "snapshot", "migrate-catalog":
 		return args[0], append([]string{}, args[1:]...), nil
 	case "help":
 		return "help", append([]string{}, args[1:]...), nil
@@ -406,6 +468,7 @@ func writeCifrariumUsage(w io.Writer, fs *flag.FlagSet, program string) {
 	fmt.Fprintln(w, "  setup                   Configure the local vault")
 	fmt.Fprintln(w, "  snapshot                Capture a local encrypted snapshot")
 	fmt.Fprintln(w, "  daemon                  Run the user daemon")
+	fmt.Fprintln(w, "  daemon refresh          Reload configuration and restart the user daemon")
 	fmt.Fprintln(w, "  migrate-catalog         Encrypt legacy catalog metadata")
 	fmt.Fprintln(w, "  provider setup          Configure the provider interactively")
 	fmt.Fprintln(w, "  provider health         Check provider access and privacy")
@@ -429,7 +492,7 @@ func parseOutputFormat(value string) (outputFormat, error) {
 
 func commandMutatesOrHandlesSecrets(command string) bool {
 	switch command {
-	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon":
+	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon", "daemon-refresh":
 		return true
 	default:
 		return false
@@ -531,7 +594,8 @@ func runSetupWithCommit(root, home string, nonInteractive bool, output io.Writer
 		for _, adapter := range inspectAdapters(home) {
 			fmt.Fprintf(output, "- %s: %d detected paths\n", adapter.Name, len(adapter.Paths))
 		}
-		if _, err := captureSnapshot(home, vault); err != nil {
+		backend := daemon.Backend{Home: home, Vault: vault}
+		if _, err := backend.CaptureSnapshot(context.Background()); err != nil {
 			return fmt.Errorf("first capture: %w", err)
 		}
 		fmt.Fprintln(output, "First local encrypted capture completed.")
@@ -701,32 +765,6 @@ func askSetup(prompt string) (bool, error) {
 	return answer == "s" || answer == "sim" || answer == "y" || answer == "yes", nil
 }
 
-func captureSnapshot(home string, vault *store.Vault) (daemon.Item, error) {
-	var records []store.Record
-	for _, a := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
-		files, err := a.Collect(home)
-		if err != nil {
-			return daemon.Item{}, &daemon.CaptureError{Err: err}
-		}
-		for _, f := range files {
-			records = append(records, store.Record{Path: f.Relative, Mode: uint32(f.Mode), Data: f.Data})
-		}
-	}
-	m, err := vault.Save(records)
-	if err != nil {
-		return daemon.Item{}, err
-	}
-	ciphertext, err := vault.SnapshotCiphertext(m.Snapshot)
-	if err != nil {
-		return daemon.Item{}, err
-	}
-	manifest, err := store.SealManifest(m, vault.Operational)
-	if err != nil {
-		return daemon.Item{}, err
-	}
-	return daemon.Item{ID: m.Snapshot, Ciphertext: ciphertext, Manifest: manifest}, nil
-}
-
 func writeDaemonServiceError(w io.Writer, err error) {
 	var captureErr interface{ CaptureFailure() }
 	if errors.As(err, &captureErr) {
@@ -746,6 +784,10 @@ func newDaemonScheduler(snapshot daemon.Snapshotter, uploader daemon.Uploader, q
 }
 
 func newMCPHandler(root, providerDir string) mcp.Handler {
+	return newMCPHandlerWithReadiness(root, providerDir, nil, nil)
+}
+
+func newMCPHandlerWithReadiness(root, providerDir string, backend *daemon.Backend, backendReady *atomic.Bool) mcp.Handler {
 	return mcp.HandlerFunc(func(_ context.Context, request mcp.Request) (any, error) {
 		result := map[string]any{
 			"method":   request.Method,
@@ -754,13 +796,40 @@ func newMCPHandler(root, providerDir string) mcp.Handler {
 		switch request.Method {
 		case "status":
 			result["daemon"] = "running"
-			result["vault"] = root
-			result["providerConfigured"] = providerDir != ""
+			if backendReady != nil {
+				result["backend"] = "starting"
+				if backendReady.Load() {
+					result["backend"] = "ready"
+				}
+			}
+			if backend != nil && (backendReady == nil || backendReady.Load()) {
+				status, err := backend.Status()
+				if err != nil {
+					return nil, err
+				}
+				result["vault"] = status.Vault
+				result["vaultState"] = status.VaultState
+				result["snapshots"] = status.Snapshots
+				result["pending"] = status.Pending
+			} else {
+				result["vault"] = root
+			}
+			if backend != nil {
+				result["providerConfigured"] = backend.ProviderConfigured
+			} else {
+				result["providerConfigured"] = providerDir != ""
+			}
 			return result, nil
 		case "snapshot.plan":
-			result["action"] = "capture"
-			result["adapters"] = []string{"codex", "oh-my-zsh", "starship"}
-			result["requiresCliConfirmation"] = true
+			if backend != nil {
+				for key, value := range backend.SnapshotPlan() {
+					result[key] = value
+				}
+			} else {
+				result["action"] = "capture"
+				result["adapters"] = []string{"codex", "oh-my-zsh", "starship"}
+				result["requiresCliConfirmation"] = true
+			}
 			return result, nil
 		case "restore.plan":
 			var params struct {
@@ -771,17 +840,103 @@ func newMCPHandler(root, providerDir string) mcp.Handler {
 					return nil, fmt.Errorf("invalid restore plan parameters: %w", err)
 				}
 			}
-			if params.Snapshot == "" {
-				return nil, fmt.Errorf("restore plan requires a snapshot")
+			var plan map[string]any
+			if backend != nil {
+				var err error
+				plan, err = backend.RestorePlan(params.Snapshot)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				if params.Snapshot == "" {
+					return nil, fmt.Errorf("restore plan requires a snapshot")
+				}
+				plan = map[string]any{"action": "restore", "snapshot": params.Snapshot, "requiresCliConfirmation": true}
 			}
-			result["action"] = "restore"
-			result["snapshot"] = params.Snapshot
-			result["requiresCliConfirmation"] = true
+			for key, value := range plan {
+				result[key] = value
+			}
 			return result, nil
 		default:
 			return nil, fmt.Errorf("method %q is not available", request.Method)
 		}
 	})
+}
+
+func callDaemonStatus(root string) (statusReport, bool, error) {
+	var report statusReport
+	socket := filepath.Join(root, "control.sock")
+	if _, err := os.Stat(socket); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return statusReport{}, false, nil
+		}
+		return report, false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := rpc.Call(ctx, socket, "daemon.status", nil, &report); err != nil {
+		return report, true, err
+	}
+	return report, true, nil
+}
+
+func callDaemonSnapshot(root string) (string, bool, error) {
+	socket := filepath.Join(root, "control.sock")
+	if _, err := os.Stat(socket); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var result struct {
+		Snapshot string `json:"snapshot"`
+	}
+	if err := rpc.Call(ctx, socket, "snapshot.create", nil, &result); err != nil {
+		return "", true, err
+	}
+	if result.Snapshot == "" {
+		return "", true, errors.New("daemon returned an empty snapshot identifier")
+	}
+	return result.Snapshot, true, nil
+}
+
+func newDaemonControlHandler(backend *daemon.Backend, snapshot func(context.Context) (daemon.Item, error), backendReady, mcpReady *atomic.Bool) rpc.Handler {
+	return func(ctx context.Context, request rpc.Request) (any, *rpc.Error) {
+		switch request.Method {
+		case "daemon.status":
+			if !backendReady.Load() {
+				return nil, &rpc.Error{Code: -32002, Message: "daemon backend is not ready"}
+			}
+			status, err := backend.Status()
+			if err != nil {
+				return nil, &rpc.Error{Code: -32001, Message: "daemon status unavailable"}
+			}
+			return status, nil
+		case "mcp.status":
+			backendState := "starting"
+			if backendReady.Load() {
+				backendState = "ready"
+			}
+			mcpState := "starting"
+			if mcpReady.Load() {
+				mcpState = "ready"
+			}
+			return map[string]any{"backend": backendState, "mcp": map[string]any{"state": mcpState}}, nil
+		case "snapshot.create":
+			if !backendReady.Load() {
+				return nil, &rpc.Error{Code: -32002, Message: "daemon backend is not ready"}
+			}
+			item, err := snapshot(ctx)
+			if err != nil {
+				return nil, &rpc.Error{Code: -32010, Message: "snapshot failed"}
+			}
+			return map[string]string{"snapshot": item.ID}, nil
+		default:
+			return nil, &rpc.Error{Code: -32601, Message: "method not found"}
+		}
+	}
 }
 
 func parseRecoveryShares(values []string) ([]recovery.Share, error) {
