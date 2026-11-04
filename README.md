@@ -342,7 +342,7 @@ chmod 0600 "$HOME/.config/cifrarium/daemon.env"
 Its shape is:
 
 ~~~dotenv
-CIFRARIUM_PROVIDER_DIR=/home/you/.local/share/cifrarium-provider
+CIFRARIUM_PROVIDER_DIR=$HOME/.local/share/cifrarium-provider
 CIFRARIUM_PROVIDER_REMOTE=https://github.com/OWNER/REPO.git
 CIFRARIUM_RECOVERY_SHARE_1='cifrarium-1:BASE64_VALUE_1'
 CIFRARIUM_RECOVERY_SHARE_2='cifrarium-2:BASE64_VALUE_2'
@@ -401,6 +401,23 @@ failures, and persists the queue. A running process is not proof that an
 upload completed: inspect logs, queue state, and provider health. The local
 MCP socket is mode `0600` and exposes only read-only `status`,
 `snapshot.plan`, and `restore.plan` methods. Plans do not apply mutations.
+
+The daemon is the backend for normal CLI and MCP operations. The CLI keeps
+human commands such as `snapshot` and `restore`; MCP exposes tools through its
+protocol and does not create `cifrarium mcp ...` subcommands. When the managed
+daemon is active, `status` and `snapshot` use its local control endpoint so
+vault and queue operations are coordinated. If no daemon endpoint exists, the
+CLI retains its bootstrap-compatible local behavior.
+
+When `daemon.env` or the service unit changes, refresh the managed daemon:
+
+~~~sh
+cifrarium daemon refresh
+~~~
+
+The command reloads the user service, restarts the daemon, and waits for both
+the backend and MCP endpoint to become ready. It never starts a second
+foreground daemon.
 
 ## Recover a fresh environment
 

@@ -84,6 +84,21 @@ func TestSocketIsPrivateAndMutationsAreRejected(t *testing.T) {
 		if response.Error == nil {
 			t.Fatalf("mutation %q was accepted", method)
 		}
+		if response.Error.Code != -32601 {
+			t.Fatalf("mutation %q error code=%d; want method-not-found", method, response.Error.Code)
+		}
+	}
+}
+
+func TestSecondMCPServerDoesNotStealActiveSocket(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "cifrarium.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := (Server{Socket: socket}).Listen(); err == nil || err.Error() != "MCP endpoint is already in use" {
+		t.Fatalf("second MCP listener error = %v; want active-endpoint rejection", err)
 	}
 }
 

@@ -4,6 +4,22 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-04
+
+### Added
+
+- Added a Linux local JSON-RPC control endpoint owned by the daemon, with
+  structured errors and a `cifrarium daemon refresh` command that reloads the
+  managed service and verifies MCP readiness.
+
+### Changed
+
+- Running CLI status and snapshot operations use the daemon backend when its
+  control endpoint is available; bootstrap-compatible direct operation remains
+  available when no daemon endpoint exists.
+- MCP errors now use structured JSON-RPC error objects while keeping MCP tools
+  separate from CLI subcommands.
+
 ## [0.9.5] - 2026-11-04
 
 ### Fixed

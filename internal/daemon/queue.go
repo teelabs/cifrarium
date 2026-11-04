@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 
 	crypt "github.com/teelabs/cifrarium/internal/crypto"
 	"github.com/teelabs/cifrarium/internal/limits"
@@ -16,9 +17,14 @@ type Item struct {
 	Ciphertext []byte
 	Manifest   []byte
 }
-type Queue struct{ items []Item }
+type Queue struct {
+	mu    sync.Mutex
+	items []Item
+}
 
 func (q *Queue) Push(item Item) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	if err := validateItem(item); err != nil {
 		return err
 	}
@@ -29,6 +35,8 @@ func (q *Queue) Push(item Item) error {
 	return nil
 }
 func (q *Queue) Pop() (Item, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	if len(q.items) == 0 {
 		return Item{}, false
 	}
@@ -36,10 +44,39 @@ func (q *Queue) Pop() (Item, bool) {
 	q.items = q.items[1:]
 	return item, true
 }
-func (q *Queue) Len() int { return len(q.items) }
+func (q *Queue) Len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.items)
+}
+
+func (q *Queue) Peek() (Item, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.items) == 0 {
+		return Item{}, false
+	}
+	return q.items[0], true
+}
+
+func (q *Queue) Prepend(item Item) error {
+	if err := validateItem(item); err != nil {
+		return err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.items) >= MaxPending {
+		return fmt.Errorf("pending queue is full")
+	}
+	q.items = append([]Item{item}, q.items...)
+	return nil
+}
 
 func (q *Queue) Save(path string, operationalKey []byte) error {
-	raw, err := json.Marshal(q.items)
+	q.mu.Lock()
+	items := append([]Item(nil), q.items...)
+	q.mu.Unlock()
+	raw, err := json.Marshal(items)
 	if err != nil {
 		return err
 	}

@@ -43,7 +43,7 @@ Check the current interface before copying examples:
 go run ./cmd/cifrarium -h
 ~~~
 
-The main commands are `status`, `doctor`, `snapshot`, `daemon`,
+The main commands are `status`, `doctor`, `snapshot`, `daemon`, `daemon refresh`,
 `migrate-catalog`, `provider setup`, `provider health`, `recovery shares`, and
 `recovery import`. Options follow the subcommand, for example
 `cifrarium provider health --verify-private`.
@@ -210,7 +210,7 @@ chmod 600 "$HOME/.config/cifrarium/daemon.env"
 Example contents, with no real values:
 
 ~~~dotenv
-CIFRARIUM_PROVIDER_DIR=/home/you/.local/share/cifrarium-provider
+CIFRARIUM_PROVIDER_DIR=$HOME/.local/share/cifrarium-provider
 CIFRARIUM_PROVIDER_REMOTE=https://github.com/OWNER/REPO.git
 CIFRARIUM_RECOVERY_SHARE_1='cifrarium-1:BASE64_VALUE_1'
 CIFRARIUM_RECOVERY_SHARE_2='cifrarium-2:BASE64_VALUE_2'
@@ -260,6 +260,17 @@ The daemon:
 - persists the queue before continuing;
 - stops when it cannot guarantee persistence;
 - exposes a local MCP socket with mode 0600.
+
+The daemon is the backend for coordinated CLI and MCP operations. After
+changing protected daemon configuration, use:
+
+~~~sh
+cifrarium daemon refresh
+~~~
+
+This reloads and restarts the managed user service, then verifies backend and
+MCP readiness. MCP tools remain protocol operations; they are not exposed as
+`cifrarium mcp ...` shell commands.
 
 A running process is not proof that an upload succeeded. Check logs, queue
 state, and provider health.
@@ -341,10 +352,10 @@ input scope; do not raise production limits without reviewing the threat model.
 
 ## 8. Local MCP
 
-The MCP is local-only and offers status, snapshot.plan, and restore.plan. Plans
-are not mutations: they require explicit confirmation and a separate flow. Do
-not expose the socket over a network, copy it to another host, or treat a plan
-response as proof that a restore was applied.
+The MCP is local-only and offers status, snapshot.plan, and restore.plan as
+protocol tools. Plans are not mutations: they require explicit confirmation
+and a separate flow. Do not expose the socket over a network, copy it to
+another host, or treat a plan response as proof that a restore was applied.
 
 The current CLI does not expose a public restore-activation command;
 restore.plan is planning only. Agents must state this clearly.

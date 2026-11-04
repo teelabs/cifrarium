@@ -206,10 +206,16 @@ func createPrivateGitHubRepository(dir, slug string) error {
 }
 
 func enableUserDaemon() error {
-	command := exec.Command("systemctl", "--user", "enable", "--now", "cifrarium.service")
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	if err := command.Run(); err != nil {
+	if err := runDaemonRefreshSystemctl("daemon-reload"); err != nil {
+		return fmt.Errorf("daemon activation reload: %w", err)
+	}
+	if err := runDaemonRefreshSystemctl("is-active", "--quiet", "cifrarium.service"); err == nil {
+		if err := runDaemonRefreshSystemctl("restart", "cifrarium.service"); err != nil {
+			return fmt.Errorf("daemon activation restart: %w", err)
+		}
+		return nil
+	}
+	if err := runDaemonRefreshSystemctl("enable", "--now", "cifrarium.service"); err != nil {
 		return fmt.Errorf("daemon activation: %w", err)
 	}
 	return nil

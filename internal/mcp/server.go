@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/teelabs/cifrarium/internal/limits"
 )
@@ -22,7 +25,12 @@ type Response struct {
 	JSONRPC string `json:"jsonrpc"`
 	ID      any    `json:"id"`
 	Result  any    `json:"result,omitempty"`
-	Error   any    `json:"error,omitempty"`
+	Error   *Error `json:"error,omitempty"`
+}
+
+type Error struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
 }
 type Handler interface {
 	Handle(context.Context, Request) (any, error)
@@ -38,18 +46,43 @@ type Server struct {
 	Socket  string
 	Handler Handler
 	Ready   func()
+	Context context.Context
 }
 
 func (s Server) Listen() error {
 	if err := os.MkdirAll(filepath.Dir(s.Socket), 0700); err != nil {
 		return err
 	}
-	_ = os.Remove(s.Socket)
+	if info, err := os.Lstat(s.Socket); err == nil {
+		if info.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("MCP endpoint is not a socket")
+		}
+		if conn, dialErr := net.DialTimeout("unix", s.Socket, 100*time.Millisecond); dialErr == nil {
+			_ = conn.Close()
+			return fmt.Errorf("MCP endpoint is already in use")
+		} else if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+			return fmt.Errorf("MCP endpoint may be in use: %w", dialErr)
+		}
+		if err := os.Remove(s.Socket); err != nil {
+			return fmt.Errorf("remove stale MCP endpoint: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	l, err := net.Listen("unix", s.Socket)
 	if err != nil {
 		return err
 	}
 	defer l.Close()
+	defer os.Remove(s.Socket)
+	ctx := s.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		<-ctx.Done()
+		_ = l.Close()
+	}()
 	if err := os.Chmod(s.Socket, 0600); err != nil {
 		return err
 	}
@@ -59,6 +92,9 @@ func (s Server) Listen() error {
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 		go handle(c, s.Handler)
@@ -72,7 +108,7 @@ func handle(c net.Conn, handler Handler) {
 	for scan.Scan() {
 		var r Request
 		if err := json.Unmarshal(scan.Bytes(), &r); err != nil {
-			if err := enc.Encode(Response{"2.0", nil, nil, fmt.Sprintf("parse error: %v", err)}); err != nil {
+			if err := enc.Encode(Response{"2.0", nil, nil, &Error{Code: -32700, Message: "parse error"}}); err != nil {
 				return
 			}
 			continue
@@ -85,14 +121,14 @@ func handle(c net.Conn, handler Handler) {
 			}
 		case "status", "snapshot.plan", "restore.plan":
 			if handler == nil {
-				if !write(Response{"2.0", r.ID, nil, "daemon handler is unavailable"}) {
+				if !write(Response{"2.0", r.ID, nil, &Error{Code: -32603, Message: "daemon handler is unavailable"}}) {
 					return
 				}
 				continue
 			}
 			result, err := handler.Handle(context.Background(), r)
 			if err != nil {
-				if !write(Response{"2.0", r.ID, nil, err.Error()}) {
+				if !write(Response{"2.0", r.ID, nil, &Error{Code: -32000, Message: err.Error()}}) {
 					return
 				}
 				continue
@@ -101,12 +137,12 @@ func handle(c net.Conn, handler Handler) {
 				return
 			}
 		default:
-			if !write(Response{"2.0", r.ID, nil, fmt.Sprintf("method %q is not available", r.Method)}) {
+			if !write(Response{"2.0", r.ID, nil, &Error{Code: -32601, Message: fmt.Sprintf("method %q is not available", r.Method)}}) {
 				return
 			}
 		}
 	}
 	if err := scan.Err(); err != nil {
-		_ = enc.Encode(Response{"2.0", nil, nil, fmt.Sprintf("request rejected: %v", err)})
+		_ = enc.Encode(Response{"2.0", nil, nil, &Error{Code: -32600, Message: "request rejected"}})
 	}
 }
