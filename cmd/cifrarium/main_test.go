@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -403,6 +404,17 @@ func TestDaemonWiresRecoverySnapshotAndQueuesIt(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Fatalf("snapshots=%d, want 2", len(entries))
+	}
+}
+
+func TestWriteDaemonServiceErrorSuppressesAlreadyRenderedCaptureDetails(t *testing.T) {
+	var out bytes.Buffer
+	err := fmt.Errorf("initial capture failed: %w", &daemon.CaptureError{Err: errors.New("symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: /secret/target")})
+
+	writeDaemonServiceError(&out, err)
+
+	if out.Len() != 0 {
+		t.Fatalf("raw capture error was printed after sanitized renderer: %q", out.String())
 	}
 }
 

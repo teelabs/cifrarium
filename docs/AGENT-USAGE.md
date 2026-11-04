@@ -181,7 +181,8 @@ systemctl --user start cifrarium.service
 
 Do not use `rm`, `source`, `sudo`, or a symlink-following override. If the link
 is intentionally managed, leave capture disabled until the manager provides a
-regular file. The daemon does not upload while the local capture is failing.
+regular file. The foreground daemon stops and does not upload while the local
+capture is failing.
 
 Daemon human diagnostics use the sections `Daemon needs attention`, `What
 happened`, `Why it matters`, `How to fix it`, and `What to do next`. A correction
@@ -190,8 +191,13 @@ the first validated path before the compound suffix `; recovery snapshot
 failed`; for example, the real error `symlink rejected: .zshrc; recovery
 snapshot failed: symlink rejected: .zshrc` yields only the local `.zshrc` path.
 It never prints symlink targets, file contents, recovery shares, or tokens.
-TTY output uses semantic foreground colors; redirected output and JSON remain
-free of ANSI sequences.
+TTY output uses the muted semantic foreground palette: headers `#58A6FF`,
+commands `#3FB950`, paths `#79C0FF`, warnings `#D29922`, failures `#F85149`,
+identity `#D2A8FF`, and secondary text `#8B949E`. Copyable command blocks are
+bounded by visible separators and blank lines. A local capture failure ends the
+foreground daemon after this diagnostic; transient provider/upload failures
+remain queued for retry. Redirected output, systemd logs, and JSON remain free
+of ANSI sequences.
 
 ### 5.3 Check a GitHub provider
 

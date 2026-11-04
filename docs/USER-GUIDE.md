@@ -112,12 +112,17 @@ until the local snapshot succeeds.
 
 The daemon diagnostic is organized as `Daemon needs attention`, followed by
 `What happened`, `Why it matters`, `How to fix it`, and `What to do next`. Its
-correction block is a copyable instruction rather than diagnostic output. It
-extracts only the validated local path from a compound error such as
+correction block is a copyable instruction rather than diagnostic output, with
+explicit separators before and after the commands. A local capture failure
+ends the foreground daemon and returns control to the shell; provider and
+upload failures remain retryable. It extracts only the validated local path
+from a compound error such as
 `symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: .zshrc`;
 it never prints the symlink target, file contents, tokens, or recovery shares.
-TTY output uses the Codex semantic palette and redirected output has no ANSI
-control codes.
+TTY output uses the muted Codex semantic palette: headers `#58A6FF`, commands
+`#3FB950`, paths `#79C0FF`, warnings `#D29922`, failures `#F85149`, identity
+`#D2A8FF`, and secondary text `#8B949E`. Redirected output, systemd logs, and
+JSON have no ANSI control codes.
 
 ## 4. Create and store recovery shares
 

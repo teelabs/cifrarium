@@ -90,8 +90,12 @@ failed`; the compound error `symlink rejected: .zshrc; recovery snapshot
 failed: symlink rejected: .zshrc` therefore displays only the validated
 `~/.zshrc` path. It does not display the complete symlink error, target,
 contents, tokens, or recovery shares. TTY output uses the named Codex semantic
-foreground palette; redirected output and JSON remain unchanged and contain no
-ANSI sequences.
+foreground palette: headers `#58A6FF`, commands `#3FB950`, paths `#79C0FF`,
+warnings `#D29922`, failures `#F85149`, identity `#D2A8FF`, and secondary text
+`#8B949E`. Copyable command blocks are separated from surrounding prose. A
+local capture failure ends the foreground daemon after the sanitized
+diagnostic, while transient provider/upload failures remain retryable;
+redirected output and JSON remain unchanged and contain no ANSI sequences.
 
 ## Acceptance evidence
 

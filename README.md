@@ -215,11 +215,17 @@ file. Do not use `rm`, `source`, `sudo`, or a symlink-following override.
 When the daemon reports this condition, its human diagnostic is intentionally
 split into `Daemon needs attention`, `What happened`, `Why it matters`, `How to
 fix it`, and `What to do next`. The correction block is a copyable instruction,
-not diagnostic output: it shows only the validated local path. For example,
+not diagnostic output: it is separated from surrounding explanation and shows
+only the validated local path. A local capture failure ends the foreground
+daemon and returns control to the shell; transient provider or upload failures
+remain queued for retry. For example,
 `symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: .zshrc`
 resolves to `~/.zshrc`; recovery shares, tokens, file contents, and symlink
-targets are never printed. TTY output uses the Codex semantic palette, while
-redirected and JSON output remain free of ANSI color codes.
+targets are never printed. TTY output uses the muted semantic palette
+`#58A6FF` for headers, `#3FB950` for commands, `#79C0FF` for paths, `#D29922`
+for warnings, `#F85149` for failures, `#D2A8FF` for identity, and `#8B949E`
+for secondary text. Redirected, systemd, and JSON output remain free of ANSI
+color codes.
 
 ## Diagnose the local installation
 

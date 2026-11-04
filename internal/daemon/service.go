@@ -7,8 +7,9 @@ import (
 )
 
 // Service performs a recovery of pending work and one immediate snapshot
-// before entering the six-hour scheduler loop. Retryable upload failures are
-// reported and retained in the encrypted queue; persistence failures are fatal.
+// before entering the six-hour scheduler loop. Local capture failures are
+// reported and returned so a foreground daemon exits; retryable upload
+// failures are reported and retained in the encrypted queue.
 type Service struct{ Scheduler *Scheduler }
 
 func (s Service) Run(ctx context.Context) error {
@@ -25,6 +26,10 @@ func (s Service) Run(ctx context.Context) error {
 		}
 		if s.Scheduler.Report != nil {
 			s.Scheduler.Report(err)
+		}
+		var captureErr interface{ CaptureFailure() }
+		if errors.As(err, &captureErr) {
+			return fmt.Errorf("initial capture failed: %w", err)
 		}
 	}
 	return s.Scheduler.Run(ctx)

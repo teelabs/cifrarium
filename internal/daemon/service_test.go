@@ -2,10 +2,61 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+type testCaptureError struct{ err error }
+
+func (e *testCaptureError) Error() string   { return e.err.Error() }
+func (e *testCaptureError) Unwrap() error   { return e.err }
+func (e *testCaptureError) CaptureFailure() {}
+
+func TestServiceStopsAfterInitialCaptureFailure(t *testing.T) {
+	q := Queue{}
+	reported := 0
+	s := NewScheduler(func(context.Context) (Item, error) {
+		return Item{}, &testCaptureError{err: errors.New("symlink rejected: .zshrc")}
+	}, func(context.Context, Item) error { return nil }, &q)
+	s.Report = func(error) { reported++ }
+	s.Interval = time.Hour
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	err := (Service{Scheduler: s}).Run(ctx)
+
+	var captureErr interface{ CaptureFailure() }
+	if !errors.As(err, &captureErr) {
+		t.Fatalf("initial capture error = %v, want capture failure", err)
+	}
+	if reported != 1 {
+		t.Fatalf("reported=%d, want 1", reported)
+	}
+}
+
+func TestServiceKeepsRetryingAfterInitialUploadFailure(t *testing.T) {
+	q := Queue{}
+	reported := 0
+	s := NewScheduler(func(context.Context) (Item, error) {
+		return Item{ID: "snapshot", Ciphertext: []byte("cipher")}, nil
+	}, func(context.Context, Item) error { return errors.New("provider offline") }, &q)
+	s.Retry.MaxAttempts = 1
+	s.Interval = time.Millisecond
+	s.Report = func(error) { reported++ }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+	err := (Service{Scheduler: s}).Run(ctx)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("service error=%v, want context deadline after retry loop", err)
+	}
+	if reported == 0 {
+		t.Fatal("initial upload failure was not reported while scheduler continued")
+	}
+}
 
 func TestServiceRunsInitialCycle(t *testing.T) {
 	q := Queue{}

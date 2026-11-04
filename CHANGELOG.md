@@ -4,6 +4,17 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-11-04
+
+### Fixed
+
+- Daemon capture failures caused by rejected local symlinks now return control
+  to the shell after showing one sanitized recovery diagnostic; transient
+  provider and upload failures retain queue and retry behavior.
+- Human command blocks now have explicit separators and use the approved muted
+  Codex-style foreground palette while redirected output, systemd logs, and
+  JSON remain free of ANSI color codes.
+
 ## [0.9.2] - 2026-11-04
 
 ### Fixed
