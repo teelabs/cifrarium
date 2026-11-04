@@ -30,10 +30,29 @@ var daemonRefreshBackendProbe = func(socket string) error {
 	if err := rpc.Call(ctx, socket, "mcp.status", nil, &result); err != nil {
 		return err
 	}
-	if result.Backend != "ready" || result.MCP.State != "ready" {
+	if !daemonRefreshReady(result.Backend, result.MCP.State) {
 		return fmt.Errorf("backend=%s mcp=%s", result.Backend, result.MCP.State)
 	}
 	return nil
+}
+
+func daemonRefreshReady(backend, mcp string) bool {
+	return mcp == "ready"
+}
+
+func daemonManagedServiceActive() bool {
+	return runDaemonRefreshSystemctl("is-active", "--quiet", "cifrarium.service") == nil
+}
+
+func daemonAlreadyRunning(root string) bool {
+	if daemonManagedServiceActive() {
+		return true
+	}
+	if root == "" {
+		return false
+	}
+	return daemonRefreshProbe(filepath.Join(root, "cifrarium.sock")) == nil &&
+		daemonRefreshBackendProbe(filepath.Join(root, "control.sock")) == nil
 }
 
 func runDaemonRefresh(root string) error {

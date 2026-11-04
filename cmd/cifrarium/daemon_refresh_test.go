@@ -56,3 +56,26 @@ func TestRunDaemonRefreshReportsRestartFailure(t *testing.T) {
 		t.Fatalf("runDaemonRefresh() error = %v", err)
 	}
 }
+
+func TestDaemonRefreshAcceptsMCPWhileBackendIsWaiting(t *testing.T) {
+	if !daemonRefreshReady("starting", "ready") {
+		t.Fatal("daemon refresh rejected a ready MCP endpoint while backend was waiting for recovery action")
+	}
+	if daemonRefreshReady("starting", "starting") {
+		t.Fatal("daemon refresh accepted an MCP endpoint that was not ready")
+	}
+}
+
+func TestDaemonAlreadyRunningUsesManagedEndpoints(t *testing.T) {
+	runDaemonRefreshSystemctl = func(args ...string) error {
+		if len(args) > 0 && args[0] == "is-active" {
+			return nil
+		}
+		return errors.New("unexpected systemctl call")
+	}
+	defer func() { runDaemonRefreshSystemctl = func(args ...string) error { return nil } }()
+
+	if !daemonManagedServiceActive() {
+		t.Fatal("daemonManagedServiceActive() = false; want active managed service")
+	}
+}

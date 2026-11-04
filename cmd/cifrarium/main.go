@@ -272,6 +272,11 @@ func main() {
 		}
 		fmt.Printf("snapshot %s\n", item.ID)
 	case "daemon":
+		if daemonAlreadyRunning(*root) {
+			fmt.Fprintln(os.Stdout, "cifrarium daemon is already running")
+			fmt.Fprintln(os.Stdout, "Use systemctl --user status cifrarium.service to inspect it or cifrarium daemon refresh after configuration changes.")
+			return
+		}
 		socket := filepath.Join(*root, "cifrarium.sock")
 		controlSocket := filepath.Join(*root, "control.sock")
 		queuePath := filepath.Join(*root, "pending.queue")
