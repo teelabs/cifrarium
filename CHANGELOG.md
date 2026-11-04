@@ -4,6 +4,19 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-03
+
+### Changed
+
+- Structured human setup, status, and doctor output with separated sections,
+  copyable command blocks, TTY-only colors, and immediate contextual feedback
+  after each setup decision.
+
+### Fixed
+
+- Made setup capture failures actionable by identifying rejected symlink paths
+  and showing a safe local correction command before retrying setup.
+
 ## [0.8.0] - 2026-11-03
 
 ### Added
