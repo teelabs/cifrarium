@@ -129,11 +129,11 @@ func renderDoctor(w io.Writer, report doctorReport, format outputFormat) error {
 	writeComponent(ui, report.MCP)
 	ui.Section("Adapters")
 	for _, adapter := range report.Adapters {
-		fmt.Fprintf(w, "- %s: %s", adapter.Name, adapter.State)
+		value := adapter.State
 		if len(adapter.Paths) > 0 {
-			fmt.Fprintf(w, " (%s)", strings.Join(adapter.Paths, ", "))
+			value += " (" + ui.colorize(colorLocation, strings.Join(adapter.Paths, ", ")) + ")"
 		}
-		fmt.Fprintln(ui.w)
+		ui.Status("- "+adapter.Name, value)
 	}
 	ui.Section("Provider")
 	writeComponent(ui, report.Provider)
@@ -143,9 +143,9 @@ func renderDoctor(w io.Writer, report doctorReport, format outputFormat) error {
 func writeComponent(ui terminalUI, component componentReport) {
 	value := component.State
 	if component.Detail != "" {
-		value += " (" + component.Detail + ")"
+		value += " (" + ui.colorize(colorLocation, component.Detail) + ")"
 	}
-	ui.Value(component.Name, value)
+	ui.Status(component.Name, value)
 }
 
 func inspectAdapters(home string) []adapterReport {

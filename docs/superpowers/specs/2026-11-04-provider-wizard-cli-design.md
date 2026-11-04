@@ -82,6 +82,17 @@ The safe operator procedure is:
 The procedure must not use `rm`, `source`, `sudo`, symlink-following overrides,
 or any recovery-share/token output.
 
+When this failure reaches the daemon, the human output is ordered as `Daemon
+needs attention`, `What happened`, `Why it matters`, `How to fix it`, and `What
+to do next`. The correction block is a copyable instruction, not diagnostic
+output. It parses only the first path segment before `; recovery snapshot
+failed`; the compound error `symlink rejected: .zshrc; recovery snapshot
+failed: symlink rejected: .zshrc` therefore displays only the validated
+`~/.zshrc` path. It does not display the complete symlink error, target,
+contents, tokens, or recovery shares. TTY output uses the named Codex semantic
+foreground palette; redirected output and JSON remain unchanged and contain no
+ANSI sequences.
+
 ## Acceptance evidence
 
 - CLI tests reject `-command=` and cover nested provider/recovery commands.
@@ -90,7 +101,8 @@ or any recovery-share/token output.
   preserved.
 - Adapter tests reject symlinked capture paths.
 - Daemon error output gives a safe, copyable symlink recovery procedure and
-  does not expose target contents, tokens, or recovery shares.
+  does not expose the compound error, target contents, tokens, or recovery
+  shares; parsing rejects traversal and external absolute paths.
 - Installer tests prove upgrade, rollback, provider preflight, and local-state
   preservation.
 - The release gate for v0.9.0 passed Go tests, race, vet, build, installer,

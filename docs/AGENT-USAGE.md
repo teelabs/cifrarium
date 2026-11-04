@@ -183,6 +183,16 @@ Do not use `rm`, `source`, `sudo`, or a symlink-following override. If the link
 is intentionally managed, leave capture disabled until the manager provides a
 regular file. The daemon does not upload while the local capture is failing.
 
+Daemon human diagnostics use the sections `Daemon needs attention`, `What
+happened`, `Why it matters`, `How to fix it`, and `What to do next`. A correction
+block is a copyable instruction, not diagnostic output. The parser extracts only
+the first validated path before the compound suffix `; recovery snapshot
+failed`; for example, the real error `symlink rejected: .zshrc; recovery
+snapshot failed: symlink rejected: .zshrc` yields only the local `.zshrc` path.
+It never prints symlink targets, file contents, recovery shares, or tokens.
+TTY output uses semantic foreground colors; redirected output and JSON remain
+free of ANSI sequences.
+
 ### 5.3 Check a GitHub provider
 
 ~~~sh

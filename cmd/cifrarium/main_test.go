@@ -81,6 +81,18 @@ func TestRenderStatusJSONIsStructured(t *testing.T) {
 	}
 }
 
+func TestRenderStatusJSONHasNoANSIOrHumanFormatting(t *testing.T) {
+	report := statusReport{Vault: "/vault", Configured: true, VaultState: "ready", KeyringState: "available", Snapshots: 1, Head: "head", Pending: 0}
+	var out bytes.Buffer
+	if err := renderStatus(&out, report, outputJSON); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"vault":"/vault","configured":true,"vaultState":"ready","keyring":"available","snapshots":1,"head":"head","pending":0}` + "\n"
+	if out.String() != want {
+		t.Fatalf("JSON output changed: got %q, want %q", out.String(), want)
+	}
+}
+
 func TestProviderSetupCommandsUseDetectedHomeAndNoSecrets(t *testing.T) {
 	home := filepath.Join("/tmp", "cifrarium-test-home")
 	commands := providerSetupCommands(home)
