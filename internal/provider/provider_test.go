@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -84,6 +85,17 @@ func TestMigrateCopiesOpaqueSnapshotAndCatalogAtomically(t *testing.T) {
 	}
 	if string(destination.objects["snapshot"]) != "ciphertext" || string(destination.catalogs["snapshot"]) != `{"snapshot":"snapshot"}` {
 		t.Fatal("opaque snapshot was not migrated")
+	}
+}
+
+func TestCheckRemoteAccessDoesNotInitializeProviderDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "provider")
+	provider := Git{Dir: dir, Remote: "https://github.com/example/repo.git"}
+	if err := provider.CheckRemoteAccess(context.Background()); err == nil {
+		t.Fatal("remote health unexpectedly succeeded for an uninitialized provider")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("read-only health created provider directory: %v", err)
 	}
 }
 

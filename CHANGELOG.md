@@ -4,6 +4,33 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-03
+
+### Added
+
+- Added a persistent per-user vault-root configuration with restrictive
+  permissions, canonical-path and symlink checks, keyring binding, safe
+  explicit-root compatibility, and fail-closed alternate-root detection.
+
+### Changed
+
+- Changed setup and the systemd user service to use the configured root, and
+  made normal commands root-free after setup while keeping `-format=json` for
+  agents.
+- Made setup copy English-only and kept non-interactive execution from
+  configuring root, capturing data, showing recovery shares, changing a
+  provider, or enabling the daemon.
+
+### Fixed
+
+- Fixed setup cancellation and redirected-output handling so configuration,
+  keyring, vault capture, and recovery shares are not persisted or leaked
+  before interactive confirmation.
+- Made `provider-health` read-only and rejected `--non-interactive` for
+  stateful, secret-handling, and remote-capable commands.
+- Added shell-safe quoting to generated provider commands and aligned the
+  systemd XDG configuration default with the CLI.
+
 ## [0.7.0] - 2026-11-03
 
 ### Added

@@ -60,6 +60,77 @@ func TestLoadOrCreateInitializesOnlyWhenSecretIsMissing(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateBoundStoresAndChecksVaultRoot(t *testing.T) {
+	var raw string
+	get := func(string, string) (string, error) {
+		if raw == "" {
+			return "", keyring.ErrNotFound
+		}
+		return raw, nil
+	}
+	set := func(_, _, password string) error {
+		raw = password
+		return nil
+	}
+	if _, _, err := loadOrCreateBound("test", "/vault/one", true, get, set); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadOrCreateBound("test", "/vault/one", false, get, set); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadOrCreateBound("test", "/vault/two", false, get, set); err == nil {
+		t.Fatal("different root accepted by keyring binding")
+	}
+}
+
+func TestLoadOrCreateBoundDoesNotRewriteMalformedLegacyKeyring(t *testing.T) {
+	raw := `{"operational":"bad","signing_private":"bad"}`
+	setCalls := 0
+	_, _, err := loadOrCreateBound("test", "/vault", true,
+		func(string, string) (string, error) { return raw, nil },
+		func(_, _, _ string) error { setCalls++; return nil },
+	)
+	if err == nil {
+		t.Fatal("malformed keyring accepted")
+	}
+	if setCalls != 0 {
+		t.Fatalf("malformed keyring was rewritten: %d writes", setCalls)
+	}
+}
+
+func TestLoadExistingForRootRejectsLegacyUnboundKeyring(t *testing.T) {
+	raw, _ := json.Marshal(secrets{Operational: base64.RawStdEncoding.EncodeToString(make([]byte, 32)), SigningPrivate: base64.RawStdEncoding.EncodeToString(make(ed25519.PrivateKey, ed25519.PrivateKeySize))})
+	if _, _, err := decodeSecretsForRoot(string(raw), "/vault"); err == nil {
+		t.Fatal("legacy unbound keyring accepted")
+	}
+}
+
+func TestRecoverAndImportRejectsDifferentExistingRootBinding(t *testing.T) {
+	op := make([]byte, 32)
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := RecoveryShares(op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(secrets{
+		Operational:    base64.RawStdEncoding.EncodeToString(op),
+		SigningPrivate: base64.RawStdEncoding.EncodeToString(signing),
+		Root:           "/vault/one",
+	})
+	setCalls := 0
+	get := func(string, string) (string, error) { return string(raw), nil }
+	set := func(_, _, _ string) error { setCalls++; return nil }
+	if err := recoverAndImport(t.TempDir(), "test", []recovery.Share{shares[0], shares[1]}, get, set); err == nil {
+		t.Fatal("recovery replaced a keyring bound to another root")
+	}
+	if setCalls != 0 {
+		t.Fatalf("keyring write count=%d", setCalls)
+	}
+}
+
 func TestValidateRecoveryVerifiesExistingVaultBeforeImport(t *testing.T) {
 	root := t.TempDir()
 	op := make([]byte, 32)

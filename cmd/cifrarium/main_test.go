@@ -50,7 +50,7 @@ func TestRenderStatusHumanUsesUsefulLabels(t *testing.T) {
 }
 
 func TestRenderStatusJSONIsStructured(t *testing.T) {
-	report := statusReport{Vault: "/vault", VaultState: "ready", KeyringState: "available", Snapshots: 1, Head: "head", Pending: 0}
+	report := statusReport{Vault: "/vault", Configured: true, VaultState: "ready", KeyringState: "available", Snapshots: 1, Head: "head", Pending: 0}
 	var out bytes.Buffer
 	if err := renderStatus(&out, report, outputJSON); err != nil {
 		t.Fatal(err)
@@ -59,8 +59,95 @@ func TestRenderStatusJSONIsStructured(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
 		t.Fatalf("json output: %v", err)
 	}
-	if decoded["vault"] != "/vault" || decoded["vaultState"] != "ready" {
+	if decoded["vault"] != "/vault" || decoded["vaultState"] != "ready" || decoded["configured"] != true {
 		t.Fatalf("unexpected status JSON: %#v", decoded)
+	}
+}
+
+func TestProviderSetupCommandsUseDetectedHomeAndNoSecrets(t *testing.T) {
+	home := filepath.Join("/tmp", "cifrarium-test-home")
+	commands := providerSetupCommands(home)
+	for _, want := range []string{"cifrarium-provider", "git -C", "gh repo create", "--private"} {
+		if !strings.Contains(commands, want) {
+			t.Fatalf("commands missing %q: %s", want, commands)
+		}
+	}
+	for _, forbidden := range []string{"recovery", "token", "CIFRARIUM_RECOVERY"} {
+		if strings.Contains(strings.ToLower(commands), strings.ToLower(forbidden)) {
+			t.Fatalf("commands leaked %q: %s", forbidden, commands)
+		}
+	}
+}
+
+func TestShellQuoteProtectsProviderPaths(t *testing.T) {
+	value := "/tmp/$HOME/it's a path/`echo bad`"
+	quoted := shellQuote(value)
+	if quoted != "'/tmp/$HOME/it'\\''s a path/`echo bad`'" {
+		t.Fatalf("quoted=%q", quoted)
+	}
+}
+
+func TestSetupCancellationHappensBeforeCommitChoices(t *testing.T) {
+	called := 0
+	_, err := collectSetupChoices(func(prompt string) (bool, error) {
+		if strings.Contains(prompt, "saved") {
+			return false, nil
+		}
+		called++
+		return true, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("err=%v", err)
+	}
+	if called != 0 {
+		t.Fatalf("later setup prompts ran after cancellation: %d", called)
+	}
+}
+
+func TestInteractiveSetupDoesNotWriteRecoverySharesToRedirectedOutput(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "vault")
+	op := make([]byte, 32)
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	err = runSetupWithKeys(root, t.TempDir(), false, &output, op, signing, nil)
+	if err == nil {
+		t.Fatal("interactive setup unexpectedly succeeded without a controlling terminal")
+	}
+	if strings.Contains(output.String(), "cifrarium-1:") || strings.Contains(output.String(), "cifrarium-2:") {
+		t.Fatalf("recovery share leaked to redirected output: %q", output.String())
+	}
+	if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
+		t.Fatalf("setup created vault before terminal confirmation: %v", statErr)
+	}
+}
+
+func TestSystemdUsesConfiguredRootResolver(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "systemd", "cifrarium.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "-root=") {
+		t.Fatalf("systemd unit hardcodes a root: %s", text)
+	}
+	if !strings.Contains(text, "ExecStart=%h/.local/bin/cifrarium -command=daemon") {
+		t.Fatalf("systemd unit does not use the configured-root daemon command: %s", text)
+	}
+}
+
+func TestNonInteractiveRejectsStatefulCommands(t *testing.T) {
+	for _, command := range []string{"provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon"} {
+		if !commandMutatesOrHandlesSecrets(command) {
+			t.Fatalf("%s was not classified as stateful", command)
+		}
+	}
+	for _, command := range []string{"status", "doctor", "setup"} {
+		if commandMutatesOrHandlesSecrets(command) {
+			t.Fatalf("%s was classified as stateful", command)
+		}
 	}
 }
 
@@ -124,10 +211,17 @@ func TestRunDoctorDoesNotCreateVaultOrKeyringState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "vault")
 	var output bytes.Buffer
 	originalLoadDoctorKeys := loadDoctorKeys
+	originalLoadDoctorKeysForRoot := loadDoctorKeysForRoot
 	loadDoctorKeys = func() ([]byte, ed25519.PrivateKey, error) {
 		return nil, nil, keyring.ErrNotFound
 	}
-	t.Cleanup(func() { loadDoctorKeys = originalLoadDoctorKeys })
+	loadDoctorKeysForRoot = func(string) ([]byte, ed25519.PrivateKey, error) {
+		return nil, nil, keyring.ErrNotFound
+	}
+	t.Cleanup(func() {
+		loadDoctorKeys = originalLoadDoctorKeys
+		loadDoctorKeysForRoot = originalLoadDoctorKeysForRoot
+	})
 	report, err := runDoctor(root, t.TempDir(), "", "", &output)
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +324,7 @@ func TestSetupNonInteractiveDoesNotLeakSharesOrCapture(t *testing.T) {
 	if err := runSetupWithKeys(root, t.TempDir(), true, &output, op, signing, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "Modo não interativo") {
+	if !strings.Contains(output.String(), "Non-interactive mode") {
 		t.Fatalf("output=%q", output.String())
 	}
 	if strings.Contains(output.String(), "cifrarium-1:") {

@@ -21,7 +21,7 @@ side effects:
 
 ```sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.7.0 --non-interactive
+  | bash -s -- --version 0.8.0 --non-interactive
 ```
 
 For the highest-assurance path, inspect and verify the installer first:
@@ -39,13 +39,26 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.7.0 --non-interactive
+/tmp/cifrarium-install.sh --version 0.8.0 --non-interactive
 ```
 
 The default prefix is `$HOME/.local`. The active executable is
 `$HOME/.local/bin/cifrarium`; add `$HOME/.local/bin` to `PATH` if necessary.
 The command installs files and starts the assistant only when a TTY is
 available. It does not start or enable the daemon implicitly.
+
+After installation, configure the vault location once:
+
+```sh
+cifrarium setup --root "$HOME/.local/share/cifrarium"
+```
+
+Normal commands resolve that configured root automatically. The installer does
+not configure a root in `--non-interactive` mode.
+
+The systemd user unit defaults `XDG_CONFIG_HOME` to `$HOME/.config`. If a
+custom XDG directory is required, set `XDG_CONFIG_HOME` in the mode-`0600`
+`daemon.env` used by the unit and configure the root there before activation.
 
 ## Missing dependencies and progress output
 
@@ -74,7 +87,7 @@ Use a user-owned absolute prefix when the default is unsuitable:
 
 ```sh
 /tmp/cifrarium-install.sh \
-  --version 0.7.0 \
+  --version 0.8.0 \
   --prefix "$HOME/opt/cifrarium"
 ```
 
@@ -82,7 +95,7 @@ After configuring `~/.config/cifrarium/daemon.env` and checking provider and
 recovery-share prerequisites, opt in to activation:
 
 ```sh
-/tmp/cifrarium-install.sh --version 0.7.0 --enable
+/tmp/cifrarium-install.sh --version 0.8.0 --enable
 systemctl --user status cifrarium.service
 ```
 

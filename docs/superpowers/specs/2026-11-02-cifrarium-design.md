@@ -6,6 +6,16 @@ Status: implementation baseline, subject to security review.
 
 Cifrarium is a Linux-first, single-user, local vault for portable configuration. It captures only explicit allowlists for Codex, Oh My Zsh, and Starship, stores encrypted snapshots, and uses GitHub through native Git as the first remote provider. The daemon is the only component allowed to perform sync. The MVP does not install dependencies, inspect application state, expose remote MCP, support multiple users, or implement non-GitHub providers.
 
+The vault root is a persistent per-user identity. It is stored as non-secret
+configuration at `${XDG_CONFIG_HOME:-$HOME/.config}/cifrarium/config.json` with
+schema `1`, mode `0700` for the directory, mode `0600` for the file, and a
+canonical root whose existing components are not symlinks. Normal commands
+resolve this root before opening or creating keyring or vault state. An
+explicit `-root` is accepted only when it is the same canonical path; an
+alternate root fails closed. A new machine establishes the root through
+`cifrarium setup` or `cifrarium setup --root PATH` only. `doctor` may report an
+unconfigured machine without creating state so setup can remain actionable.
+
 ## Threat model
 
 The design protects configuration contents, filenames, catalog metadata,
@@ -20,6 +30,12 @@ can read or interfere with them. Temporary vault files are created with mode
 ## Cryptographic envelope
 
 Each snapshot is serialized as a deterministic sequence of records and encrypted with a fresh 32-byte random data key using AES-256-GCM. The data key is wrapped by the operational key using AES-256-GCM with a distinct random nonce. The operational key is stored in the Linux Secret Service/keyring under service `cifrarium`, account derived from the current UID. A separate Ed25519 signing key is stored in the same keyring entry namespace. The external fingerprint is SHA-256 of the public signing key; private keys and keyring payloads are never placed in the catalog.
+
+The keyring payload is also bound to the same canonical vault root. Existing
+legacy entries without this binding require explicit setup adoption; normal
+commands never silently attach them to a caller-supplied root. Recovery writes
+the root binding alongside recovered key material after validating the signed
+catalog.
 
 The catalog is encrypted with the same AES-256-GCM operational-key envelope as snapshot payloads. Each decrypted entry contains the previous entry hash, snapshot hash, creation time, schema version, and signer fingerprint; its Ed25519 signature is verified after decryption. Verification rejects an invalid envelope/signature, broken chain, duplicate sequence, or rollback to a catalog entry older than the active head. The explicit `migrate-catalog` command verifies a pre-encryption plaintext chain and all snapshot hashes before sealing it; normal vault opening has no plaintext fallback. Normal remote restore accepts only the active head; an explicit historical restore must identify an entry already anchored in the verified local chain and never changes the write head.
 
@@ -48,7 +64,7 @@ Adapters return canonical paths and bytes from explicit allowlists. Codex includ
 
 ## Restore and daemon
 
-Restore writes a same-filesystem temporary tree, rejects traversal, symlinked roots, and symlinked intermediate or final targets, then uses Linux `openat2` directory descriptors and `renameat2` for descriptor-relative backup and activation. Existing files are renamed into a local backup, and `RENAME_NOREPLACE` prevents a race from replacing a validated destination during activation. On a handled activation failure it restores files already moved; a deterministic rename seam proves this partial-activation rollback. This is not a durable crash journal: abrupt process termination can leave an interrupted activation, so the backup must be preserved and the restore retried. Unsupported platforms fail closed instead of silently using the weaker path-based implementation. The user daemon has a systemd user unit, and the installed service drains the encrypted queue, runs an initial snapshot, wires the recovery-gated uploader, handles signals, starts the local MCP socket, and enters the six-hour scheduler contract with retry/backoff, an encrypted bounded queue of at most 16 pending objects, recovery-snapshot triggering after a missed cycle, and incident notification deduplication.
+Restore writes a same-filesystem temporary tree, rejects traversal, symlinked roots, and symlinked intermediate or final targets, then uses Linux `openat2` directory descriptors and `renameat2` for descriptor-relative backup and activation. Existing files are renamed into a local backup, and `RENAME_NOREPLACE` prevents a race from replacing a validated destination during activation. On a handled activation failure it restores files already moved; a deterministic rename seam proves this partial-activation rollback. This is not a durable crash journal: abrupt process termination can leave an interrupted activation, so the backup must be preserved and the restore retried. Unsupported platforms fail closed instead of silently using the weaker path-based implementation. The user daemon has a systemd user unit, and the installed service drains the encrypted queue, runs an initial snapshot, wires the recovery-gated uploader, handles signals, starts the local MCP socket, and enters the six-hour scheduler contract with retry/backoff, an encrypted bounded queue of at most 16 pending objects, recovery-snapshot triggering after a missed cycle, and incident notification deduplication. The unit does not hardcode a vault root; it invokes the daemon without `-root`, so service startup uses the same configured-root resolver as the CLI.
 
 ## MCP boundary
 

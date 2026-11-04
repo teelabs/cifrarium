@@ -20,6 +20,7 @@ type secrets struct {
 	Operational    string `json:"operational"`
 	SigningPrivate string `json:"signing_private"`
 	CatalogHead    string `json:"catalog_head,omitempty"`
+	Root           string `json:"root,omitempty"`
 }
 type recoveryBundle struct {
 	Version        int    `json:"version"`
@@ -44,6 +45,69 @@ func (k *Keyring) LoadOrCreate() (operational []byte, signing ed25519.PrivateKey
 	)
 }
 
+// LoadOrCreateForRoot binds newly created or explicitly adopted legacy keyring
+// material to the canonical vault root. Normal commands should use
+// LoadExistingForRoot so diagnostics and reads never create or rewrite state.
+func (k *Keyring) LoadOrCreateForRoot(root string, bindLegacy bool) ([]byte, ed25519.PrivateKey, error) {
+	return loadOrCreateBound(k.User, root, bindLegacy,
+		func(service, user string) (string, error) { return keyring.Get(service, user) },
+		func(service, user, password string) error { return keyring.Set(service, user, password) },
+	)
+}
+
+func GenerateKeyMaterial() ([]byte, ed25519.PrivateKey, error) {
+	operational := make([]byte, 32)
+	if _, err := rand.Read(operational); err != nil {
+		return nil, nil, err
+	}
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	return operational, signing, nil
+}
+
+// SaveForRoot persists already-generated material after an interactive setup
+// confirmation. It validates the material before changing the keyring and
+// preserves an existing catalog guard.
+func (k *Keyring) SaveForRoot(root string, operational []byte, signing ed25519.PrivateKey) error {
+	if len(operational) != 32 || len(signing) != ed25519.PrivateKeySize {
+		return fmt.Errorf("invalid key material")
+	}
+	raw, err := keyring.Get(service, k.User)
+	current := secrets{}
+	if err == nil {
+		current, err = decodePayload(raw)
+		if err != nil {
+			return err
+		}
+		if current.Root != "" && current.Root != root {
+			return fmt.Errorf("keyring is bound to a different vault root")
+		}
+		if current.Operational != "" || current.SigningPrivate != "" {
+			if _, _, err := decodeSecrets(raw); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, keyring.ErrNotFound) {
+		return fmt.Errorf("keyring unavailable: %w", err)
+	}
+	payload := secrets{
+		Operational:    base64.RawStdEncoding.EncodeToString(operational),
+		SigningPrivate: base64.RawStdEncoding.EncodeToString(signing),
+		CatalogHead:    current.CatalogHead,
+		Root:           root,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := keyring.Set(service, k.User, string(encoded)); err != nil {
+		return fmt.Errorf("keyring unavailable: %w", err)
+	}
+	return nil
+}
+
 // LoadExisting reads the Cifrarium keyring entry without creating one. It is
 // intended for read-only diagnostics and health checks.
 func (k *Keyring) LoadExisting() (operational []byte, signing ed25519.PrivateKey, err error) {
@@ -52,6 +116,14 @@ func (k *Keyring) LoadExisting() (operational []byte, signing ed25519.PrivateKey
 		return nil, nil, err
 	}
 	return decodeSecrets(raw)
+}
+
+func (k *Keyring) LoadExistingForRoot(root string) ([]byte, ed25519.PrivateKey, error) {
+	raw, err := keyring.Get(service, k.User)
+	if err != nil {
+		return nil, nil, err
+	}
+	return decodeSecretsForRoot(raw, root)
 }
 
 type keyringGet func(service, user string) (string, error)
@@ -65,11 +137,7 @@ func loadOrCreate(user string, get keyringGet, set keyringSet) (operational []by
 	if !errors.Is(err, keyring.ErrNotFound) {
 		return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
 	}
-	operational = make([]byte, 32)
-	if _, err = rand.Read(operational); err != nil {
-		return nil, nil, err
-	}
-	_, signing, err = ed25519.GenerateKey(rand.Reader)
+	operational, signing, err = GenerateKeyMaterial()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -81,10 +149,86 @@ func loadOrCreate(user string, get keyringGet, set keyringSet) (operational []by
 	return operational, signing, nil
 }
 
-func decodeSecrets(raw string) (operational []byte, signing ed25519.PrivateKey, err error) {
+func loadOrCreateBound(user, root string, bindLegacy bool, get keyringGet, set keyringSet) ([]byte, ed25519.PrivateKey, error) {
+	raw, err := get(service, user)
+	if err == nil {
+		s, err := decodePayload(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		if s.Root != "" && s.Root != root {
+			return nil, nil, fmt.Errorf("keyring is bound to a different vault root")
+		}
+		if s.Root == "" {
+			if !bindLegacy {
+				return nil, nil, fmt.Errorf("keyring has no vault root binding; run cifrarium setup --root %q", root)
+			}
+			if _, _, err := decodeSecrets(raw); err != nil {
+				return nil, nil, err
+			}
+			s.Root = root
+			updated, err := json.Marshal(s)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := set(service, user, string(updated)); err != nil {
+				return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
+			}
+		}
+		return decodeSecrets(rawOrUpdated(s, raw))
+	}
+	if !errors.Is(err, keyring.ErrNotFound) {
+		return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
+	}
+	operational, signing, err := GenerateKeyMaterial()
+	if err != nil {
+		return nil, nil, err
+	}
+	s := secrets{Operational: base64.RawStdEncoding.EncodeToString(operational), SigningPrivate: base64.RawStdEncoding.EncodeToString(signing), Root: root}
+	b, _ := json.Marshal(s)
+	if err := set(service, user, string(b)); err != nil {
+		return nil, nil, fmt.Errorf("keyring unavailable: %w", err)
+	}
+	return operational, signing, nil
+}
+
+func rawOrUpdated(s secrets, original string) string {
+	if s.Root == "" {
+		return original
+	}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return original
+	}
+	return string(raw)
+}
+
+func decodeSecretsForRoot(raw, root string) ([]byte, ed25519.PrivateKey, error) {
+	s, err := decodePayload(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	if s.Root == "" {
+		return nil, nil, fmt.Errorf("keyring has no vault root binding; run cifrarium setup --root %q", root)
+	}
+	if s.Root != root {
+		return nil, nil, fmt.Errorf("keyring is bound to a different vault root")
+	}
+	return decodeSecrets(raw)
+}
+
+func decodePayload(raw string) (secrets, error) {
 	var s secrets
-	if json.Unmarshal([]byte(raw), &s) != nil {
-		return nil, nil, fmt.Errorf("invalid keyring payload")
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return secrets{}, fmt.Errorf("invalid keyring payload")
+	}
+	return s, nil
+}
+
+func decodeSecrets(raw string) (operational []byte, signing ed25519.PrivateKey, err error) {
+	s, err := decodePayload(raw)
+	if err != nil {
+		return nil, nil, err
 	}
 	operational, err = base64.RawStdEncoding.DecodeString(s.Operational)
 	if err != nil {
@@ -162,6 +306,9 @@ func recoverAndImport(root, user string, shares []recovery.Share, get keyringGet
 			if err := json.Unmarshal([]byte(currentRaw), &current); err != nil {
 				return fmt.Errorf("invalid current keyring payload: %w", err)
 			}
+			if current.Root != "" && current.Root != root {
+				return fmt.Errorf("keyring is bound to a different vault root")
+			}
 		} else if !errors.Is(currentErr, keyring.ErrNotFound) {
 			return fmt.Errorf("keyring unavailable: %w", currentErr)
 		}
@@ -176,6 +323,7 @@ func recoverAndImport(root, user string, shares []recovery.Share, get keyringGet
 			Operational:    base64.RawStdEncoding.EncodeToString(op),
 			SigningPrivate: base64.RawStdEncoding.EncodeToString(signing),
 			CatalogHead:    current.CatalogHead,
+			Root:           root,
 		}
 		b, err := json.Marshal(candidate)
 		if err != nil {

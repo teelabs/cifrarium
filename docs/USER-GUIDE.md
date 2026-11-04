@@ -33,6 +33,10 @@ could silently lose snapshots.
 - An authenticated gh CLI when checking GitHub repository privacy.
 - systemd --user only when the scheduled daemon is needed.
 
+The systemd unit uses `$HOME/.config` as its default configuration directory.
+If `XDG_CONFIG_HOME` is customized, set the same value in the operator-managed
+`daemon.env` so the CLI and daemon resolve the same root configuration.
+
 Check the current interface before copying examples:
 
 ~~~sh
@@ -42,16 +46,20 @@ go run ./cmd/cifrarium -h
 The main commands are status, doctor, snapshot, recovery-shares, recover,
 migrate-catalog, provider-health, and daemon.
 
+The root configuration is non-secret and per-user:
+`${XDG_CONFIG_HOME:-$HOME/.config}/cifrarium/config.json`. It contains only
+schema `1` and the canonical vault path, with directory mode `0700` and file
+mode `0600`. Configure it once; normal commands do not need `-root`.
+
 ## 3. First local use without a provider
 
 Use this path to test the vault or keep snapshots only on the current machine.
 
 ~~~sh
-ROOT="$HOME/.local/share/cifrarium"
-
-go run ./cmd/cifrarium -root "$ROOT" -command=status
-go run ./cmd/cifrarium -root "$ROOT" -command=snapshot
-go run ./cmd/cifrarium -root "$ROOT" -command=status
+go run ./cmd/cifrarium setup --root "$HOME/.local/share/cifrarium"
+go run ./cmd/cifrarium -command=status
+go run ./cmd/cifrarium -command=snapshot
+go run ./cmd/cifrarium -command=status
 ~~~
 
 Success criteria:
@@ -178,8 +186,7 @@ To see the state of the local vault, keyring, daemon, MCP socket, adapters, and
 provider in one report, run:
 
 ~~~sh
-ROOT="$HOME/.local/share/cifrarium"
-cifrarium -root "$ROOT" -command=doctor
+cifrarium -command=doctor
 ~~~
 
 The command is read-only. It does not initialize missing keyring material,
@@ -217,10 +224,10 @@ actually lost or on a new machine.
 Copy the encrypted vault if it is available and provide two distinct shares:
 
 ~~~sh
-go run ./cmd/cifrarium -root "$ROOT" -command=recover \
+go run ./cmd/cifrarium -command=recover \
   -recovery-share 'cifrarium-1:VALUE_1' \
   -recovery-share 'cifrarium-2:VALUE_2'
-go run ./cmd/cifrarium -root "$ROOT" -command=status
+go run ./cmd/cifrarium -command=status
 ~~~
 
 Recovery verifies the head and signed chain before replacing the keyring. A
@@ -233,8 +240,8 @@ Run migration only when the vault came from a version that used the legacy
 catalog format:
 
 ~~~sh
-go run ./cmd/cifrarium -root "$ROOT" -command=migrate-catalog
-go run ./cmd/cifrarium -root "$ROOT" -command=status
+go run ./cmd/cifrarium -command=migrate-catalog
+go run ./cmd/cifrarium -command=status
 ~~~
 
 Back up the directory before migration. “Already uses encrypted metadata”

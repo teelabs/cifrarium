@@ -30,6 +30,7 @@ const (
 
 type statusReport struct {
 	Vault        string `json:"vault"`
+	Configured   bool   `json:"configured"`
 	VaultState   string `json:"vaultState"`
 	KeyringState string `json:"keyring"`
 	Snapshots    int    `json:"snapshots"`
@@ -60,16 +61,21 @@ type adapterReport struct {
 }
 
 type doctorReport struct {
-	Overall  severity        `json:"overall"`
-	Vault    componentReport `json:"vault"`
-	Daemon   componentReport `json:"daemon"`
-	MCP      componentReport `json:"mcp"`
-	Adapters []adapterReport `json:"adapters"`
-	Provider componentReport `json:"provider"`
+	Configuration componentReport `json:"configuration"`
+	Overall       severity        `json:"overall"`
+	Vault         componentReport `json:"vault"`
+	Daemon        componentReport `json:"daemon"`
+	MCP           componentReport `json:"mcp"`
+	Adapters      []adapterReport `json:"adapters"`
+	Provider      componentReport `json:"provider"`
 }
 
 var loadDoctorKeys = func() ([]byte, ed25519.PrivateKey, error) {
 	return store.NewKeyring().LoadExisting()
+}
+
+var loadDoctorKeysForRoot = func(root string) ([]byte, ed25519.PrivateKey, error) {
+	return store.NewKeyring().LoadExistingForRoot(root)
 }
 
 func (r doctorReport) exitCode() int {
@@ -93,6 +99,7 @@ func renderStatus(w io.Writer, report statusReport, format outputFormat) error {
 	}
 	fmt.Fprintf(w, "Vault: %s\n", report.VaultState)
 	fmt.Fprintf(w, "Path: %s\n", report.Vault)
+	fmt.Fprintf(w, "Configured: %t\n", report.Configured)
 	fmt.Fprintf(w, "Keyring: %s\n", report.KeyringState)
 	fmt.Fprintf(w, "Snapshots: %d\n", report.Snapshots)
 	if report.Head != "" {
@@ -110,6 +117,7 @@ func renderDoctor(w io.Writer, report doctorReport, format outputFormat) error {
 		return fmt.Errorf("unsupported output format %q", format)
 	}
 	fmt.Fprintf(w, "Overall: %s\n\n", report.Overall)
+	writeComponent(w, report.Configuration)
 	writeComponent(w, report.Vault)
 	writeComponent(w, report.Daemon)
 	writeComponent(w, report.MCP)
@@ -167,14 +175,27 @@ func inspectAdapter(name, home string, required, optional []string) adapterRepor
 
 func runDoctor(root, home, providerDir, providerRemote string, _ io.Writer) (doctorReport, error) {
 	report := doctorReport{
-		Vault:    componentReport{Name: "Vault", State: "not-configured", Severity: severityWarning, Detail: root},
-		Daemon:   componentReport{Name: "Daemon", State: "unknown", Severity: severityWarning, Detail: "systemd user service"},
-		MCP:      componentReport{Name: "MCP", State: "not-running", Severity: severityWarning, Detail: filepath.Join(root, "cifrarium.sock")},
-		Adapters: inspectAdapters(home),
-		Provider: componentReport{Name: "Provider", State: "not-configured", Severity: severityWarning, Detail: "optional"},
+		Configuration: componentReport{Name: "Configuration", State: "not-configured", Severity: severityWarning, Detail: "run cifrarium setup"},
+		Vault:         componentReport{Name: "Vault", State: "not-configured", Severity: severityWarning, Detail: root},
+		Daemon:        componentReport{Name: "Daemon", State: "unknown", Severity: severityWarning, Detail: "systemd user service"},
+		MCP:           componentReport{Name: "MCP", State: "not-running", Severity: severityWarning, Detail: filepath.Join(root, "cifrarium.sock")},
+		Adapters:      inspectAdapters(home),
+		Provider:      componentReport{Name: "Provider", State: "not-configured", Severity: severityWarning, Detail: "optional"},
 	}
+	if root == "" {
+		report.Overall = severityWarning
+		return report, nil
+	}
+	report.Configuration = componentReport{Name: "Configuration", State: "configured", Severity: severityHealthy, Detail: root}
 
-	op, signing, keyErr := loadDoctorKeys()
+	var op []byte
+	var signing ed25519.PrivateKey
+	var keyErr error
+	if root == "" {
+		op, signing, keyErr = loadDoctorKeys()
+	} else {
+		op, signing, keyErr = loadDoctorKeysForRoot(root)
+	}
 	if keyErr == nil {
 		if _, err := os.Stat(root); os.IsNotExist(err) {
 			report.Vault.State = "not-initialized"

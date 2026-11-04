@@ -26,6 +26,13 @@ The agent should therefore protect secrets from accidental disclosure and
 untrusted paths, while reporting same-user compromise as a threat-model
 limitation rather than promising impossible isolation.
 
+The vault root is configured once per user at
+`${XDG_CONFIG_HOME:-$HOME/.config}/cifrarium/config.json`. Normal commands
+resolve it automatically. A different explicit `-root` is a security failure;
+it is not an alternate-vault option. On a new machine, configure the intended
+location first with `cifrarium setup --root PATH`. The config contains only the
+schema and canonical root, never shares, tokens, or vault content.
+
 ## 2. Preflight
 
 Before using a command, collect only non-secret context:
@@ -53,9 +60,9 @@ credentials. It is sufficient to check whether required variables are present.
 
 | Operation | Classification | Agent default |
 | --- | --- | --- |
-| `status` | Read-only, human output by default | May run and report; use `-format=json` for parsing |
+| `status` | Read-only, human output by default | May run after root setup and report; use `-format=json` for parsing |
 | `doctor` | Read-only local and configured-provider diagnostic | May run and report; it never initializes state |
-| `provider-health` | Read-only remote diagnostic | May run with supplied non-secret paths; report result |
+| `provider-health` | Read-only local/remote diagnostic | Requires an existing provider checkout; it never initializes Git or writes provider state |
 | `snapshot` | Local mutation | Run only when explicitly requested |
 | `recovery-shares` | Secret creation/display | Human-only by default; never capture output |
 | `recover` | Keyring mutation and integrity-sensitive | Require explicit human confirmation and two supplied shares |
@@ -68,7 +75,9 @@ credentials. It is sufficient to check whether required variables are present.
 
 A request to “check”, “review”, or “diagnose” authorizes read-only inspection,
 not snapshot creation, recovery import, daemon activation, push, deletion, or
-restore activation.
+restore activation. If the root is not configured, `status` and other normal
+commands stop before creating keyring or vault state; use `doctor` to see the
+safe setup prompt.
 
 ## 4. Human confirmation gates
 
@@ -107,10 +116,11 @@ Proceed?
 
 ## 5. Standard workflows
 
-### 5.1 Inspect a vault
+### 5.1 Configure and inspect a vault
 
 ~~~sh
-go run ./cmd/cifrarium -root "$ROOT" -command=status
+cifrarium setup --root "$HOME/.local/share/cifrarium"
+cifrarium -command=status
 ~~~
 
 Success means exit code zero and a readable status response. Use
@@ -120,7 +130,7 @@ is reachable or that a backup exists.
 ### 5.1.1 Run the complete doctor
 
 ~~~sh
-cifrarium -root "$ROOT" -command=doctor -format=json
+cifrarium -command=doctor -format=json
 ~~~
 
 `doctor` does not create keyring material, a vault, a provider checkout, a
@@ -135,7 +145,7 @@ Do not treat an `overall` report as proof that a remote upload completed.
 ### 5.2 Create a local snapshot
 
 ~~~sh
-go run ./cmd/cifrarium -root "$ROOT" -command=snapshot
+go run ./cmd/cifrarium -command=snapshot
 ~~~
 
 Check that a snapshot identifier was returned. Do not read or print the
@@ -159,7 +169,7 @@ token to a remote URL, disabling privacy checks, or editing encrypted objects.
 Run only when the human explicitly asks for new shares:
 
 ~~~sh
-go run ./cmd/cifrarium -root "$ROOT" -command=recovery-shares
+go run ./cmd/cifrarium -command=recovery-shares
 ~~~
 
 The command's stdout is secret material. Keep it out of agent transcripts,
@@ -173,7 +183,7 @@ the operation changes keyring state and may reject a rollback. After explicit
 confirmation, use a protected input mechanism:
 
 ~~~sh
-go run ./cmd/cifrarium -root "$ROOT" -command=recover \
+cifrarium -command=recover \
   -recovery-share "$SHARE_1_FROM_PROTECTED_INPUT" \
   -recovery-share "$SHARE_2_FROM_PROTECTED_INPUT"
 ~~~
@@ -190,8 +200,8 @@ Preconditions:
 - no concurrent daemon or snapshot operation is running.
 
 ~~~sh
-go run ./cmd/cifrarium -root "$ROOT" -command=migrate-catalog
-go run ./cmd/cifrarium -root "$ROOT" -command=status
+go run ./cmd/cifrarium -command=migrate-catalog
+go run ./cmd/cifrarium -command=status
 ~~~
 
 The agent must report whether migration changed anything. A failure is not a
@@ -204,7 +214,7 @@ Use read-only observation first:
 ~~~sh
 systemctl --user status cifrarium.service
 journalctl --user -u cifrarium.service -n 100 --no-pager
-ls -l "$ROOT/pending.queue" "$ROOT/cifrarium.sock"
+cifrarium -command=doctor -format=json
 ~~~
 
 The agent may recommend restarting a service only after the human requests an
