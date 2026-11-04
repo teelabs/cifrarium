@@ -34,6 +34,16 @@ type PersistenceError struct{ Err error }
 func (e *PersistenceError) Error() string { return fmt.Sprintf("queue persistence failed: %v", e.Err) }
 func (e *PersistenceError) Unwrap() error { return e.Err }
 
+// CaptureError marks a failure while reading local configuration files. These
+// failures are not retryable by the daemon because retrying would repeat the
+// same local safety violation and could leave the operator without control of
+// the foreground process.
+type CaptureError struct{ Err error }
+
+func (e *CaptureError) Error() string   { return fmt.Sprintf("capture failed: %v", e.Err) }
+func (e *CaptureError) Unwrap() error   { return e.Err }
+func (e *CaptureError) CaptureFailure() {}
+
 func NewScheduler(snapshot Snapshotter, upload Uploader, pending *Queue) *Scheduler {
 	return &Scheduler{Interval: DefaultInterval, Retry: RetryPolicy{MaxAttempts: 3, BaseDelay: time.Second}, Snapshot: snapshot, Upload: upload, Pending: pending}
 }

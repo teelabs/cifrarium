@@ -54,11 +54,27 @@ func TestTerminalUIColorizesSemanticValuesOnlyWhenEnabled(t *testing.T) {
 	ui.Command("cifrarium setup --root " + shellQuote(rootPath))
 
 	text := out.String()
-	if !strings.Contains(text, ansiBlue+configPath+ansiReset) {
+	if !strings.Contains(text, "\x1b[38;2;121;192;255m"+configPath+ansiReset) {
 		t.Fatalf("path was not colorized: %q", text)
 	}
-	if !strings.Contains(text, ansiGreen+"$ cifrarium setup --root") {
+	if !strings.Contains(text, "\x1b[38;2;63;185;80m$ cifrarium setup --root") {
 		t.Fatalf("command was not colorized: %q", text)
+	}
+}
+
+func TestTerminalUICommandBlockSeparatesCopyableInstructions(t *testing.T) {
+	var out bytes.Buffer
+	ui := terminalUI{w: &out, color: false}
+	ui.Section("How to fix it")
+	ui.CommandBlock("systemctl --user stop cifrarium.service\ncifrarium snapshot")
+	ui.Section("What to do next")
+
+	text := out.String()
+	if strings.Count(text, commandRule) != 2 {
+		t.Fatalf("command block did not provide visual boundaries: %q", text)
+	}
+	if !strings.Contains(text, "cifrarium snapshot\n"+commandRule) {
+		t.Fatalf("command block is not separated from the next section: %q", text)
 	}
 }
 
@@ -189,13 +205,21 @@ func TestTerminalUIPaletteMapsSemanticRoles(t *testing.T) {
 	home := t.TempDir()
 	ui.Header("Header")
 	ui.Value("Path", filepath.Join(home, ".zshrc"))
-	ui.Value("User", "test-user")
+	ui.Value("User", "example-user")
 	ui.Value("Pending uploads", "2")
 	ui.Status("Daemon", "problem")
 	ui.Command("cifrarium snapshot")
 	ui.Failure("capture failed")
 	text := out.String()
-	for _, want := range []string{ansiCyan + "Header", ansiBlue + filepath.Join(home, ".zshrc"), ansiMagenta + "test-user", ansiYellow + "2", ansiRed + "problem", ansiGreen + "$ cifrarium snapshot", ansiRed + "capture failed"} {
+	for _, want := range []string{
+		"\x1b[38;2;88;166;255mHeader",
+		"\x1b[38;2;121;192;255m" + filepath.Join(home, ".zshrc"),
+		"\x1b[38;2;210;168;255mexample-user",
+		"\x1b[38;2;210;153;34m2",
+		"\x1b[38;2;248;81;73mproblem",
+		"\x1b[38;2;63;185;80m$ cifrarium snapshot",
+		"\x1b[38;2;248;81;73mcapture failed",
+	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("palette output missing %q: %q", want, text)
 		}
@@ -212,5 +236,24 @@ func TestTerminalUIRedirectedOutputHasNoANSI(t *testing.T) {
 	ui.Failure("capture failed")
 	if strings.Contains(out.String(), "\x1b[") {
 		t.Fatalf("redirected output contains ANSI escape sequence: %q", out.String())
+	}
+}
+
+func TestCodexPaletteUsesMutedForegroundOnlyColors(t *testing.T) {
+	for role, color := range map[terminalColor]string{
+		colorHeader:    codexPalette.header,
+		colorCommand:   codexPalette.command,
+		colorLocation:  codexPalette.location,
+		colorWarning:   codexPalette.warning,
+		colorFailure:   codexPalette.failure,
+		colorIdentity:  codexPalette.identity,
+		colorSecondary: codexPalette.secondary,
+	} {
+		if !strings.HasPrefix(color, "\x1b[38;2;") || !strings.HasSuffix(color, "m") {
+			t.Fatalf("%s color=%q, want truecolor foreground", role, color)
+		}
+		if strings.Contains(color, "\x1b[1m") || strings.Contains(color, "\x1b[4") || strings.Contains(color, "\x1b[48;") {
+			t.Fatalf("%s color=%q is bright, underlined, or a background", role, color)
+		}
 	}
 }

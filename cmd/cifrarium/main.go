@@ -272,7 +272,7 @@ func main() {
 		scheduler := newDaemonScheduler(snapshot, uploader, queue)
 		scheduler.Persist = func() error { return queue.Save(queuePath, op) }
 		scheduler.Report = func(err error) {
-			fmt.Fprintln(os.Stderr, "cifrarium daemon:")
+			newTerminalUI(os.Stderr).Text(colorIdentity, "cifrarium daemon")
 			renderDaemonFailure(os.Stderr, home, err)
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -299,9 +299,10 @@ func main() {
 			}
 			os.Exit(1)
 		}
-		fmt.Printf("cifrarium daemon listening on %s\n", socket)
+		newTerminalUI(os.Stdout).Text(colorIdentity, fmt.Sprintf("cifrarium daemon listening on %s", socket))
 		if err := (daemon.Service{Scheduler: scheduler}).Run(ctx); err != nil && ctx.Err() == nil {
-			fmt.Fprintln(os.Stderr, err)
+			writeDaemonServiceError(os.Stderr, err)
+			_ = os.Remove(socket)
 			os.Exit(1)
 		}
 		select {
@@ -645,7 +646,7 @@ func captureSnapshot(home string, vault *store.Vault) (daemon.Item, error) {
 	for _, a := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
 		files, err := a.Collect(home)
 		if err != nil {
-			return daemon.Item{}, err
+			return daemon.Item{}, &daemon.CaptureError{Err: err}
 		}
 		for _, f := range files {
 			records = append(records, store.Record{Path: f.Relative, Mode: uint32(f.Mode), Data: f.Data})
@@ -664,6 +665,14 @@ func captureSnapshot(home string, vault *store.Vault) (daemon.Item, error) {
 		return daemon.Item{}, err
 	}
 	return daemon.Item{ID: m.Snapshot, Ciphertext: ciphertext, Manifest: manifest}, nil
+}
+
+func writeDaemonServiceError(w io.Writer, err error) {
+	var captureErr interface{ CaptureFailure() }
+	if errors.As(err, &captureErr) {
+		return
+	}
+	fmt.Fprintln(w, err)
 }
 
 func newDaemonScheduler(snapshot daemon.Snapshotter, uploader daemon.Uploader, queue *daemon.Queue) *daemon.Scheduler {

@@ -9,38 +9,43 @@ import (
 )
 
 const (
-	ansiReset   = "\x1b[0m"
-	ansiCyan    = "\x1b[36m"
-	ansiGreen   = "\x1b[32m"
-	ansiYellow  = "\x1b[33m"
-	ansiRed     = "\x1b[31m"
-	ansiBlue    = "\x1b[34m"
-	ansiMagenta = "\x1b[35m"
+	ansiReset     = "\x1b[0m"
+	ansiHeader    = "\x1b[38;2;88;166;255m"
+	ansiCommand   = "\x1b[38;2;63;185;80m"
+	ansiLocation  = "\x1b[38;2;121;192;255m"
+	ansiWarning   = "\x1b[38;2;210;153;34m"
+	ansiFailure   = "\x1b[38;2;248;81;73m"
+	ansiIdentity  = "\x1b[38;2;210;168;255m"
+	ansiSecondary = "\x1b[38;2;139;148;158m"
 )
 
 type terminalColor string
 
 const (
-	colorHeader   terminalColor = "header"
-	colorCommand  terminalColor = "command"
-	colorLocation terminalColor = "location"
-	colorWarning  terminalColor = "warning"
-	colorFailure  terminalColor = "failure"
-	colorIdentity terminalColor = "identity"
+	colorHeader    terminalColor = "header"
+	colorCommand   terminalColor = "command"
+	colorLocation  terminalColor = "location"
+	colorWarning   terminalColor = "warning"
+	colorFailure   terminalColor = "failure"
+	colorIdentity  terminalColor = "identity"
+	colorSecondary terminalColor = "secondary"
 )
 
 type terminalPalette struct {
-	header, command, location, warning, failure, identity string
+	header, command, location, warning, failure, identity, secondary string
 }
 
 var codexPalette = terminalPalette{
-	header:   ansiCyan,
-	command:  ansiGreen,
-	location: ansiBlue,
-	warning:  ansiYellow,
-	failure:  ansiRed,
-	identity: ansiMagenta,
+	header:    ansiHeader,
+	command:   ansiCommand,
+	location:  ansiLocation,
+	warning:   ansiWarning,
+	failure:   ansiFailure,
+	identity:  ansiIdentity,
+	secondary: ansiSecondary,
 }
+
+const commandRule = "────────────────────────────────────────"
 
 type terminalUI struct {
 	w       io.Writer
@@ -86,6 +91,8 @@ func (ui terminalUI) colorFor(role terminalColor) string {
 		return palette.failure
 	case colorIdentity:
 		return palette.identity
+	case colorSecondary:
+		return palette.secondary
 	default:
 		return ""
 	}
@@ -103,11 +110,11 @@ func (ui terminalUI) colorize(role terminalColor, value string) string {
 }
 
 func (ui terminalUI) Header(title string) {
-	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(colorHeader, title), strings.Repeat("=", len(title)))
+	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(colorHeader, title), ui.colorize(colorHeader, strings.Repeat("=", len(title))))
 }
 
 func (ui terminalUI) Section(title string) {
-	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(colorHeader, title), strings.Repeat("─", len(title)))
+	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(colorHeader, title), ui.colorize(colorHeader, strings.Repeat("─", len(title))))
 }
 
 func (ui terminalUI) Value(label, value string) {
@@ -149,13 +156,18 @@ func (ui terminalUI) Command(command string) {
 }
 
 func (ui terminalUI) CommandBlock(commands string) {
+	fmt.Fprintf(ui.w, "\n%s\n", ui.colorize(colorHeader, commandRule))
 	for _, command := range strings.Split(strings.TrimSpace(commands), "\n") {
 		if command == "" {
 			continue
 		}
 		fmt.Fprintf(ui.w, "%s\n", ui.colorize(colorCommand, "  "+command))
 	}
-	fmt.Fprintln(ui.w)
+	fmt.Fprintf(ui.w, "%s\n\n", ui.colorize(colorHeader, commandRule))
+}
+
+func (ui terminalUI) Text(role terminalColor, value string) {
+	fmt.Fprintln(ui.w, ui.colorize(role, value))
 }
 
 func (ui terminalUI) Decision(decision setupDecision) {
@@ -225,7 +237,7 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 	ui.Section("What happened")
 	ui.Failure("The setup could not finish the first local capture.")
 	ui.Section("Why it matters")
-	fmt.Fprintln(w, "Cifrarium stopped before any remote upload. Correct the input and retry the local setup.")
+	ui.Text(colorSecondary, "Cifrarium stopped before any remote upload. Correct the input and retry the local setup.")
 	ui.Section("How to fix it")
 	if path, ok := rejectedSymlinkPath(home, err); ok {
 		regular := path + ".cifrarium-regular"
@@ -233,11 +245,11 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
 			copyCommand = "cp -aL"
 		}
-		fmt.Fprintln(w, "Cifrarium does not follow symlinks during capture.")
+		ui.Text(colorSecondary, "Cifrarium does not follow symlinks during capture.")
 		ui.Value("Path", path)
 		ui.CommandBlock(fmt.Sprintf("%s %s %s\nmv %s %s", copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(path)))
 	} else {
-		fmt.Fprintln(w, "Review the reported adapter path and correct it without disabling capture safety.")
+		ui.Text(colorSecondary, "Review the reported adapter path and correct it without disabling capture safety.")
 	}
 	ui.Section("What to do next")
 	ui.Command("cifrarium setup")
@@ -249,7 +261,7 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 	ui.Section("What happened")
 	ui.Failure("The daemon could not complete its recovery snapshot.")
 	ui.Section("Why it matters")
-	fmt.Fprintln(w, "Cifrarium stopped this capture before saving or uploading a new snapshot. Existing vault history was preserved.")
+	ui.Text(colorSecondary, "Cifrarium stopped this capture before saving or uploading a new snapshot. Existing vault history was preserved.")
 	ui.Section("How to fix it")
 	if path, ok := rejectedSymlinkPath(home, err); ok {
 		regular := path + ".cifrarium-regular"
@@ -257,17 +269,17 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
 			copyCommand = "cp -aL"
 		}
-		fmt.Fprintln(w, "Cifrarium does not follow symlinks during capture.")
+		ui.Text(colorSecondary, "Cifrarium does not follow symlinks during capture.")
 		ui.Value("Path", path)
-		fmt.Fprintln(w, "If the link is managed intentionally, leave the daemon stopped and materialize a regular file through that manager.")
+		ui.Text(colorSecondary, "If the link is managed intentionally, leave the daemon stopped and materialize a regular file through that manager.")
 		ui.CommandBlock(fmt.Sprintf("systemctl --user stop cifrarium.service\ntest -L %s && readlink %s\n%s %s %s\ntest ! -L %s\nmv %s %s", shellQuote(path), shellQuote(path), copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(regular), shellQuote(path)))
 		ui.CommandBlock("cifrarium snapshot\nsystemctl --user start cifrarium.service")
 	} else {
-		fmt.Fprintln(w, "Review the reported adapter path and correct it without disabling capture safety.")
+		ui.Text(colorSecondary, "Review the reported adapter path and correct it without disabling capture safety.")
 		ui.Command("cifrarium doctor")
 	}
 	ui.Section("What to do next")
-	fmt.Fprintln(w, "Do not use rm, source, sudo, or a symlink-following override. Keep the daemon stopped until a local snapshot succeeds.")
+	ui.Text(colorWarning, "Do not use rm, source, sudo, or a symlink-following override. Keep the daemon stopped until a local snapshot succeeds.")
 }
 
 func rejectedSymlinkPath(home string, err error) (string, bool) {
