@@ -167,6 +167,32 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 	ui.Command("cifrarium setup")
 }
 
+func renderDaemonFailure(w io.Writer, home string, err error) {
+	ui := newTerminalUI(w)
+	ui.Header("Daemon needs attention")
+	ui.Section("What happened")
+	fmt.Fprintf(w, "The daemon could not complete its recovery snapshot.\n%s\n", err)
+	ui.Section("Why it matters")
+	fmt.Fprintln(w, "Cifrarium stopped this capture before saving or uploading a new snapshot. Existing vault history was preserved.")
+	ui.Section("How to fix it")
+	if path, ok := rejectedSymlinkPath(home, err); ok {
+		regular := path + ".cifrarium-regular"
+		copyCommand := "cp --dereference --preserve=mode"
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			copyCommand = "cp -aL"
+		}
+		fmt.Fprintf(w, "Cifrarium does not follow symlinks during capture: %s\n", path)
+		fmt.Fprintln(w, "If the link is managed intentionally, leave the daemon stopped and materialize a regular file through that manager.")
+		ui.CommandBlock(fmt.Sprintf("systemctl --user stop cifrarium.service\ntest -L %s && readlink %s\n%s %s %s\ntest ! -L %s\nmv %s %s", shellQuote(path), shellQuote(path), copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(regular), shellQuote(path)))
+		ui.CommandBlock("cifrarium snapshot\nsystemctl --user start cifrarium.service")
+	} else {
+		fmt.Fprintln(w, "Review the reported adapter path and correct it without disabling capture safety.")
+		ui.Command("cifrarium doctor")
+	}
+	ui.Section("What to do next")
+	fmt.Fprintln(w, "Do not use rm, source, sudo, or a symlink-following override. Keep the daemon stopped until a local snapshot succeeds.")
+}
+
 func rejectedSymlinkPath(home string, err error) (string, bool) {
 	const marker = "symlink rejected: "
 	value := err.Error()

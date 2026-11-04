@@ -31,7 +31,9 @@ daemon. The systemd unit passes no root; the daemon uses the same resolver.
 ## Non-goals
 
 This change does not add multi-user vault selection, a casual alternate-root
-override, automatic remote repository creation, or automatic daemon activation.
+override, or automatic daemon activation. The later v0.9.0 provider wizard may
+create a private remote only after an explicit operator confirmation; it never
+uploads a snapshot automatically.
 
 ## Verification
 

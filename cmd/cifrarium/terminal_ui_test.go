@@ -99,3 +99,29 @@ func TestRenderSetupFailureUsesActionableSections(t *testing.T) {
 		t.Fatalf("setup error did not identify the path: %q", text)
 	}
 }
+
+func TestRenderDaemonFailureUsesSafeSymlinkRecoveryInstructions(t *testing.T) {
+	var out bytes.Buffer
+	renderDaemonFailure(&out, "/home/thiago", errors.New("recovery snapshot failed: symlink rejected: .zshrc"))
+	text := out.String()
+	for _, want := range []string{
+		"What happened",
+		"Why it matters",
+		"How to fix it",
+		"systemctl --user stop cifrarium.service",
+		"cp --dereference --preserve=mode",
+		"test ! -L",
+		"mv",
+		"cifrarium snapshot",
+		"systemctl --user start cifrarium.service",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("daemon error missing %q: %q", want, text)
+		}
+	}
+	for _, forbidden := range []string{"CIFRARIUM_RECOVERY_SHARE", "token", "source ", "sudo ", ".zshrc-starship"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("daemon error leaked or encouraged %q: %q", forbidden, text)
+		}
+	}
+}

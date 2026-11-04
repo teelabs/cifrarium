@@ -271,7 +271,10 @@ func main() {
 		}
 		scheduler := newDaemonScheduler(snapshot, uploader, queue)
 		scheduler.Persist = func() error { return queue.Save(queuePath, op) }
-		scheduler.Report = func(err error) { fmt.Fprintf(os.Stderr, "cifrarium daemon: %v\n", err) }
+		scheduler.Report = func(err error) {
+			fmt.Fprintln(os.Stderr, "cifrarium daemon:")
+			renderDaemonFailure(os.Stderr, home, err)
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 		ctx, cancel := context.WithCancel(ctx)

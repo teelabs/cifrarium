@@ -21,7 +21,7 @@ side effects:
 
 ```sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.9.0 --non-interactive
+  | bash -s -- --version 0.9.1 --non-interactive
 ```
 
 For the highest-assurance path, inspect and verify the installer first:
@@ -39,7 +39,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.9.0 --non-interactive
+/tmp/cifrarium-install.sh --version 0.9.1 --non-interactive
 ```
 
 The default prefix is `$HOME/.local`. The active executable is
@@ -87,7 +87,7 @@ Use a user-owned absolute prefix when the default is unsuitable:
 
 ```sh
 /tmp/cifrarium-install.sh \
-  --version 0.9.0 \
+  --version 0.9.1 \
   --prefix "$HOME/opt/cifrarium"
 ```
 
@@ -95,7 +95,7 @@ After configuring `~/.config/cifrarium/daemon.env` and checking provider and
 recovery-share prerequisites, opt in to activation:
 
 ```sh
-/tmp/cifrarium-install.sh --version 0.9.0 --enable
+/tmp/cifrarium-install.sh --version 0.9.1 --enable
 systemctl --user status cifrarium.service
 ```
 

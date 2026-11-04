@@ -4,6 +4,20 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-04
+
+### Changed
+
+- Clarified the safe operator procedure for rejected symlinked configuration
+  files and added the current v0.9.0 provider-wizard/CLI specification. This
+  documentation and daemon diagnostics update.
+
+### Fixed
+
+- Daemon recovery-snapshot failures caused by an allowlisted symlink now print
+  the same safe stop-inspect-copy-verify-restart instructions as setup without
+  exposing target contents or recovery material.
+
 ## [0.9.0] - 2026-11-04
 
 ### Added

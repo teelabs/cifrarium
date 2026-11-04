@@ -85,9 +85,30 @@ Success criteria:
 
 This path is not a backup. Losing the machine or keyring may require recovery.
 
-Symlinked allowlisted files are rejected rather than followed. If setup reports
-one, use the copy command it provides to create a regular file and run setup
-again. The wizard does not upload anything while this correction is pending.
+Symlinked allowlisted files are rejected rather than followed. If the daemon
+reports one, stop it before changing the path and inspect only the link:
+
+~~~sh
+systemctl --user stop cifrarium.service
+test -L "$HOME/.zshrc" && readlink "$HOME/.zshrc"
+~~~
+
+If the symlink is intentional, materialize a regular file through the dotfile
+manager or leave capture disabled. Otherwise, create and atomically install a
+regular copy:
+
+~~~sh
+cp --dereference --preserve=mode \
+  "$HOME/.zshrc" "$HOME/.zshrc.cifrarium-regular"
+test ! -L "$HOME/.zshrc.cifrarium-regular"
+mv "$HOME/.zshrc.cifrarium-regular" "$HOME/.zshrc"
+cifrarium snapshot
+systemctl --user start cifrarium.service
+~~~
+
+This can break future updates from the dotfile manager. Do not use `rm`,
+`source`, `sudo`, or disable the symlink safety check. No remote upload occurs
+until the local snapshot succeeds.
 
 ## 4. Create and store recovery shares
 

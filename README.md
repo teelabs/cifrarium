@@ -60,7 +60,7 @@ side effects:
 
 ~~~sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.9.0 --non-interactive
+  | bash -s -- --version 0.9.1 --non-interactive
 ~~~
 
 The daemon is never enabled by non-interactive installation.
@@ -76,7 +76,7 @@ Equivalent `wget` form:
 ~~~sh
 bash -o pipefail -c \
   'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.9.0
+  bash 0.9.1
 ~~~
 
 The stream form is convenient, but it does not let you inspect the installer
@@ -95,7 +95,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.9.0 --non-interactive
+/tmp/cifrarium-install.sh --version 0.9.1 --non-interactive
 ~~~
 
 Both forms refuse invalid metadata, signatures, checksums, architectures, or
@@ -114,7 +114,7 @@ Use a different absolute, user-owned prefix in the stream form when required:
 ~~~sh
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
-  bash 0.9.0 "$HOME/opt/cifrarium"
+  bash 0.9.1 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -129,7 +129,7 @@ bash -o pipefail -c \
   bash 0.4.1
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
-  bash 0.9.0
+  bash 0.9.1
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch
@@ -187,10 +187,30 @@ oversized captures are rejected. There is currently no user-editable adapter
 configuration file: adding a new adapter or changing an allowlist is a code
 change requiring review.
 
-If an allowlisted file such as `~/.zshrc` is a symlink, the first capture stops
-with an actionable error. Cifrarium never follows it automatically. Copy the
-target to a regular file using the command shown by the wizard, then run
-`cifrarium setup` again.
+If an allowlisted file such as `~/.zshrc` is a symlink, capture stops before a
+new snapshot is saved or uploaded. Cifrarium never follows it automatically.
+Stop the daemon, inspect only the link metadata, and decide whether the link is
+managed intentionally:
+
+~~~sh
+systemctl --user stop cifrarium.service
+test -L "$HOME/.zshrc" && readlink "$HOME/.zshrc"
+~~~
+
+If the link is intentional, materialize a regular file through the dotfile
+manager or leave capture disabled. If a local regular copy is acceptable:
+
+~~~sh
+cp --dereference --preserve=mode \
+  "$HOME/.zshrc" "$HOME/.zshrc.cifrarium-regular"
+test ! -L "$HOME/.zshrc.cifrarium-regular"
+mv "$HOME/.zshrc.cifrarium-regular" "$HOME/.zshrc"
+cifrarium snapshot
+systemctl --user start cifrarium.service
+~~~
+
+This replaces the symlink and may stop the dotfile manager from updating the
+file. Do not use `rm`, `source`, `sudo`, or a symlink-following override.
 
 ## Diagnose the local installation
 

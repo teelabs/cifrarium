@@ -16,7 +16,10 @@
 - A different explicit root is a security failure, never an override prompt.
 - Normal commands must not create keyring or vault state when unconfigured.
 - `--non-interactive` must not configure root, capture, upload, or enable daemon.
-- Recovery shares remain human-only output and are never persisted by the wizard.
+- Existing recovery shares remain preserved. Provider setup may persist two
+  explicitly confirmed shares in the protected daemon environment; it never
+  displays or writes them in non-interactive mode and never stores the third
+  share in the daemon environment.
 
 ## Review Focus
 
