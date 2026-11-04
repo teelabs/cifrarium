@@ -309,6 +309,16 @@ func commandMutatesOrHandlesSecrets(command string) bool {
 
 func runSetup(root, home string, nonInteractive bool, output io.Writer) error {
 	keyringStore := store.NewKeyring()
+	// Setup is idempotent: retries and upgrades never rotate keys or print
+	// another recovery-share set for an already configured vault.
+	if _, err := os.Stat(root); err == nil {
+		if op, signing, keyErr := keyringStore.LoadExistingForRoot(root); keyErr == nil {
+			if _, openErr := store.Open(root, op, signing); openErr == nil {
+				fmt.Fprintf(output, "Cifrarium is already configured at %s; existing keyring, vault history, and recovery shares were preserved.\n", root)
+				return nil
+			}
+		}
+	}
 	if nonInteractive {
 		op, signing, err := keyringStore.LoadExistingForRoot(root)
 		if err != nil {

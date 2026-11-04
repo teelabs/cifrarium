@@ -4,6 +4,29 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-03
+
+### Changed
+
+- Upgrades preserve the configured vault, keyring, snapshot history, provider
+  checkout, and existing recovery shares; setup is idempotent and does not
+  rotate or print shares during retries.
+- Release metadata declares provider compatibility. Provider migrations are
+  staged only and require an explicit operator command before retrying an
+  upgrade.
+
+### Added
+
+- Added installer acceptance coverage for valid and failed provider preflights,
+  invalid `daemon.env`, explicit migration gating, upgrade retries, and
+  preservation of local vault-state sentinels.
+
+### Fixed
+
+- The installer now validates provider configuration and privacy, runs the
+  candidate binary preflight before activation, and leaves the previous active
+  version in place when a required check fails.
+
 ## [0.8.1] - 2026-11-03
 
 ### Changed

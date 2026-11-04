@@ -24,7 +24,7 @@ drain_piped_input() {
 }
 
 die() {
-  printf '%s\n' "$*" >&2
+  printf '%b\n' "$*" >&2
   drain_piped_input
   exit 1
 }
@@ -208,7 +208,7 @@ fi
 required_commands=(uname mkdir rm rmdir)
 case "$action" in
   install)
-    required_commands+=(mktemp mv ln install dirname sed grep curl tar sha256sum cosign python3)
+    required_commands+=(mktemp mv ln install dirname sed grep curl tar sha256sum cosign python3 stat readlink)
     ;;
   rollback)
     required_commands+=(mv ln readlink)
@@ -247,6 +247,14 @@ versions_dir="$state_dir/versions"
 active_link="$prefix/bin/$PRODUCT"
 previous_link="$prefix/bin/$PRODUCT.previous"
 lock_dir="$state_dir/.install.lock"
+upgrade=0
+provider_dir_configured=""
+provider_remote_configured=""
+provider_configured=0
+
+if [[ -L "$active_link" ]]; then
+  upgrade=1
+fi
 
 acquire_lock() {
   mkdir -p "$state_dir"
@@ -264,6 +272,88 @@ atomic_symlink() {
   ln -s "$target" "$tmp"
   mv -Tf "$tmp" "$link"
 }
+
+read_provider_config() {
+  local env_file="${XDG_CONFIG_HOME:-$HOME/.config}/cifrarium/daemon.env"
+  [[ -e "$env_file" ]] || return 0
+  [[ -f "$env_file" ]] || die "daemon.env is not a regular file: $env_file"
+  local mode
+  mode=$(stat -c '%a' "$env_file" 2>/dev/null) || die "cannot inspect daemon.env permissions"
+  [[ "$mode" == 600 ]] || die "daemon.env must have mode 0600: $env_file"
+  local values
+  values=$(python3 - "$env_file" <<'PY'
+import pathlib, sys
+allowed = {"CIFRARIUM_PROVIDER_DIR", "CIFRARIUM_PROVIDER_REMOTE"}
+values = {}
+for number, raw in enumerate(pathlib.Path(sys.argv[1]).read_text().splitlines(), 1):
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if "=" not in line:
+        raise SystemExit(f"daemon.env line {number} is invalid; use KEY=value")
+    key, value = line.split("=", 1)
+    if key not in allowed or not value or any(c in value for c in "\t\r\n"):
+        raise SystemExit(f"daemon.env line {number} is invalid; only provider keys are accepted")
+    values[key] = value
+if bool(values.get("CIFRARIUM_PROVIDER_DIR")) != bool(values.get("CIFRARIUM_PROVIDER_REMOTE")):
+    raise SystemExit("daemon.env must configure provider directory and remote together")
+print(values.get("CIFRARIUM_PROVIDER_DIR", ""), values.get("CIFRARIUM_PROVIDER_REMOTE", ""), sep="\t")
+PY
+  ) || die "invalid daemon.env; fix it and retry the upgrade"
+  IFS=$'\t' read -r provider_dir_configured provider_remote_configured <<<"$values"
+  if [[ -n "$provider_dir_configured" ]]; then
+    provider_configured=1
+  fi
+}
+
+provider_preflight() {
+  if ((provider_configured == 0)); then
+    printf 'Provider: not configured (local installation permitted)\n' >&2
+    return 0
+  fi
+  [[ "$provider_dir_configured" = /* ]] || die "configured provider directory must be absolute"
+  [[ -d "$provider_dir_configured/.git" ]] || die "Upgrade blocked\n\nWhat happened\nThe configured provider checkout is missing.\n\nWhy it matters\nActivating this version could strand encrypted history.\n\nHow to fix it\nRestore the checkout, then retry.\n\nCOMMAND\ngit -C <provider-directory> status\n\nWhat to do next\nKeep the current version active until provider-health passes."
+  git -C "$provider_dir_configured" status --porcelain >/dev/null 2>&1 || die "configured provider checkout is inaccessible"
+  git -C "$provider_dir_configured" ls-remote "$provider_remote_configured" HEAD >/dev/null 2>&1 || die "Upgrade blocked\n\nWhat happened\nThe configured provider remote is inaccessible.\n\nWhy it matters\nThe upgrade cannot verify the remote backup boundary.\n\nHow to fix it\nRestore GitHub access without putting tokens in daemon.env.\n\nCOMMAND\ncifrarium -command=provider-health -provider-dir <provider-directory> -provider-remote <github-remote>\n\nWhat to do next\nKeep the current version active and retry after provider-health passes."
+  command -v gh >/dev/null 2>&1 || die "configured GitHub provider requires gh for privacy verification"
+  local slug
+  slug=$(python3 - "$provider_remote_configured" <<'PY'
+import re, sys
+m = re.fullmatch(r"https://github\.com/([^/]+)/([^/#]+?)(?:\.git)?", sys.argv[1])
+if not m: raise SystemExit(1)
+print(f"{m.group(1)}/{m.group(2)}")
+PY
+  ) || die "configured provider remote must be an HTTPS GitHub repository URL"
+  [[ "$(gh api "repos/$slug" --jq .private 2>/dev/null)" == true ]] || die "Upgrade blocked\n\nWhat happened\nThe configured GitHub repository is not confirmed private.\n\nWhy it matters\nCifrarium requires a private provider for encrypted backup metadata.\n\nHow to fix it\nMake the repository private and verify access.\n\nCOMMAND\ngh api repos/<owner>/<repository> --jq .private\n\nWhat to do next\nKeep the current version active and retry."
+}
+
+validate_existing_state() {
+  ((upgrade)) || return 0
+  local config_file="${XDG_CONFIG_HOME:-$HOME/.config}/cifrarium/config.json"
+  if [[ ! -e "$config_file" ]]; then
+    printf 'Vault: not configured (upgrade will preserve the local installation)\n' >&2
+    return 0
+  fi
+  [[ -f "$config_file" ]] || die "config.json is not a regular file"
+  [[ "$(stat -c '%a' "$config_file" 2>/dev/null)" == 600 ]] || die "config.json must have mode 0600 before an upgrade"
+  python3 - "$config_file" <<'PY'
+import json, os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+root = data.get("root")
+if data.get("schema") != 1 or not isinstance(root, str) or not root.startswith("/"):
+    raise SystemExit("config.json has invalid schema or root")
+if os.path.realpath(root) != root or not os.path.isdir(root):
+    raise SystemExit("configured vault root is missing or not canonical")
+PY
+  if ! "$active_link" -command=doctor -format=json >/dev/null 2>&1; then
+    die "Upgrade blocked\n\nWhat happened\nThe active version could not validate the configured root and keyring binding.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and repair the reported local state.\n\nWhat to do next\nKeep the active version in place and retry."
+  fi
+}
+
+if [[ "$action" == install ]]; then
+  read_provider_config
+fi
 
 write_unit() {
   local target=$1 tmp extract_dir=${EXTRACT_DIR:?}
@@ -343,6 +433,8 @@ if [[ "$action" == uninstall ]]; then
   uninstall
   exit 0
 fi
+
+validate_existing_state
 
 for command_name in curl tar sha256sum cosign python3; do
   command -v "$command_name" >/dev/null || die "$command_name is required for verified installation"
@@ -450,6 +542,33 @@ done
 [[ -x "$extract_dir/cifrarium" ]] || die "archive binary is not executable"
 grep -Fq "\"version\": \"$version\"" "$extract_dir/release.json" || die "archive version metadata mismatch"
 grep -Fq "\"architecture\": \"linux-$arch\"" "$extract_dir/release.json" || die "archive architecture metadata mismatch"
+release_info=$(python3 - "$extract_dir/release.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1], encoding="utf-8"))
+p = m.get("provider")
+if not isinstance(p, dict) or not isinstance(p.get("format"), int) or not isinstance(p.get("compatible"), bool) or not isinstance(p.get("migrationRequired"), bool) or not isinstance(p.get("migrationCommand"), str):
+    raise SystemExit("invalid provider compatibility metadata")
+if p["migrationRequired"] and not p["migrationCommand"]:
+    raise SystemExit("migrationRequired metadata must include migrationCommand")
+print(p["format"], str(p["compatible"]).lower(), str(p["migrationRequired"]).lower(), p["migrationCommand"], sep="\t")
+PY
+) || die "archive provider compatibility metadata is invalid"
+IFS=$'\t' read -r candidate_provider_format candidate_compatible candidate_migration_required candidate_migration_command <<<"$release_info"
+if ((upgrade)); then
+  active_binary=$(readlink -f "$active_link" 2>/dev/null || true)
+  active_release="$(dirname "$active_binary")/release.json"
+  if [[ -f "$active_release" ]]; then
+    active_provider_format=$(python3 - "$active_release" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("provider", {}).get("format", 1))
+PY
+    ) || die "active release metadata is invalid"
+    [[ "$candidate_compatible" == true && "$candidate_provider_format" == "$active_provider_format" ]] || die "Upgrade blocked\n\nWhat happened\nThe candidate provider format is incompatible with the active version.\n\nHow to fix it\nReview and run the approved provider migration command.\n\nCOMMAND\n$candidate_migration_command\n\nWhat to do next\nThe previous version remains active; retry after migration."
+    if [[ "$candidate_migration_required" == true ]]; then
+      die "Upgrade blocked\n\nWhat happened\nThis release requires a provider migration.\n\nWhy it matters\nMigrations can change durable provider state and are never automatic.\n\nCOMMAND\n$candidate_migration_command\n\nWhat to do next\nThe previous version remains active; retry after migration."
+    fi
+  fi
+fi
 step_done 'Validating archive contents'
 
 step 'Installing verified files'
@@ -465,8 +584,6 @@ install -m 0644 "$extract_dir/README.md" "$stage_dir/README.md"
 install -m 0644 "$extract_dir/release.json" "$stage_dir/release.json"
 mv "$stage_dir" "$version_dir"
 
-EXTRACT_DIR="$extract_dir" write_unit "$active_link"
-
 old_target=""
 if [[ -L "$active_link" ]]; then
   old_target=$(readlink "$active_link")
@@ -476,9 +593,35 @@ fi
 if [[ -n "$old_target" ]]; then
   atomic_symlink "$old_target" "$previous_link"
 fi
+step 'Running staged preflight'
+[[ "$($version_dir/cifrarium -version 2>/dev/null)" == "$version" ]] || die "candidate binary preflight failed"
+set +e
+"$version_dir/cifrarium" -command=doctor -format=json >/dev/null 2>&1
+candidate_diagnostic_status=$?
+set -e
+((candidate_diagnostic_status <= 1)) || die "candidate diagnostic preflight failed"
+provider_preflight
+step_done 'Running staged preflight'
+EXTRACT_DIR="$extract_dir" write_unit "$active_link"
 atomic_symlink "../lib/$PRODUCT/versions/$version/cifrarium" "$active_link"
 
-if ((non_interactive == 0)); then
+step 'Running final read-only diagnostic'
+set +e
+"$active_link" -command=doctor -format=json >/dev/null 2>&1
+diagnostic_status=$?
+set -e
+((diagnostic_status <= 1)) || die "final diagnostic failed"
+if ((upgrade)); then
+  installation_mode=upgrade
+else
+  installation_mode='new install'
+fi
+printf 'installation mode: %s\nactive version: %s\ncandidate version: %s\nprovider: %s\nprovider format: %s\nmigration required: %s\ndaemon compatibility: %s\n' \
+  "$installation_mode" "$([[ -n "$old_target" ]] && basename "$(dirname "$old_target")" || printf 'none')" "$version" \
+  "$([[ $provider_configured == 1 ]] && printf configured || printf 'not configured')" "$candidate_provider_format" "$candidate_migration_required" "$candidate_compatible" >&2
+step_done 'Running final read-only diagnostic'
+
+if ((non_interactive == 0 && upgrade == 0)); then
   if [[ -r /dev/tty && -w /dev/tty && ( -t 0 || -t 1 ) ]]; then
     "$active_link" setup
   else

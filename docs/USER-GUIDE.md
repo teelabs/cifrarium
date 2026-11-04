@@ -46,6 +46,11 @@ go run ./cmd/cifrarium -h
 The main commands are status, doctor, snapshot, recovery-shares, recover,
 migrate-catalog, provider-health, and daemon.
 
+Upgrading Cifrarium preserves the configured vault root, keyring, snapshot
+history, provider checkout, and existing recovery shares. Setup is idempotent:
+an upgrade or retry reuses existing key material and does not print new shares.
+Use `recovery-shares` only when you explicitly need a new set.
+
 The root configuration is non-secret and per-user:
 `${XDG_CONFIG_HOME:-$HOME/.config}/cifrarium/config.json`. It contains only
 schema `1` and the canonical vault path, with directory mode `0700` and file

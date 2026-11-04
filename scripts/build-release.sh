@@ -84,7 +84,13 @@ for arch in amd64 arm64; do
 {
   "product": "cifrarium",
   "version": "$VERSION",
-  "architecture": "linux-$arch"
+  "architecture": "linux-$arch",
+  "provider": {
+    "format": 1,
+    "compatible": true,
+    "migrationRequired": false,
+    "migrationCommand": ""
+  }
 }
 EOF
   archive="$OUT_DIR/cifrarium-$VERSION-linux-$arch.tar.gz"

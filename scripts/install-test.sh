@@ -114,6 +114,26 @@ printf '%s\n' "$*" >>"${CIFRARIUM_SYSTEMCTL_LOG:?}"
 exit 0
 EOF
 chmod 0755 "$FAKE_BIN/cosign" "$FAKE_BIN/systemctl"
+cat >"$FAKE_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == -C ]] || exit 2
+case "${2:-}" in
+  *)
+    case "${3:-}" in
+      status) exit 0 ;;
+      ls-remote) [[ "${CIFRARIUM_TEST_REMOTE_FAIL:-0}" != 1 ]] ;;
+      *) exit 2 ;;
+    esac
+    ;;
+esac
+EOF
+cat >"$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${CIFRARIUM_TEST_PUBLIC_REPO:-0}" != 1 ]] && printf 'true\n' || printf 'false\n'
+EOF
+chmod 0755 "$FAKE_BIN/git" "$FAKE_BIN/gh"
 
 export PATH="$FAKE_BIN:$PATH"
 export HOME="$HOME_DIR"
@@ -201,6 +221,111 @@ if [[ -s "$SYSTEMCTL_LOG" ]]; then
   cat "$SYSTEMCTL_LOG" >&2
   exit 1
 fi
+
+# Dedicated upgrade/provider/state-preservation cases.
+PROVIDER_DIR="$TEST_ROOT/provider"
+mkdir -p "$PROVIDER_DIR/.git" "$HOME_DIR/.local/share/cifrarium/snapshots"
+printf 'history sentinel\n' >"$HOME_DIR/.local/share/cifrarium/snapshots/history"
+printf 'keyring sentinel\n' >"$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+DAEMON_ENV="$HOME_DIR/.config/cifrarium/daemon.env"
+mkdir -p "$(dirname "$DAEMON_ENV")"
+printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR" >"$DAEMON_ENV"
+chmod 0600 "$DAEMON_ENV"
+cp "$HOME_DIR/.local/share/cifrarium/snapshots/history" "$TEST_ROOT/history.before"
+cp "$HOME_DIR/.local/share/cifrarium/keyring-sentinel" "$TEST_ROOT/keyring.before"
+
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.3 --out-dir "$TEST_ROOT/release-0.8.3"
+cp "$TEST_ROOT/release-0.8.3"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.3-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+upgrade_output="$TEST_ROOT/upgrade-output.txt"
+"$ROOT_DIR/scripts/install.sh" --version 0.8.3 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$upgrade_output" 2>&1
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+grep -Fq 'installation mode: upgrade' "$upgrade_output"
+! grep -Fq 'Recovery shares' "$upgrade_output"
+cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$DAEMON_ENV" <(printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR")
+
+mv "$PROVIDER_DIR" "$PROVIDER_DIR.missing"
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.4 --out-dir "$TEST_ROOT/release-0.8.4"
+cp "$TEST_ROOT/release-0.8.4"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.4-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.4 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/provider-missing.txt" 2>&1; then
+  echo 'missing provider checkout unexpectedly upgraded' >&2; exit 1
+fi
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+mv "$PROVIDER_DIR.missing" "$PROVIDER_DIR"
+
+export CIFRARIUM_TEST_REMOTE_FAIL=1
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.5 --out-dir "$TEST_ROOT/release-0.8.5"
+cp "$TEST_ROOT/release-0.8.5"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.5-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.5 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/provider-remote-fail.txt" 2>&1; then
+  echo 'inaccessible provider remote unexpectedly upgraded' >&2; exit 1
+fi
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+unset CIFRARIUM_TEST_REMOTE_FAIL
+
+export CIFRARIUM_TEST_PUBLIC_REPO=1
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.6 --out-dir "$TEST_ROOT/release-0.8.6"
+cp "$TEST_ROOT/release-0.8.6"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.6-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.6 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/provider-public.txt" 2>&1; then
+  echo 'public provider repository unexpectedly upgraded' >&2; exit 1
+fi
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+unset CIFRARIUM_TEST_PUBLIC_REPO
+
+cp "$DAEMON_ENV" "$TEST_ROOT/daemon.env.valid"
+printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_SECRET_MARKER=must-not-leak\n' "$PROVIDER_DIR" >"$DAEMON_ENV"
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.6 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/daemon-env-invalid.txt" 2>&1; then
+  echo 'invalid daemon.env unexpectedly upgraded' >&2; exit 1
+fi
+! grep -Fq 'must-not-leak' "$TEST_ROOT/daemon-env-invalid.txt"
+cp "$TEST_ROOT/daemon.env.valid" "$DAEMON_ENV"
+
+MIGRATION_MARKER="$TEST_ROOT/migration-ran"
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.7 --out-dir "$TEST_ROOT/release-0.8.7"
+python3 - "$TEST_ROOT/release-0.8.7/cifrarium-0.8.7-linux-amd64.tar.gz" "$MIGRATION_MARKER" <<'PY'
+import io, json, pathlib, sys, tarfile
+archive, marker = map(pathlib.Path, sys.argv[1:])
+rewritten = archive.with_suffix('.migration.tar.gz')
+with tarfile.open(archive, 'r:gz') as source, tarfile.open(rewritten, 'w:gz') as target:
+    for member in source.getmembers():
+        data = source.extractfile(member).read() if member.isfile() else None
+        if member.name == 'release.json':
+            metadata = json.loads(data)
+            metadata['provider']['migrationRequired'] = True
+            metadata['provider']['migrationCommand'] = f'touch {marker}'
+            data = (json.dumps(metadata, indent=2) + '\n').encode()
+            member.size = len(data)
+        target.addfile(member, io.BytesIO(data) if data is not None else None)
+rewritten.replace(archive)
+PY
+sha256sum "$TEST_ROOT/release-0.8.7/cifrarium-0.8.7-linux-amd64.tar.gz" | awk '{print $1 "  " $2}' >"$TEST_ROOT/release-0.8.7/cifrarium-0.8.7-linux-amd64.tar.gz.sha256"
+cp "$TEST_ROOT/release-0.8.7"/* "$PUBLIC_DIR/"
+python3 - "$PUBLIC_DIR/manifest.json" "$TEST_ROOT/release-0.8.7/cifrarium-0.8.7-linux-amd64.tar.gz" <<'PY'
+import hashlib, json, pathlib, sys
+manifest_path, archive = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text())
+for release in manifest['releases']:
+    if release['architecture'] == 'linux-amd64':
+        release['sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+PY
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.7-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.7 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/migration-pending.txt" 2>&1; then
+  echo 'migration-required release unexpectedly upgraded' >&2; exit 1
+fi
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+[[ ! -e "$MIGRATION_MARKER" ]]
+grep -Fqi 'migration' "$TEST_ROOT/migration-pending.txt"
 
 NO_SYSTEMCTL_BIN="$TEST_ROOT/no-systemctl-bin"
 mkdir -p "$NO_SYSTEMCTL_BIN"

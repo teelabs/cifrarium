@@ -127,6 +127,12 @@ Success means exit code zero and a readable status response. Use
 `-format=json` for a structured response. It does not prove that the provider
 is reachable or that a backup exists.
 
+Installer upgrades are read-only with respect to existing vault state until
+candidate preflight succeeds. They preserve the root, keyring, history,
+provider checkout, and recovery shares. Provider migrations are never automatic;
+an agent must report the approved command and wait for an explicit operator
+action before retrying.
+
 ### 5.1.1 Run the complete doctor
 
 ~~~sh

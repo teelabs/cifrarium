@@ -85,6 +85,10 @@ for arch in amd64 arm64; do
     echo "archive version mismatch: $arch" >&2
     exit 1
   }
+  tar -xOf "$archive" release.json | python3 -c 'import json,sys; p=json.load(sys.stdin).get("provider"); assert isinstance(p,dict) and isinstance(p.get("format"),int) and isinstance(p.get("compatible"),bool) and isinstance(p.get("migrationRequired"),bool) and isinstance(p.get("migrationCommand"),str) and (not p["migrationRequired"] or p["migrationCommand"])' || {
+    echo "archive provider compatibility metadata mismatch: $arch" >&2
+    exit 1
+  }
   if ((require_signatures)); then
     [[ -s "$bundle" ]] || { echo "signature bundle missing: $bundle" >&2; exit 1; }
     command -v cosign >/dev/null || { echo "cosign is required for signature verification" >&2; exit 1; }
