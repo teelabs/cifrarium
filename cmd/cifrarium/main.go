@@ -64,8 +64,8 @@ func main() {
 	if providerRemoteDefault == "" {
 		providerRemoteDefault = fileProvider.Remote
 	}
-	providerDir := flag.String("provider-dir", providerDirDefault, "local Git provider directory")
-	providerRemote := flag.String("provider-remote", providerRemoteDefault, "HTTPS GitHub remote URL (no embedded credentials)")
+	providerDir := flag.String("provider-dir", "", "local Git provider directory (resolved from protected configuration when omitted)")
+	providerRemote := flag.String("provider-remote", "", "HTTPS GitHub remote URL (resolved from protected configuration when omitted)")
 	verifyPrivate := flag.Bool("verify-private", false, "verify GitHub repository privacy with gh (provider-health only)")
 	showVersion := flag.Bool("version", false, "print the Cifrarium version")
 	nonInteractive := flag.Bool("non-interactive", false, "never prompt, capture, upload, or enable services")
@@ -77,7 +77,14 @@ func main() {
 			recoveryValues = append(recoveryValues, value)
 		}
 	}
+	flag.Usage = func() { writeCifrariumUsage(flag.CommandLine.Output(), flag.CommandLine, "cifrarium") }
 	flag.Parse()
+	if *providerDir == "" {
+		*providerDir = providerDirDefault
+	}
+	if *providerRemote == "" {
+		*providerRemote = providerRemoteDefault
+	}
 	format, err := parseOutputFormat(*formatValue)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cifrarium:", err)
@@ -85,6 +92,10 @@ func main() {
 	}
 	if *showVersion {
 		fmt.Println(version)
+		return
+	}
+	if cmd == "help" {
+		writeCifrariumUsage(os.Stdout, flag.CommandLine, "cifrarium")
 		return
 	}
 	if *nonInteractive && commandMutatesOrHandlesSecrets(cmd) {
@@ -380,9 +391,32 @@ func canonicalCommand(args []string) (string, []string, error) {
 		}
 	case "status", "doctor", "setup", "snapshot", "daemon", "migrate-catalog":
 		return args[0], append([]string{}, args[1:]...), nil
+	case "help":
+		return "help", append([]string{}, args[1:]...), nil
 	default:
 		return "", nil, fmt.Errorf("unknown command %q; use cifrarium --help", args[0])
 	}
+}
+
+func writeCifrariumUsage(w io.Writer, fs *flag.FlagSet, program string) {
+	fmt.Fprintf(w, "Usage: %s <command> [flags]\n\n", program)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintln(w, "  status                  Show vault, daemon, and provider status")
+	fmt.Fprintln(w, "  doctor                  Run a read-only installation diagnostic")
+	fmt.Fprintln(w, "  setup                   Configure the local vault")
+	fmt.Fprintln(w, "  snapshot                Capture a local encrypted snapshot")
+	fmt.Fprintln(w, "  daemon                  Run the user daemon")
+	fmt.Fprintln(w, "  migrate-catalog         Encrypt legacy catalog metadata")
+	fmt.Fprintln(w, "  provider setup          Configure the provider interactively")
+	fmt.Fprintln(w, "  provider health         Check provider access and privacy")
+	fmt.Fprintln(w, "  recovery shares         Generate recovery shares")
+	fmt.Fprintln(w, "  recovery import         Import recovery material")
+	fmt.Fprintln(w, "  help                    Show this help")
+	fmt.Fprintln(w, "\nGlobal options:")
+	previousOutput := fs.Output()
+	fs.SetOutput(w)
+	fs.PrintDefaults()
+	fs.SetOutput(previousOutput)
 }
 
 func parseOutputFormat(value string) (outputFormat, error) {

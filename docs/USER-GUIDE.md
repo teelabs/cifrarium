@@ -48,6 +48,11 @@ The main commands are `status`, `doctor`, `snapshot`, `daemon`,
 `recovery import`. Options follow the subcommand, for example
 `cifrarium provider health --verify-private`.
 
+Run `cifrarium --help` to see this command list and the global options. Help
+uses blank provider defaults intentionally: configured paths, remotes,
+usernames, and recovery material are resolved only after parsing and are never
+printed as help defaults.
+
 Upgrading Cifrarium preserves the configured vault root, keyring, snapshot
 history, provider checkout, and existing recovery shares. Setup is idempotent:
 an upgrade or retry reuses existing key material and does not print new shares.
@@ -130,6 +135,12 @@ JSON have no ANSI control codes.
 The retry countdown defaults to 30 seconds and accepts a Go duration from
 `CIFRARIUM_DAEMON_RETRY_TIMEOUT`, such as `45s`, in the protected daemon
 environment.
+
+Pending-upload diagnostics explain whether recovery verification, provider
+setup, repository privacy, or provider access needs attention. They suggest
+safe commands without printing configured values. Use another console for the
+correction, preserve `pending.queue`, then return to the daemon console and
+press Enter or wait for retry.
 
 ## 4. Create and store recovery shares
 

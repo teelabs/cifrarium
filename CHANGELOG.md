@@ -4,6 +4,15 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-11-04
+
+### Fixed
+
+- `cifrarium --help` now lists canonical commands and nested provider/recovery
+  forms without exposing configured filesystem paths or provider remotes.
+- Daemon pending-upload diagnostics now distinguish recovery verification,
+  provider setup, privacy, and access failures with safe next actions.
+
 ## [0.9.4] - 2026-11-04
 
 ### Fixed
