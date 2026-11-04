@@ -291,7 +291,12 @@ read_provider_config() {
   local values
   values=$(python3 - "$env_file" <<'PY'
 import pathlib, sys
-allowed = {"CIFRARIUM_PROVIDER_DIR", "CIFRARIUM_PROVIDER_REMOTE"}
+allowed = {
+    "CIFRARIUM_PROVIDER_DIR",
+    "CIFRARIUM_PROVIDER_REMOTE",
+    "CIFRARIUM_RECOVERY_SHARE_1",
+    "CIFRARIUM_RECOVERY_SHARE_2",
+}
 values = {}
 for number, raw in enumerate(pathlib.Path(sys.argv[1]).read_text().splitlines(), 1):
     line = raw.strip()
@@ -301,7 +306,7 @@ for number, raw in enumerate(pathlib.Path(sys.argv[1]).read_text().splitlines(),
         raise SystemExit(f"daemon.env line {number} is invalid; use KEY=value")
     key, value = line.split("=", 1)
     if key not in allowed or not value or any(c in value for c in "\t\r\n"):
-        raise SystemExit(f"daemon.env line {number} is invalid; only provider keys are accepted")
+        raise SystemExit(f"daemon.env line {number} is invalid; only recognized provider and recovery keys are accepted")
     values[key] = value
 if bool(values.get("CIFRARIUM_PROVIDER_DIR")) != bool(values.get("CIFRARIUM_PROVIDER_REMOTE")):
     raise SystemExit("daemon.env must configure provider directory and remote together")

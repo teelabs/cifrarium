@@ -4,6 +4,13 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-04
+
+### Fixed
+
+- Installer upgrades now accept and preserve the two protected recovery-share
+  variables written to `daemon.env` without printing or exposing their values.
+
 ## [0.10.0] - 2026-11-04
 
 ### Added

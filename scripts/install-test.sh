@@ -242,7 +242,7 @@ printf 'history sentinel\n' >"$HOME_DIR/.local/share/cifrarium/snapshots/history
 printf 'keyring sentinel\n' >"$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
 DAEMON_ENV="$HOME_DIR/.config/cifrarium/daemon.env"
 mkdir -p "$(dirname "$DAEMON_ENV")"
-printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR" >"$DAEMON_ENV"
+printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\nCIFRARIUM_RECOVERY_SHARE_1=placeholder-one\nCIFRARIUM_RECOVERY_SHARE_2=placeholder-two\n' "$PROVIDER_DIR" >"$DAEMON_ENV"
 chmod 0600 "$DAEMON_ENV"
 cp "$HOME_DIR/.local/share/cifrarium/snapshots/history" "$TEST_ROOT/history.before"
 cp "$HOME_DIR/.local/share/cifrarium/keyring-sentinel" "$TEST_ROOT/keyring.before"
@@ -256,9 +256,11 @@ upgrade_output="$TEST_ROOT/upgrade-output.txt"
 [[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
 grep -Fq 'installation mode: upgrade' "$upgrade_output"
 ! grep -Fq 'Recovery shares' "$upgrade_output"
+! grep -Fq 'placeholder-one' "$upgrade_output"
+! grep -Fq 'placeholder-two' "$upgrade_output"
 cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
 cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
-cmp -s "$DAEMON_ENV" <(printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR")
+cmp -s "$DAEMON_ENV" <(printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\nCIFRARIUM_RECOVERY_SHARE_1=placeholder-one\nCIFRARIUM_RECOVERY_SHARE_2=placeholder-two\n' "$PROVIDER_DIR")
 
 mv "$PROVIDER_DIR" "$PROVIDER_DIR.missing"
 "$ROOT_DIR/scripts/build-release.sh" --version 0.8.4 --out-dir "$TEST_ROOT/release-0.8.4"
