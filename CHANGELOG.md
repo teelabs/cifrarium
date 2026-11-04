@@ -30,6 +30,8 @@ All notable changes to Cifrarium will be documented here.
   stateful, secret-handling, and remote-capable commands.
 - Added shell-safe quoting to generated provider commands and aligned the
   systemd XDG configuration default with the CLI.
+- Hardened vault and configuration reads with Linux descriptor-relative
+  no-symlink resolution immediately at file open.
 
 ## [0.7.0] - 2026-11-03
 

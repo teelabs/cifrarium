@@ -103,14 +103,7 @@ func LoadFrom(path string) (RootConfig, error) {
 	if err := rejectSymlinkComponents(path); err != nil {
 		return RootConfig{}, err
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return RootConfig{}, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return RootConfig{}, errors.New("root configuration symlink is not allowed")
-	}
-	raw, err := os.ReadFile(path)
+	raw, info, err := readConfigNoSymlinks(path)
 	if err != nil {
 		return RootConfig{}, err
 	}
@@ -172,28 +165,7 @@ func SaveTo(path, root string) (RootConfig, error) {
 		return RootConfig{}, err
 	}
 	raw = append(raw, '\n')
-	tmp, err := os.CreateTemp(dir, ".config.json-*")
-	if err != nil {
-		return RootConfig{}, err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
-		return RootConfig{}, err
-	}
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
-		return RootConfig{}, err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return RootConfig{}, err
-	}
-	if err := tmp.Close(); err != nil {
-		return RootConfig{}, err
-	}
-	if err := os.Link(tmpName, path); err != nil {
+	if err := writeConfigNoSymlinks(path, raw); err != nil {
 		return RootConfig{}, err
 	}
 	return cfg, nil

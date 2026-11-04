@@ -721,7 +721,7 @@ func captureFileStates(paths ...string) ([]fileState, error) {
 }
 
 func readLimitedFile(path string, max int64) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := openReadNoSymlinks(path)
 	if err != nil {
 		return nil, err
 	}

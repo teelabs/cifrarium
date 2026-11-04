@@ -136,6 +136,9 @@ func TestSystemdUsesConfiguredRootResolver(t *testing.T) {
 	if !strings.Contains(text, "ExecStart=%h/.local/bin/cifrarium -command=daemon") {
 		t.Fatalf("systemd unit does not use the configured-root daemon command: %s", text)
 	}
+	if !strings.Contains(text, "Environment=XDG_CONFIG_HOME=%h/.config") {
+		t.Fatalf("systemd unit has no explicit XDG configuration default: %s", text)
+	}
 }
 
 func TestNonInteractiveRejectsStatefulCommands(t *testing.T) {
