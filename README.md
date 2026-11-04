@@ -233,6 +233,13 @@ for secondary text. Redirected, systemd, and JSON output remain free of ANSI
 color codes. The retry countdown defaults to 30 seconds and can be changed
 with `CIFRARIUM_DAEMON_RETRY_TIMEOUT` using a Go duration such as `45s`.
 
+Pending-upload diagnostics explain the safe next action without exposing
+configuration values: recovery verification suggests `cifrarium provider
+setup`, privacy failures suggest `cifrarium provider health --verify-private`,
+and missing or inaccessible providers receive their own corrective guidance.
+Use another console for the correction, preserve `pending.queue`, then return
+to the daemon console and press Enter or wait for its retry.
+
 ## Diagnose the local installation
 
 Use `doctor` for one read-only report of the vault, keyring, daemon, local MCP

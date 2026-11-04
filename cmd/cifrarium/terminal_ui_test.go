@@ -152,7 +152,7 @@ func TestRenderDaemonFailureUsesSafePendingRecoveryInstructions(t *testing.T) {
 	var out bytes.Buffer
 	renderDaemonFailure(&out, t.TempDir(), errors.New("recovery verification required before upload"))
 	text := strings.ToLower(out.String())
-	for _, want := range []string{"pending encrypted work", "cifrarium doctor", "protected recovery"} {
+	for _, want := range []string{"pending encrypted work", "cifrarium provider setup", "protected recovery", "return here", "press enter"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("pending recovery diagnostic missing %q: %q", want, out.String())
 		}
@@ -160,6 +160,33 @@ func TestRenderDaemonFailureUsesSafePendingRecoveryInstructions(t *testing.T) {
 	for _, forbidden := range []string{"recovery verification required before upload", "share", "token"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("pending recovery diagnostic leaked %q: %q", forbidden, out.String())
+		}
+	}
+}
+
+func TestRenderDaemonFailureExplainsProviderPrivacyAction(t *testing.T) {
+	var out bytes.Buffer
+	renderDaemonFailure(&out, t.TempDir(), errors.New("private repository verification required before upload: repository is public"))
+	text := strings.ToLower(out.String())
+	for _, want := range []string{"private", "cifrarium provider health --verify-private", "another console"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("provider privacy diagnostic missing %q: %q", want, out.String())
+		}
+	}
+	for _, forbidden := range []string{"repository is public", "github.com/", "token", "share"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("provider privacy diagnostic leaked %q: %q", forbidden, out.String())
+		}
+	}
+}
+
+func TestRenderDaemonFailureExplainsMissingProviderAction(t *testing.T) {
+	var out bytes.Buffer
+	renderDaemonFailure(&out, t.TempDir(), errors.New("provider is not configured"))
+	text := strings.ToLower(out.String())
+	for _, want := range []string{"no provider is configured", "cifrarium provider setup", "pending.queue"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing provider diagnostic missing %q: %q", want, out.String())
 		}
 	}
 }

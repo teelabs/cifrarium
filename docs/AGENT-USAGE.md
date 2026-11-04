@@ -203,6 +203,12 @@ when declined. Systemd and other non-TTY runs retry without prompting. The
 encrypted queue is preserved. Redirected output, systemd logs, and JSON remain
 free of ANSI sequences.
 
+Pending-upload diagnostics are specific but sanitized: recovery verification
+suggests `cifrarium provider setup`, provider privacy suggests
+`cifrarium provider health --verify-private`, and missing or inaccessible
+providers receive distinct next steps. Agents must not add paths, remotes,
+usernames, shares, tokens, or file contents to those messages.
+
 ### 5.3 Check a GitHub provider
 
 ~~~sh

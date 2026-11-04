@@ -257,15 +257,16 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 
 func renderDaemonFailure(w io.Writer, home string, err error) {
 	ui := newTerminalUI(w)
+	reason := daemonUploadFailureReasonFor(err)
 	ui.Header("Daemon needs attention")
 	ui.Section("What happened")
-	if daemonUploadGateFailure(err) {
+	if reason != daemonUploadNone {
 		ui.Failure("The daemon could not upload pending encrypted work.")
 	} else {
 		ui.Failure("The daemon could not complete its recovery snapshot.")
 	}
 	ui.Section("Why it matters")
-	if daemonUploadGateFailure(err) {
+	if reason != daemonUploadNone {
 		ui.Text(colorSecondary, "Cifrarium preserved the encrypted pending queue and stopped before remote upload. Existing vault history was preserved.")
 	} else {
 		ui.Text(colorSecondary, "Cifrarium stopped this capture before saving or uploading a new snapshot. Existing vault history was preserved.")
@@ -282,24 +283,69 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 		ui.Text(colorSecondary, "If the link is managed intentionally, leave the daemon stopped and materialize a regular file through that manager.")
 		ui.CommandBlock(fmt.Sprintf("systemctl --user stop cifrarium.service\ntest -L %s && readlink %s\n%s %s %s\ntest ! -L %s\nmv %s %s", shellQuote(path), shellQuote(path), copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(regular), shellQuote(path)))
 		ui.CommandBlock("cifrarium snapshot\nsystemctl --user start cifrarium.service")
-	} else if daemonUploadGateFailure(err) {
-		ui.Text(colorSecondary, "Review the protected recovery and provider configuration without printing recovery material or changing the pending queue.")
-		ui.Command("cifrarium doctor")
+	} else if reason != daemonUploadNone {
+		renderDaemonUploadGuidance(ui, reason)
 	} else {
 		ui.Text(colorSecondary, "Review the reported adapter path and correct it without disabling capture safety.")
 		ui.Command("cifrarium doctor")
 	}
 	ui.Section("What to do next")
-	if daemonUploadGateFailure(err) {
-		ui.Text(colorWarning, "Do not delete pending.queue or put recovery material in shell history. Keep the daemon waiting until the local configuration passes doctor.")
+	if reason != daemonUploadNone {
+		ui.Text(colorWarning, "Do not delete pending.queue or put recovery material in shell history. Use another console for the corrective action, then return here and press Enter or wait for the retry.")
 	} else {
 		ui.Text(colorWarning, "Do not use rm, source, sudo, or a symlink-following override. Keep the daemon stopped until a local snapshot succeeds.")
 	}
 }
 
 func daemonUploadGateFailure(err error) bool {
+	return daemonUploadFailureReasonFor(err) != daemonUploadNone
+}
+
+type daemonUploadFailureReason uint8
+
+const (
+	daemonUploadNone daemonUploadFailureReason = iota
+	daemonUploadRecovery
+	daemonUploadPrivacy
+	daemonUploadProvider
+	daemonUploadAccess
+)
+
+func daemonUploadFailureReasonFor(err error) daemonUploadFailureReason {
 	value := strings.ToLower(err.Error())
-	return strings.Contains(value, "recovery verification required before upload") || strings.Contains(value, "private repository verification required before upload") || strings.Contains(value, "provider") || strings.Contains(value, "upload") || strings.Contains(value, "remote")
+	switch {
+	case strings.Contains(value, "recovery verification required before upload"):
+		return daemonUploadRecovery
+	case strings.Contains(value, "private repository verification required before upload"):
+		return daemonUploadPrivacy
+	case strings.Contains(value, "provider is not configured"):
+		return daemonUploadProvider
+	case strings.Contains(value, "provider"), strings.Contains(value, "upload"), strings.Contains(value, "remote"):
+		return daemonUploadAccess
+	default:
+		return daemonUploadNone
+	}
+}
+
+func renderDaemonUploadGuidance(ui terminalUI, reason daemonUploadFailureReason) {
+	switch reason {
+	case daemonUploadRecovery:
+		ui.Text(colorSecondary, "The pending snapshots need protected recovery verification for the active vault before remote upload can continue.")
+		ui.CommandBlock("cifrarium provider setup\ncifrarium doctor")
+		ui.Text(colorSecondary, "In another console, validate or configure the protected recovery settings. Do not paste their values into this terminal.")
+	case daemonUploadPrivacy:
+		ui.Text(colorSecondary, "The configured provider must be confirmed private before Cifrarium can upload encrypted snapshots.")
+		ui.CommandBlock("cifrarium provider health --verify-private")
+		ui.Text(colorSecondary, "In another console, make the configured repository private or correct its access, then return here.")
+	case daemonUploadProvider:
+		ui.Text(colorSecondary, "No provider is configured for the daemon, so pending encrypted snapshots cannot be uploaded.")
+		ui.CommandBlock("cifrarium provider setup")
+		ui.Text(colorSecondary, "Configure the provider in another console, or keep the daemon disabled for local-only snapshots.")
+	default:
+		ui.Text(colorSecondary, "The configured provider could not accept the pending encrypted snapshots.")
+		ui.CommandBlock("cifrarium provider health --verify-private")
+		ui.Text(colorSecondary, "In another console, restore provider access and privacy, then return here.")
+	}
 }
 
 func rejectedSymlinkPath(home string, err error) (string, bool) {

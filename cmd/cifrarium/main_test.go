@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -141,6 +142,58 @@ func TestCanonicalCommandUsesNestedSubcommands(t *testing.T) {
 func TestCanonicalCommandRejectsLegacyFlag(t *testing.T) {
 	if _, _, err := canonicalCommand([]string{"-command=doctor"}); err == nil {
 		t.Fatal("legacy -command syntax was accepted")
+	}
+}
+
+func TestCanonicalCommandAcceptsHelp(t *testing.T) {
+	command, rest, err := canonicalCommand([]string{"help"})
+	if err != nil || command != "help" || len(rest) != 0 {
+		t.Fatalf("canonicalCommand(help) = %q, %v, %v; want help, no args, nil", command, rest, err)
+	}
+}
+
+func TestHelpSubcommandWritesCommandsAndOptionsToOneStream(t *testing.T) {
+	var out bytes.Buffer
+	fs := flag.NewFlagSet("cifrarium", flag.ContinueOnError)
+	fs.SetOutput(&out)
+	fs.String("example", "", "example option")
+	writeCifrariumUsage(&out, fs, "cifrarium")
+	text := out.String()
+	if !strings.Contains(text, "Commands:") || !strings.Contains(text, "-example") {
+		t.Fatalf("usage output incomplete: %q", text)
+	}
+}
+
+func TestCifrariumHelpListsCommandsWithoutConfiguredValues(t *testing.T) {
+	configHome := t.TempDir()
+	home := t.TempDir()
+	binary := filepath.Join(t.TempDir(), "cifrarium")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	build.Dir = "."
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building help probe: %v\n%s", err, out)
+	}
+	cmd := exec.Command(binary, "--help")
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+configHome,
+		"CIFRARIUM_PROVIDER_DIR=/private/example-provider",
+		"CIFRARIUM_PROVIDER_REMOTE=https://github.example/private/example.git",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("help failed: %v\n%s", err, out)
+	}
+	text := string(out)
+	for _, want := range []string{"Usage: cifrarium <command> [flags]", "Commands:", "status", "doctor", "provider setup", "provider health", "recovery shares", "recovery import", "daemon"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help missing %q: %s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"/private/example-provider", "github.example/private/example.git", "CIFRARIUM_RECOVERY_SHARE", home} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("help leaked %q: %s", forbidden, text)
+		}
 	}
 }
 
