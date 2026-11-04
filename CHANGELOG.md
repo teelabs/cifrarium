@@ -4,6 +4,15 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-04
+
+### Fixed
+
+- Managed daemon launches now detect an already active service and return an
+  actionable status instead of attempting duplicate listeners.
+- `cifrarium daemon refresh` now accepts a ready MCP endpoint while the daemon
+  backend is waiting for protected recovery action.
+
 ## [0.10.1] - 2026-11-04
 
 ### Fixed
