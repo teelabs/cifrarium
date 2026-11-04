@@ -4,6 +4,15 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-04
+
+### Fixed
+
+- Corrected daemon symlink diagnostics so compound recovery-snapshot errors do
+  not contaminate the validated path or expose raw error details.
+- Centralized Codex semantic terminal colors for human output while preserving
+  uncolored redirected output and unchanged JSON.
+
 ## [0.9.1] - 2026-11-04
 
 ### Changed

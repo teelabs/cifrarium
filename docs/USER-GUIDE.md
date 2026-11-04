@@ -110,6 +110,15 @@ This can break future updates from the dotfile manager. Do not use `rm`,
 `source`, `sudo`, or disable the symlink safety check. No remote upload occurs
 until the local snapshot succeeds.
 
+The daemon diagnostic is organized as `Daemon needs attention`, followed by
+`What happened`, `Why it matters`, `How to fix it`, and `What to do next`. Its
+correction block is a copyable instruction rather than diagnostic output. It
+extracts only the validated local path from a compound error such as
+`symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: .zshrc`;
+it never prints the symlink target, file contents, tokens, or recovery shares.
+TTY output uses the Codex semantic palette and redirected output has no ANSI
+control codes.
+
 ## 4. Create and store recovery shares
 
 Generate shares after the first vault is working:

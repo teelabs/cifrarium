@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -46,11 +47,14 @@ func TestTerminalUIDecisionWrapsLongTextInsidePanel(t *testing.T) {
 func TestTerminalUIColorizesSemanticValuesOnlyWhenEnabled(t *testing.T) {
 	var out bytes.Buffer
 	ui := terminalUI{w: &out, color: true}
-	ui.Value("Path", "/home/thiago/.config/cifrarium")
-	ui.Command("cifrarium setup --root '/home/thiago/.local/share/cifrarium'")
+	home := t.TempDir()
+	configPath := filepath.Join(home, ".config", "cifrarium")
+	rootPath := filepath.Join(home, ".local", "share", "cifrarium")
+	ui.Value("Path", configPath)
+	ui.Command("cifrarium setup --root " + shellQuote(rootPath))
 
 	text := out.String()
-	if !strings.Contains(text, ansiBlue+"/home/thiago/.config/cifrarium"+ansiReset) {
+	if !strings.Contains(text, ansiBlue+configPath+ansiReset) {
 		t.Fatalf("path was not colorized: %q", text)
 	}
 	if !strings.Contains(text, ansiGreen+"$ cifrarium setup --root") {
@@ -88,21 +92,23 @@ func TestCollectSetupChoicesReportsEachDecisionImmediately(t *testing.T) {
 
 func TestRenderSetupFailureUsesActionableSections(t *testing.T) {
 	var out bytes.Buffer
-	renderSetupFailure(&out, "/home/thiago", errors.New("first capture: symlink rejected: .zshrc"))
+	home := t.TempDir()
+	renderSetupFailure(&out, home, errors.New("first capture: symlink rejected: .zshrc"))
 	text := out.String()
 	for _, want := range []string{"What happened", "Why it matters", "How to fix it", "What to do next", "cifrarium setup"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("setup error missing %q: %q", want, text)
 		}
 	}
-	if !strings.Contains(text, "/home/thiago/.zshrc") {
+	if !strings.Contains(text, filepath.Join(home, ".zshrc")) {
 		t.Fatalf("setup error did not identify the path: %q", text)
 	}
 }
 
 func TestRenderDaemonFailureUsesSafeSymlinkRecoveryInstructions(t *testing.T) {
 	var out bytes.Buffer
-	renderDaemonFailure(&out, "/home/thiago", errors.New("recovery snapshot failed: symlink rejected: .zshrc"))
+	home := t.TempDir()
+	renderDaemonFailure(&out, home, errors.New("recovery snapshot failed: symlink rejected: .zshrc"))
 	text := out.String()
 	for _, want := range []string{
 		"What happened",
@@ -123,5 +129,88 @@ func TestRenderDaemonFailureUsesSafeSymlinkRecoveryInstructions(t *testing.T) {
 		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
 			t.Fatalf("daemon error leaked or encouraged %q: %q", forbidden, text)
 		}
+	}
+}
+
+func TestRejectedSymlinkPathStopsBeforeRecoverySnapshotSuffix(t *testing.T) {
+	home := t.TempDir()
+	got, ok := rejectedSymlinkPath(home, errors.New("symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: .zshrc"))
+	want := filepath.Join(home, ".zshrc")
+	if !ok || got != want {
+		t.Fatalf("rejectedSymlinkPath() = %q, %t; want %s, true", got, ok, want)
+	}
+}
+
+func TestRejectedSymlinkPathFailsClosedForTraversalAndExternalAbsolutePaths(t *testing.T) {
+	for _, errText := range []string{
+		"symlink rejected: ../outside",
+		"symlink rejected: /tmp/outside",
+		"symlink rejected: ../../outside/.zshrc; recovery snapshot failed: ignored",
+	} {
+		if got, ok := rejectedSymlinkPath(t.TempDir(), errors.New(errText)); ok || got != "" {
+			t.Fatalf("rejectedSymlinkPath(%q) = %q, %t; want empty, false", errText, got, ok)
+		}
+	}
+}
+
+func TestRenderDaemonFailureDoesNotEchoRawErrorOrSensitiveSymlinkTarget(t *testing.T) {
+	var out bytes.Buffer
+	home := t.TempDir()
+	renderDaemonFailure(&out, home, errors.New("recovery snapshot failed: symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: /secret/target"))
+	text := out.String()
+	for _, forbidden := range []string{"/secret/target", "recovery snapshot failed", "CIFRARIUM_RECOVERY_SHARE", "token"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("daemon error leaked %q: %q", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, filepath.Join(home, ".zshrc")) {
+		t.Fatalf("daemon error did not show the valid path: %q", text)
+	}
+}
+
+func TestRenderDaemonFailureKeepsSafeInstructionOrder(t *testing.T) {
+	var out bytes.Buffer
+	renderDaemonFailure(&out, t.TempDir(), errors.New("recovery snapshot failed: symlink rejected: .zshrc"))
+	text := out.String()
+	sections := []string{"Daemon needs attention", "What happened", "Why it matters", "How to fix it", "What to do next"}
+	last := -1
+	for _, section := range sections {
+		index := strings.Index(text, section)
+		if index <= last {
+			t.Fatalf("section %q is out of order in %q", section, text)
+		}
+		last = index
+	}
+}
+
+func TestTerminalUIPaletteMapsSemanticRoles(t *testing.T) {
+	var out bytes.Buffer
+	ui := terminalUI{w: &out, color: true}
+	home := t.TempDir()
+	ui.Header("Header")
+	ui.Value("Path", filepath.Join(home, ".zshrc"))
+	ui.Value("User", "test-user")
+	ui.Value("Pending uploads", "2")
+	ui.Status("Daemon", "problem")
+	ui.Command("cifrarium snapshot")
+	ui.Failure("capture failed")
+	text := out.String()
+	for _, want := range []string{ansiCyan + "Header", ansiBlue + filepath.Join(home, ".zshrc"), ansiMagenta + "test-user", ansiYellow + "2", ansiRed + "problem", ansiGreen + "$ cifrarium snapshot", ansiRed + "capture failed"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("palette output missing %q: %q", want, text)
+		}
+	}
+}
+
+func TestTerminalUIRedirectedOutputHasNoANSI(t *testing.T) {
+	var out bytes.Buffer
+	ui := newTerminalUI(&out)
+	home := t.TempDir()
+	ui.Header("Header")
+	ui.Value("Path", filepath.Join(home, ".zshrc"))
+	ui.Command("cifrarium snapshot")
+	ui.Failure("capture failed")
+	if strings.Contains(out.String(), "\x1b[") {
+		t.Fatalf("redirected output contains ANSI escape sequence: %q", out.String())
 	}
 }

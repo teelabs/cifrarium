@@ -60,7 +60,7 @@ side effects:
 
 ~~~sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.9.1 --non-interactive
+  | bash -s -- --version 0.9.2 --non-interactive
 ~~~
 
 The daemon is never enabled by non-interactive installation.
@@ -76,7 +76,7 @@ Equivalent `wget` form:
 ~~~sh
 bash -o pipefail -c \
   'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.9.1
+  bash 0.9.2
 ~~~
 
 The stream form is convenient, but it does not let you inspect the installer
@@ -95,7 +95,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.9.1 --non-interactive
+/tmp/cifrarium-install.sh --version 0.9.2 --non-interactive
 ~~~
 
 Both forms refuse invalid metadata, signatures, checksums, architectures, or
@@ -114,7 +114,7 @@ Use a different absolute, user-owned prefix in the stream form when required:
 ~~~sh
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
-  bash 0.9.1 "$HOME/opt/cifrarium"
+  bash 0.9.2 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -129,7 +129,7 @@ bash -o pipefail -c \
   bash 0.4.1
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
-  bash 0.9.1
+  bash 0.9.2
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch
@@ -211,6 +211,15 @@ systemctl --user start cifrarium.service
 
 This replaces the symlink and may stop the dotfile manager from updating the
 file. Do not use `rm`, `source`, `sudo`, or a symlink-following override.
+
+When the daemon reports this condition, its human diagnostic is intentionally
+split into `Daemon needs attention`, `What happened`, `Why it matters`, `How to
+fix it`, and `What to do next`. The correction block is a copyable instruction,
+not diagnostic output: it shows only the validated local path. For example,
+`symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: .zshrc`
+resolves to `~/.zshrc`; recovery shares, tokens, file contents, and symlink
+targets are never printed. TTY output uses the Codex semantic palette, while
+redirected and JSON output remain free of ANSI color codes.
 
 ## Diagnose the local installation
 

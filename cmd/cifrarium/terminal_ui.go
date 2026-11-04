@@ -18,9 +18,34 @@ const (
 	ansiMagenta = "\x1b[35m"
 )
 
+type terminalColor string
+
+const (
+	colorHeader   terminalColor = "header"
+	colorCommand  terminalColor = "command"
+	colorLocation terminalColor = "location"
+	colorWarning  terminalColor = "warning"
+	colorFailure  terminalColor = "failure"
+	colorIdentity terminalColor = "identity"
+)
+
+type terminalPalette struct {
+	header, command, location, warning, failure, identity string
+}
+
+var codexPalette = terminalPalette{
+	header:   ansiCyan,
+	command:  ansiGreen,
+	location: ansiBlue,
+	warning:  ansiYellow,
+	failure:  ansiRed,
+	identity: ansiMagenta,
+}
+
 type terminalUI struct {
-	w     io.Writer
-	color bool
+	w       io.Writer
+	color   bool
+	palette terminalPalette
 }
 
 type setupDecision struct {
@@ -31,7 +56,7 @@ type setupDecision struct {
 }
 
 func newTerminalUI(w io.Writer) terminalUI {
-	return terminalUI{w: w, color: writerIsTerminal(w)}
+	return terminalUI{w: w, color: writerIsTerminal(w), palette: codexPalette}
 }
 
 func writerIsTerminal(w io.Writer) bool {
@@ -43,39 +68,84 @@ func writerIsTerminal(w io.Writer) bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-func (ui terminalUI) colorize(color, value string) string {
+func (ui terminalUI) colorFor(role terminalColor) string {
+	palette := ui.palette
+	if palette == (terminalPalette{}) {
+		palette = codexPalette
+	}
+	switch role {
+	case colorHeader:
+		return palette.header
+	case colorCommand:
+		return palette.command
+	case colorLocation:
+		return palette.location
+	case colorWarning:
+		return palette.warning
+	case colorFailure:
+		return palette.failure
+	case colorIdentity:
+		return palette.identity
+	default:
+		return ""
+	}
+}
+
+func (ui terminalUI) colorize(role terminalColor, value string) string {
 	if !ui.color || value == "" {
+		return value
+	}
+	color := ui.colorFor(role)
+	if color == "" {
 		return value
 	}
 	return color + value + ansiReset
 }
 
 func (ui terminalUI) Header(title string) {
-	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(ansiCyan, title), strings.Repeat("=", len(title)))
+	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(colorHeader, title), strings.Repeat("=", len(title)))
 }
 
 func (ui terminalUI) Section(title string) {
-	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(ansiCyan, title), strings.Repeat("─", len(title)))
+	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(colorHeader, title), strings.Repeat("─", len(title)))
 }
 
 func (ui terminalUI) Value(label, value string) {
-	color := ""
+	role := terminalColor("")
 	switch label {
 	case "Path", "Configured vault":
-		color = ansiBlue
+		role = colorLocation
 	case "User", "System":
-		color = ansiMagenta
+		role = colorIdentity
 	case "Snapshots", "Pending uploads":
-		color = ansiYellow
+		role = colorWarning
 	}
-	if color != "" {
-		value = ui.colorize(color, value)
+	if role != "" {
+		value = ui.colorize(role, value)
+	}
+	fmt.Fprintf(ui.w, "%s %s\n", label+":", value)
+}
+
+func (ui terminalUI) Status(label, value string) {
+	role := terminalColor("")
+	state := value
+	if separator := strings.IndexByte(state, ' '); separator >= 0 {
+		state = state[:separator]
+	}
+	switch state {
+	case "problem", "error", "unreachable", "unsafe-permissions", "keyring-unavailable":
+		role = colorFailure
+	case "warning", "partial", "not-configured", "not-running", "disabled", "enabled-but-inactive", "unknown":
+		role = colorWarning
+	}
+	if role != "" && strings.HasPrefix(value, state) {
+		value = ui.colorize(role, state) + value[len(state):]
 	}
 	fmt.Fprintf(ui.w, "%s %s\n", label+":", value)
 }
 
 func (ui terminalUI) Command(command string) {
-	fmt.Fprintf(ui.w, "\n%s\n", ui.colorize(ansiGreen, "$ "+command))
+	fmt.Fprintf(ui.w, "\n%s\n", ui.colorize(colorCommand, "$ "+command))
 }
 
 func (ui terminalUI) CommandBlock(commands string) {
@@ -83,15 +153,15 @@ func (ui terminalUI) CommandBlock(commands string) {
 		if command == "" {
 			continue
 		}
-		fmt.Fprintf(ui.w, "%s\n", ui.colorize(ansiGreen, "  "+command))
+		fmt.Fprintf(ui.w, "%s\n", ui.colorize(colorCommand, "  "+command))
 	}
 	fmt.Fprintln(ui.w)
 }
 
 func (ui terminalUI) Decision(decision setupDecision) {
-	fmt.Fprintf(ui.w, "\n╭─ %s ─────────────────────────────────────────╮\n", ui.colorize(ansiGreen, "Decision confirmed"))
+	fmt.Fprintf(ui.w, "\n╭─ %s ─────────────────────────────────────────╮\n", ui.colorize(colorCommand, "Decision confirmed"))
 	ui.panelLine("", "")
-	ui.panelLine("Decision: "+decision.Decision, ansiGreen)
+	ui.panelLine("Decision: "+decision.Decision, colorCommand)
 	ui.panelLine(decision.Title, "")
 	ui.panelLine("Effect: "+decision.Effect, "")
 	if decision.Next != "" {
@@ -101,7 +171,7 @@ func (ui terminalUI) Decision(decision setupDecision) {
 	fmt.Fprintln(ui.w)
 }
 
-func (ui terminalUI) panelLine(value, color string) {
+func (ui terminalUI) panelLine(value string, role terminalColor) {
 	const width = 43
 	for _, line := range wrapText(value, width) {
 		padding := width - len([]rune(line))
@@ -109,8 +179,8 @@ func (ui terminalUI) panelLine(value, color string) {
 			padding = 0
 		}
 		fmt.Fprint(ui.w, "│ ")
-		if color != "" {
-			fmt.Fprint(ui.w, ui.colorize(color, line))
+		if role != "" {
+			fmt.Fprint(ui.w, ui.colorize(role, line))
 		} else {
 			fmt.Fprint(ui.w, line)
 		}
@@ -140,15 +210,20 @@ func wrapText(value string, width int) []string {
 }
 
 func (ui terminalUI) Error(title, happened, why, fix, next string) {
-	ui.Section(ui.colorize(ansiRed, title))
+	ui.Section(title)
+	ui.Failure(title)
 	fmt.Fprintf(ui.w, "What happened\n%s\n\nWhy it matters\n%s\n\nHow to fix it\n%s\n\nWhat to do next\n%s\n", happened, why, fix, next)
+}
+
+func (ui terminalUI) Failure(value string) {
+	fmt.Fprintf(ui.w, "%s\n", ui.colorize(colorFailure, value))
 }
 
 func renderSetupFailure(w io.Writer, home string, err error) {
 	ui := newTerminalUI(w)
 	ui.Header("Setup needs attention")
 	ui.Section("What happened")
-	fmt.Fprintf(w, "The setup could not finish the first local capture.\n%s\n", err)
+	ui.Failure("The setup could not finish the first local capture.")
 	ui.Section("Why it matters")
 	fmt.Fprintln(w, "Cifrarium stopped before any remote upload. Correct the input and retry the local setup.")
 	ui.Section("How to fix it")
@@ -158,7 +233,8 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
 			copyCommand = "cp -aL"
 		}
-		fmt.Fprintf(w, "Cifrarium does not follow symlinks during capture: %s\n", path)
+		fmt.Fprintln(w, "Cifrarium does not follow symlinks during capture.")
+		ui.Value("Path", path)
 		ui.CommandBlock(fmt.Sprintf("%s %s %s\nmv %s %s", copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(path)))
 	} else {
 		fmt.Fprintln(w, "Review the reported adapter path and correct it without disabling capture safety.")
@@ -171,7 +247,7 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 	ui := newTerminalUI(w)
 	ui.Header("Daemon needs attention")
 	ui.Section("What happened")
-	fmt.Fprintf(w, "The daemon could not complete its recovery snapshot.\n%s\n", err)
+	ui.Failure("The daemon could not complete its recovery snapshot.")
 	ui.Section("Why it matters")
 	fmt.Fprintln(w, "Cifrarium stopped this capture before saving or uploading a new snapshot. Existing vault history was preserved.")
 	ui.Section("How to fix it")
@@ -181,7 +257,8 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
 			copyCommand = "cp -aL"
 		}
-		fmt.Fprintf(w, "Cifrarium does not follow symlinks during capture: %s\n", path)
+		fmt.Fprintln(w, "Cifrarium does not follow symlinks during capture.")
+		ui.Value("Path", path)
 		fmt.Fprintln(w, "If the link is managed intentionally, leave the daemon stopped and materialize a regular file through that manager.")
 		ui.CommandBlock(fmt.Sprintf("systemctl --user stop cifrarium.service\ntest -L %s && readlink %s\n%s %s %s\ntest ! -L %s\nmv %s %s", shellQuote(path), shellQuote(path), copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(regular), shellQuote(path)))
 		ui.CommandBlock("cifrarium snapshot\nsystemctl --user start cifrarium.service")
@@ -195,12 +272,16 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 
 func rejectedSymlinkPath(home string, err error) (string, bool) {
 	const marker = "symlink rejected: "
+	const recoverySuffix = "; recovery snapshot failed"
 	value := err.Error()
 	index := strings.Index(value, marker)
 	if index < 0 {
 		return "", false
 	}
 	path := strings.TrimSpace(value[index+len(marker):])
+	if suffixIndex := strings.Index(path, recoverySuffix); suffixIndex >= 0 {
+		path = strings.TrimSpace(path[:suffixIndex])
+	}
 	if path == "" {
 		return "", false
 	}
@@ -213,6 +294,9 @@ func rejectedSymlinkPath(home string, err error) (string, bool) {
 		return clean, true
 	}
 	if filepath.Clean(path) != path {
+		return "", false
+	}
+	if path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
 		return "", false
 	}
 	return filepath.Join(home, path), true
