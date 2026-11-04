@@ -1,0 +1,193 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	ansiReset   = "\x1b[0m"
+	ansiCyan    = "\x1b[36m"
+	ansiGreen   = "\x1b[32m"
+	ansiYellow  = "\x1b[33m"
+	ansiRed     = "\x1b[31m"
+	ansiBlue    = "\x1b[34m"
+	ansiMagenta = "\x1b[35m"
+)
+
+type terminalUI struct {
+	w     io.Writer
+	color bool
+}
+
+type setupDecision struct {
+	Title    string
+	Decision string
+	Effect   string
+	Next     string
+}
+
+func newTerminalUI(w io.Writer) terminalUI {
+	return terminalUI{w: w, color: writerIsTerminal(w)}
+}
+
+func writerIsTerminal(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func (ui terminalUI) colorize(color, value string) string {
+	if !ui.color || value == "" {
+		return value
+	}
+	return color + value + ansiReset
+}
+
+func (ui terminalUI) Header(title string) {
+	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(ansiCyan, title), strings.Repeat("=", len(title)))
+}
+
+func (ui terminalUI) Section(title string) {
+	fmt.Fprintf(ui.w, "\n%s\n%s\n", ui.colorize(ansiCyan, title), strings.Repeat("─", len(title)))
+}
+
+func (ui terminalUI) Value(label, value string) {
+	color := ""
+	switch label {
+	case "Path", "Configured vault":
+		color = ansiBlue
+	case "User", "System":
+		color = ansiMagenta
+	case "Snapshots", "Pending uploads":
+		color = ansiYellow
+	}
+	if color != "" {
+		value = ui.colorize(color, value)
+	}
+	fmt.Fprintf(ui.w, "%s %s\n", label+":", value)
+}
+
+func (ui terminalUI) Command(command string) {
+	fmt.Fprintf(ui.w, "\n%s\n", ui.colorize(ansiGreen, "$ "+command))
+}
+
+func (ui terminalUI) CommandBlock(commands string) {
+	for _, command := range strings.Split(strings.TrimSpace(commands), "\n") {
+		if command == "" {
+			continue
+		}
+		fmt.Fprintf(ui.w, "%s\n", ui.colorize(ansiGreen, "  "+command))
+	}
+	fmt.Fprintln(ui.w)
+}
+
+func (ui terminalUI) Decision(decision setupDecision) {
+	fmt.Fprintf(ui.w, "\n╭─ %s ─────────────────────────────────────────╮\n", ui.colorize(ansiGreen, "Decision confirmed"))
+	ui.panelLine("", "")
+	ui.panelLine("Decision: "+decision.Decision, ansiGreen)
+	ui.panelLine(decision.Title, "")
+	ui.panelLine("Effect: "+decision.Effect, "")
+	if decision.Next != "" {
+		ui.panelLine("Next: "+decision.Next, "")
+	}
+	fmt.Fprintln(ui.w, "╰─────────────────────────────────────────────╯")
+	fmt.Fprintln(ui.w)
+}
+
+func (ui terminalUI) panelLine(value, color string) {
+	const width = 43
+	for _, line := range wrapText(value, width) {
+		padding := width - len([]rune(line))
+		if padding < 0 {
+			padding = 0
+		}
+		fmt.Fprint(ui.w, "│ ")
+		if color != "" {
+			fmt.Fprint(ui.w, ui.colorize(color, line))
+		} else {
+			fmt.Fprint(ui.w, line)
+		}
+		fmt.Fprintf(ui.w, "%s │\n", strings.Repeat(" ", padding))
+	}
+}
+
+func wrapText(value string, width int) []string {
+	if value == "" {
+		return []string{""}
+	}
+	words := strings.Fields(value)
+	lines := []string{""}
+	for _, word := range words {
+		current := lines[len(lines)-1]
+		candidate := word
+		if current != "" {
+			candidate = current + " " + word
+		}
+		if len([]rune(candidate)) <= width {
+			lines[len(lines)-1] = candidate
+			continue
+		}
+		lines = append(lines, word)
+	}
+	return lines
+}
+
+func (ui terminalUI) Error(title, happened, why, fix, next string) {
+	ui.Section(ui.colorize(ansiRed, title))
+	fmt.Fprintf(ui.w, "What happened\n%s\n\nWhy it matters\n%s\n\nHow to fix it\n%s\n\nWhat to do next\n%s\n", happened, why, fix, next)
+}
+
+func renderSetupFailure(w io.Writer, home string, err error) {
+	ui := newTerminalUI(w)
+	ui.Header("Setup needs attention")
+	ui.Section("What happened")
+	fmt.Fprintf(w, "The setup could not finish the first local capture.\n%s\n", err)
+	ui.Section("Why it matters")
+	fmt.Fprintln(w, "Cifrarium stopped before any remote upload. Correct the input and retry the local setup.")
+	ui.Section("How to fix it")
+	if path, ok := rejectedSymlinkPath(home, err); ok {
+		regular := path + ".cifrarium-regular"
+		copyCommand := "cp --dereference --preserve=mode"
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			copyCommand = "cp -aL"
+		}
+		fmt.Fprintf(w, "Cifrarium does not follow symlinks during capture: %s\n", path)
+		ui.CommandBlock(fmt.Sprintf("%s %s %s\nmv %s %s", copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(path)))
+	} else {
+		fmt.Fprintln(w, "Review the reported adapter path and correct it without disabling capture safety.")
+	}
+	ui.Section("What to do next")
+	ui.Command("cifrarium setup")
+}
+
+func rejectedSymlinkPath(home string, err error) (string, bool) {
+	const marker = "symlink rejected: "
+	value := err.Error()
+	index := strings.Index(value, marker)
+	if index < 0 {
+		return "", false
+	}
+	path := strings.TrimSpace(value[index+len(marker):])
+	if path == "" {
+		return "", false
+	}
+	if filepath.IsAbs(path) {
+		clean := filepath.Clean(path)
+		relative, relErr := filepath.Rel(home, clean)
+		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", false
+		}
+		return clean, true
+	}
+	if filepath.Clean(path) != path {
+		return "", false
+	}
+	return filepath.Join(home, path), true
+}

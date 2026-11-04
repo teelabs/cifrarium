@@ -97,15 +97,18 @@ func renderStatus(w io.Writer, report statusReport, format outputFormat) error {
 	if format != outputHuman {
 		return fmt.Errorf("unsupported output format %q", format)
 	}
-	fmt.Fprintf(w, "Vault: %s\n", report.VaultState)
-	fmt.Fprintf(w, "Path: %s\n", report.Vault)
-	fmt.Fprintf(w, "Configured: %t\n", report.Configured)
-	fmt.Fprintf(w, "Keyring: %s\n", report.KeyringState)
-	fmt.Fprintf(w, "Snapshots: %d\n", report.Snapshots)
+	ui := newTerminalUI(w)
+	ui.Header("Cifrarium status")
+	ui.Section("Vault")
+	ui.Value("Vault", report.VaultState)
+	ui.Value("Path", report.Vault)
+	ui.Value("Configured", fmt.Sprintf("%t", report.Configured))
+	ui.Value("Keyring", report.KeyringState)
+	ui.Value("Snapshots", fmt.Sprintf("%d", report.Snapshots))
 	if report.Head != "" {
-		fmt.Fprintf(w, "Current snapshot: %s\n", report.Head)
+		ui.Value("Current snapshot", report.Head)
 	}
-	fmt.Fprintf(w, "Pending uploads: %d\n", report.Pending)
+	ui.Value("Pending uploads", fmt.Sprintf("%d", report.Pending))
 	return nil
 }
 
@@ -116,29 +119,33 @@ func renderDoctor(w io.Writer, report doctorReport, format outputFormat) error {
 	if format != outputHuman {
 		return fmt.Errorf("unsupported output format %q", format)
 	}
-	fmt.Fprintf(w, "Overall: %s\n\n", report.Overall)
-	writeComponent(w, report.Configuration)
-	writeComponent(w, report.Vault)
-	writeComponent(w, report.Daemon)
-	writeComponent(w, report.MCP)
-	fmt.Fprintln(w, "Adapters:")
+	ui := newTerminalUI(w)
+	ui.Header("Cifrarium doctor")
+	ui.Value("Overall", string(report.Overall))
+	ui.Section("System health")
+	writeComponent(ui, report.Configuration)
+	writeComponent(ui, report.Vault)
+	writeComponent(ui, report.Daemon)
+	writeComponent(ui, report.MCP)
+	ui.Section("Adapters")
 	for _, adapter := range report.Adapters {
-		fmt.Fprintf(w, "  - %s: %s", adapter.Name, adapter.State)
+		fmt.Fprintf(w, "- %s: %s", adapter.Name, adapter.State)
 		if len(adapter.Paths) > 0 {
 			fmt.Fprintf(w, " (%s)", strings.Join(adapter.Paths, ", "))
 		}
-		fmt.Fprintln(w)
+		fmt.Fprintln(ui.w)
 	}
-	writeComponent(w, report.Provider)
+	ui.Section("Provider")
+	writeComponent(ui, report.Provider)
 	return nil
 }
 
-func writeComponent(w io.Writer, component componentReport) {
-	fmt.Fprintf(w, "%s: %s", component.Name, component.State)
+func writeComponent(ui terminalUI, component componentReport) {
+	value := component.State
 	if component.Detail != "" {
-		fmt.Fprintf(w, " (%s)", component.Detail)
+		value += " (" + component.Detail + ")"
 	}
-	fmt.Fprintln(w)
+	ui.Value(component.Name, value)
 }
 
 func inspectAdapters(home string) []adapterReport {

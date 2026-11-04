@@ -51,6 +51,11 @@ The root configuration is non-secret and per-user:
 schema `1` and the canonical vault path, with directory mode `0700` and file
 mode `0600`. Configure it once; normal commands do not need `-root`.
 
+The interactive setup is staged. Each answer is confirmed immediately with
+its effect and the next step. Human output uses headings, spacing, and colors
+on a terminal, while redirected output omits ANSI colors. Use JSON output when
+another program needs stable fields.
+
 ## 3. First local use without a provider
 
 Use this path to test the vault or keep snapshots only on the current machine.
@@ -70,6 +75,10 @@ Success criteria:
 - the user's keyring remains available.
 
 This path is not a backup. Losing the machine or keyring may require recovery.
+
+Symlinked allowlisted files are rejected rather than followed. If setup reports
+one, use the copy command it provides to create a regular file and run setup
+again. The wizard does not upload anything while this correction is pending.
 
 ## 4. Create and store recovery shares
 

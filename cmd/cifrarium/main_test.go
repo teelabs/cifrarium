@@ -47,6 +47,23 @@ func TestRenderStatusHumanUsesUsefulLabels(t *testing.T) {
 	if strings.HasPrefix(strings.TrimSpace(text), "{") || strings.Contains(text, "signer") {
 		t.Fatalf("human status leaked machine-oriented output: %q", text)
 	}
+	if !strings.Contains(text, "Cifrarium status") || !strings.Contains(text, "\n\n") {
+		t.Fatalf("human status is not structured: %q", text)
+	}
+}
+
+func TestRenderSetupDiagnosticsUsesStructuredSections(t *testing.T) {
+	var out bytes.Buffer
+	renderSetupDiagnostics(&out, "/home/test/.local/share/cifrarium", t.TempDir(), true)
+	text := out.String()
+	for _, want := range []string{"Cifrarium setup", "System", "Configured vault", "GitHub CLI"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("setup diagnostics missing %q: %q", want, text)
+		}
+	}
+	if !strings.Contains(text, "\n\n") {
+		t.Fatalf("setup diagnostics has no section spacing: %q", text)
+	}
 }
 
 func TestRenderStatusJSONIsStructured(t *testing.T) {

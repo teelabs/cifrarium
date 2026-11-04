@@ -126,11 +126,9 @@ func main() {
 			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 			os.Exit(1)
 		}
-		if errors.Is(configErr, os.ErrNotExist) {
-			renderSetupDiagnostics(os.Stdout, setupRoot, home, false)
-		}
+		renderSetupDiagnostics(os.Stdout, setupRoot, home, configErr == nil)
 		if err := runSetup(setupRoot, home, *nonInteractive, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "cifrarium: setup failed: %v\n", err)
+			renderSetupFailure(os.Stderr, home, err)
 			os.Exit(1)
 		}
 		return
@@ -339,7 +337,7 @@ func runSetupWithKeys(root, home string, nonInteractive bool, output io.Writer, 
 }
 
 func runSetupWithCommit(root, home string, nonInteractive bool, output io.Writer, op []byte, signing ed25519.PrivateKey, guard store.HeadGuard, commit func() error) error {
-	renderSetupDiagnostics(output, root, home, true)
+	ui := newTerminalUI(output)
 	if nonInteractive {
 		fmt.Fprintln(output, "Non-interactive mode: no recovery shares were shown, no capture was made, no remote provider was changed, and no daemon was enabled.")
 		return nil
@@ -349,18 +347,19 @@ func runSetupWithCommit(root, home string, nonInteractive bool, output io.Writer
 		return err
 	}
 	defer tty.Close()
-	fmt.Fprintln(output, "Now save your recovery shares in two different private locations.")
+	ui.Section("Recovery shares")
+	fmt.Fprintln(output, "Save two different shares in private locations.")
 	shares, err := store.RecoveryShares(op, signing)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(output, "Cifrarium will not save these shares or print them again. They are shown only on the controlling terminal:")
+	fmt.Fprintln(output, "They are shown only on the controlling terminal and will not be printed again.")
 	for _, share := range shares {
 		if _, err := fmt.Fprintf(tty, "%s:%s\n", share.Label, share.Value); err != nil {
 			return err
 		}
 	}
-	choices, err := collectSetupChoices(askSetup)
+	choices, err := collectSetupChoicesWithFeedback(askSetup, ui.Decision)
 	if err != nil {
 		return err
 	}
@@ -373,14 +372,18 @@ func runSetupWithCommit(root, home string, nonInteractive bool, output io.Writer
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "The local vault is ready at %s.\n", root)
+	ui.Section("Local vault")
+	fmt.Fprintf(output, "Ready at %s.\n", root)
 	if choices.Provider {
-		fmt.Fprintln(output, "No remote repository was changed. Review these commands and run them only after confirming the repository name and private visibility:")
-		fmt.Fprintln(output, providerSetupCommands(home))
+		ui.Section("Private backup")
+		fmt.Fprintln(output, "No remote repository was changed.")
+		fmt.Fprintln(output, "Review these commands and run them only after confirming the repository name and private visibility:")
+		ui.CommandBlock(providerSetupCommands(home))
 	}
 	if choices.Capture {
-		fmt.Fprintln(output, "The first capture will be local and encrypted. No remote upload will happen in this step.")
-		fmt.Fprintln(output, "Detected adapters:")
+		ui.Section("First local capture")
+		fmt.Fprintln(output, "Encrypted data will be written locally. No remote upload will happen in this step.")
+		ui.Section("Detected adapters")
 		for _, adapter := range inspectAdapters(home) {
 			fmt.Fprintf(output, "- %s: %d detected paths\n", adapter.Name, len(adapter.Paths))
 		}
@@ -390,6 +393,7 @@ func runSetupWithCommit(root, home string, nonInteractive bool, output io.Writer
 		fmt.Fprintln(output, "First local encrypted capture completed.")
 	}
 	if choices.Activate {
+		ui.Section("Automatic backup")
 		command := exec.Command("systemctl", "--user", "enable", "--now", "cifrarium.service")
 		command.Stdout = os.Stdout
 		command.Stderr = os.Stderr
@@ -398,12 +402,17 @@ func runSetupWithCommit(root, home string, nonInteractive bool, output io.Writer
 		}
 		fmt.Fprintln(output, "Automatic backup enabled.")
 	} else {
+		ui.Section("Automatic backup")
 		fmt.Fprintln(output, "Automatic backup remains disabled.")
 	}
 	return nil
 }
 
 func collectSetupChoices(ask func(string) (bool, error)) (setupChoices, error) {
+	return collectSetupChoicesWithFeedback(ask, func(setupDecision) {})
+}
+
+func collectSetupChoicesWithFeedback(ask func(string) (bool, error), feedback func(setupDecision)) (setupChoices, error) {
 	saved, err := ask("Have you saved two different recovery shares? [y/N] ")
 	if err != nil {
 		return setupChoices{}, err
@@ -411,22 +420,60 @@ func collectSetupChoices(ask func(string) (bool, error)) (setupChoices, error) {
 	if !saved {
 		return setupChoices{}, fmt.Errorf("setup cancelled; run cifrarium setup again")
 	}
+	feedback(setupDecision{
+		Title:    "Recovery shares",
+		Decision: "saved",
+		Effect:   "Two different shares were confirmed.",
+		Next:     "private backup",
+	})
 	provider, err := ask("Configure a private GitHub backup now? [y/N] ")
 	if err != nil {
 		return setupChoices{}, err
 	}
+	feedback(setupDecision{
+		Title:    "Private backup",
+		Decision: decisionLabel(provider),
+		Effect:   decisionEffect(provider, "Backup commands will be prepared; no remote repository changes.", "The vault will remain local-only."),
+		Next:     "first local encrypted capture",
+	})
 	capture, err := ask("Make the first local encrypted capture now? [y/N] ")
 	if err != nil {
 		return setupChoices{}, err
 	}
+	feedback(setupDecision{
+		Title:    "First local capture",
+		Decision: decisionLabel(capture),
+		Effect:   decisionEffect(capture, "Encrypted data will be written locally; no remote upload.", "No snapshot will be created yet."),
+		Next:     "automatic backup",
+	})
 	activate, err := ask("Enable automatic backup now? [y/N] ")
 	if err != nil {
 		return setupChoices{}, err
 	}
+	feedback(setupDecision{
+		Title:    "Automatic backup",
+		Decision: decisionLabel(activate),
+		Effect:   decisionEffect(activate, "The user daemon will be enabled after setup.", "Automatic backup will remain disabled."),
+	})
 	return setupChoices{Provider: provider, Capture: capture, Activate: activate}, nil
 }
 
+func decisionLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "skipped"
+}
+
+func decisionEffect(enabled bool, enabledEffect, skippedEffect string) string {
+	if enabled {
+		return enabledEffect
+	}
+	return skippedEffect
+}
+
 func renderSetupDiagnostics(output io.Writer, root, home string, configured bool) {
+	ui := newTerminalUI(output)
 	current, _ := user.Current()
 	username := "unknown"
 	if current != nil && current.Username != "" {
@@ -452,19 +499,21 @@ func renderSetupDiagnostics(output io.Writer, root, home string, configured bool
 	if command := exec.Command("systemctl", "--user", "is-enabled", "cifrarium.service"); command.Run() == nil {
 		daemonState = "enabled"
 	}
+	ui.Header("Cifrarium setup")
 	fmt.Fprintln(output, "Let's prepare Cifrarium on this computer.")
-	fmt.Fprintf(output, "System: %s %s\n", runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintf(output, "User: %s\n", username)
+	ui.Section("Environment")
+	ui.Value("System", fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH))
+	ui.Value("User", username)
 	configuredRoot := "not configured"
 	if configured {
 		configuredRoot = root
 	}
-	fmt.Fprintf(output, "Configured vault: %s\n", configuredRoot)
-	fmt.Fprintf(output, "GitHub CLI: %s\n", ghState)
-	fmt.Fprintf(output, "Git: %s\n", gitState)
-	fmt.Fprintf(output, "systemd: %s\n", systemdState)
-	fmt.Fprintf(output, "Private provider: %s\n", providerState)
-	fmt.Fprintf(output, "Daemon: %s\n", daemonState)
+	ui.Value("Configured vault", configuredRoot)
+	ui.Value("GitHub CLI", ghState)
+	ui.Value("Git", gitState)
+	ui.Value("systemd", systemdState)
+	ui.Value("Private provider", providerState)
+	ui.Value("Daemon", daemonState)
 }
 
 func providerSetupCommands(home string) string {

@@ -60,7 +60,7 @@ side effects:
 
 ~~~sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.8.0 --non-interactive
+  | bash -s -- --version 0.8.1 --non-interactive
 ~~~
 
 The daemon is never enabled by non-interactive installation.
@@ -76,7 +76,7 @@ Equivalent `wget` form:
 ~~~sh
 bash -o pipefail -c \
   'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.8.0
+  bash 0.8.1
 ~~~
 
 The stream form is convenient, but it does not let you inspect the installer
@@ -95,7 +95,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.8.0 --non-interactive
+/tmp/cifrarium-install.sh --version 0.8.1 --non-interactive
 ~~~
 
 Both forms refuse invalid metadata, signatures, checksums, architectures, or
@@ -114,7 +114,7 @@ Use a different absolute, user-owned prefix in the stream form when required:
 ~~~sh
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
-  bash 0.8.0 "$HOME/opt/cifrarium"
+  bash 0.8.1 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -129,7 +129,7 @@ bash -o pipefail -c \
   bash 0.4.1
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
-  bash 0.8.0
+  bash 0.8.1
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch
@@ -166,6 +166,12 @@ that it prints a snapshot identifier and the following `status` exits zero.
 The snapshot is encrypted before it is written to the vault; do not inspect
 or print its plaintext.
 
+The setup wizard presents one decision at a time. After each answer it shows
+a separate confirmation block with the decision's effect and the next step.
+Human output uses spacing, headings, and terminal colors when connected to a
+TTY; redirected output keeps the same layout without ANSI control codes. Use
+`-format=json` for machine-readable status and doctor output.
+
 The built-in ingestion adapters currently collect only these allowlisted
 paths when present:
 
@@ -180,6 +186,11 @@ cache. Symlinks, unsafe paths, unsupported file types, changing files, and
 oversized captures are rejected. There is currently no user-editable adapter
 configuration file: adding a new adapter or changing an allowlist is a code
 change requiring review.
+
+If an allowlisted file such as `~/.zshrc` is a symlink, the first capture stops
+with an actionable error. Cifrarium never follows it automatically. Copy the
+target to a regular file using the command shown by the wizard, then run
+`cifrarium setup` again.
 
 ## Diagnose the local installation
 
