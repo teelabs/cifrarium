@@ -259,9 +259,17 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 	ui := newTerminalUI(w)
 	ui.Header("Daemon needs attention")
 	ui.Section("What happened")
-	ui.Failure("The daemon could not complete its recovery snapshot.")
+	if daemonUploadGateFailure(err) {
+		ui.Failure("The daemon could not upload pending encrypted work.")
+	} else {
+		ui.Failure("The daemon could not complete its recovery snapshot.")
+	}
 	ui.Section("Why it matters")
-	ui.Text(colorSecondary, "Cifrarium stopped this capture before saving or uploading a new snapshot. Existing vault history was preserved.")
+	if daemonUploadGateFailure(err) {
+		ui.Text(colorSecondary, "Cifrarium preserved the encrypted pending queue and stopped before remote upload. Existing vault history was preserved.")
+	} else {
+		ui.Text(colorSecondary, "Cifrarium stopped this capture before saving or uploading a new snapshot. Existing vault history was preserved.")
+	}
 	ui.Section("How to fix it")
 	if path, ok := rejectedSymlinkPath(home, err); ok {
 		regular := path + ".cifrarium-regular"
@@ -274,12 +282,24 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 		ui.Text(colorSecondary, "If the link is managed intentionally, leave the daemon stopped and materialize a regular file through that manager.")
 		ui.CommandBlock(fmt.Sprintf("systemctl --user stop cifrarium.service\ntest -L %s && readlink %s\n%s %s %s\ntest ! -L %s\nmv %s %s", shellQuote(path), shellQuote(path), copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(regular), shellQuote(path)))
 		ui.CommandBlock("cifrarium snapshot\nsystemctl --user start cifrarium.service")
+	} else if daemonUploadGateFailure(err) {
+		ui.Text(colorSecondary, "Review the protected recovery and provider configuration without printing recovery material or changing the pending queue.")
+		ui.Command("cifrarium doctor")
 	} else {
 		ui.Text(colorSecondary, "Review the reported adapter path and correct it without disabling capture safety.")
 		ui.Command("cifrarium doctor")
 	}
 	ui.Section("What to do next")
-	ui.Text(colorWarning, "Do not use rm, source, sudo, or a symlink-following override. Keep the daemon stopped until a local snapshot succeeds.")
+	if daemonUploadGateFailure(err) {
+		ui.Text(colorWarning, "Do not delete pending.queue or put recovery material in shell history. Keep the daemon waiting until the local configuration passes doctor.")
+	} else {
+		ui.Text(colorWarning, "Do not use rm, source, sudo, or a symlink-following override. Keep the daemon stopped until a local snapshot succeeds.")
+	}
+}
+
+func daemonUploadGateFailure(err error) bool {
+	value := strings.ToLower(err.Error())
+	return strings.Contains(value, "recovery verification required before upload") || strings.Contains(value, "private repository verification required before upload") || strings.Contains(value, "provider") || strings.Contains(value, "upload") || strings.Contains(value, "remote")
 }
 
 func rejectedSymlinkPath(home string, err error) (string, bool) {

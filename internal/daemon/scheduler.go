@@ -12,6 +12,15 @@ const DefaultInterval = 6 * time.Hour
 
 type Snapshotter func(context.Context) (Item, error)
 type Uploader func(context.Context, Item) error
+type RetryDecision uint8
+
+const (
+	StopRetry RetryDecision = iota
+	RetryNow
+)
+
+type RetryHandler func(context.Context, error) RetryDecision
+
 type RetryPolicy struct {
 	MaxAttempts int
 	BaseDelay   time.Duration
@@ -27,7 +36,14 @@ type Scheduler struct {
 	MissedCycles     int
 	Persist          func() error
 	Report           func(error)
+	RetryHandler     RetryHandler
 }
+
+type ReportedFailure struct{ Err error }
+
+func (e *ReportedFailure) Error() string    { return e.Err.Error() }
+func (e *ReportedFailure) Unwrap() error    { return e.Err }
+func (e *ReportedFailure) ReportedFailure() {}
 
 type PersistenceError struct{ Err error }
 
