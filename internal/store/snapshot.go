@@ -52,6 +52,9 @@ func Open(root string, op []byte, signing ed25519.PrivateKey) (*Vault, error) {
 	return OpenWithGuard(root, op, signing, nil)
 }
 func OpenWithGuard(root string, op []byte, signing ed25519.PrivateKey, guard HeadGuard) (*Vault, error) {
+	if err := ValidateRoot(root); err != nil {
+		return nil, fmt.Errorf("validate vault root: %w", err)
+	}
 	v := NewWithGuard(root, op, signing, guard)
 	m, err := v.LoadHead()
 	if os.IsNotExist(err) {
@@ -718,7 +721,7 @@ func captureFileStates(paths ...string) ([]fileState, error) {
 }
 
 func readLimitedFile(path string, max int64) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := openReadNoSymlinks(path)
 	if err != nil {
 		return nil, err
 	}

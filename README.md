@@ -60,7 +60,7 @@ side effects:
 
 ~~~sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.7.0 --non-interactive
+  | bash -s -- --version 0.8.0 --non-interactive
 ~~~
 
 The daemon is never enabled by non-interactive installation.
@@ -76,7 +76,7 @@ Equivalent `wget` form:
 ~~~sh
 bash -o pipefail -c \
   'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.7.0
+  bash 0.8.0
 ~~~
 
 The stream form is convenient, but it does not let you inspect the installer
@@ -95,7 +95,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.7.0 --non-interactive
+/tmp/cifrarium-install.sh --version 0.8.0 --non-interactive
 ~~~
 
 Both forms refuse invalid metadata, signatures, checksums, architectures, or
@@ -114,7 +114,7 @@ Use a different absolute, user-owned prefix in the stream form when required:
 ~~~sh
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
-  bash 0.7.0 "$HOME/opt/cifrarium"
+  bash 0.8.0 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -129,7 +129,7 @@ bash -o pipefail -c \
   bash 0.4.1
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
-  bash 0.7.0
+  bash 0.8.0
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch
@@ -148,20 +148,20 @@ Back up or export anything needed before uninstalling.
 
 ## First local use: initialize and ingest a snapshot
 
-Use a named root so scripts, humans, and agents agree on the data location:
+Configure the vault root once. Normal commands then resolve it automatically:
 
 ~~~sh
 ROOT="$HOME/.local/share/cifrarium"
-
-cifrarium -root "$ROOT" -command=status
-cifrarium -root "$ROOT" -command=status -format=json
-cifrarium -root "$ROOT" -command=snapshot
-cifrarium -root "$ROOT" -command=status
+cifrarium setup --root "$ROOT"
+cifrarium -command=status
+cifrarium -command=status -format=json
+cifrarium -command=snapshot
+cifrarium -command=status
 ~~~
 
 The normal `status` output is written for humans. Use `-format=json` when a
-script or agent needs stable fields. The first `status` initializes keyring material when the user keyring has no
-Cifrarium entry. The first `snapshot` is the initial ingestion. Success means
+script or agent needs stable fields. `status` never initializes an unconfigured
+computer or keyring. The first `snapshot` is the initial ingestion. Success means
 that it prints a snapshot identifier and the following `status` exits zero.
 The snapshot is encrypted before it is written to the vault; do not inspect
 or print its plaintext.
@@ -187,7 +187,7 @@ Use `doctor` for one read-only report of the vault, keyring, daemon, local MCP
 socket, adapters, and optional GitHub provider:
 
 ~~~sh
-cifrarium -root "$ROOT" -command=doctor
+cifrarium -command=doctor
 ~~~
 
 The report does not create keys, a vault, a provider checkout, a socket, or a
@@ -200,7 +200,7 @@ problem and returns exit code 1.
 For scripts and agents, request structured output and preserve the exit code:
 
 ~~~sh
-cifrarium -root "$ROOT" -command=doctor -format=json
+cifrarium -command=doctor -format=json
 ~~~
 
 The remote path belongs to the provider. Adapters report only their local
@@ -214,7 +214,7 @@ ticket, screenshot, shell history, or chat transcript:
 
 ~~~sh
 umask 077
-cifrarium -root "$ROOT" -command=recovery-shares
+cifrarium -command=recovery-shares
 ~~~
 
 The command prints three complete `label:value` lines, for example:
@@ -317,7 +317,7 @@ is in the [GitHub provider provisioning runbook](docs/runbooks/github-provider-p
 
 Before activation, confirm all of the following:
 
-- `cifrarium -root "$ROOT" -command=status` succeeds;
+- `cifrarium -command=status` succeeds;
 - two distinct recovery shares are available in the protected environment
   file;
 - `provider-health -verify-private` reports success;
@@ -351,10 +351,10 @@ available, and provide two trusted distinct shares through a protected local
 input path:
 
 ~~~sh
-cifrarium -root "$ROOT" -command=recover \
+cifrarium -command=recover \
   -recovery-share "$SHARE_1_FROM_PROTECTED_INPUT" \
   -recovery-share "$SHARE_2_FROM_PROTECTED_INPUT"
-cifrarium -root "$ROOT" -command=status
+cifrarium -command=status
 ~~~
 
 Recovery verifies the existing signed catalog and head before replacing the

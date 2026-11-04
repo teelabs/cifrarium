@@ -16,6 +16,19 @@ For agent-operated work, read [`AGENTS.md`](../../AGENTS.md) and the
 [agent usage contract](../AGENT-USAGE.md). Agents must not activate the
 daemon, import recovery shares, or push without explicit human confirmation.
 
+## 0. Configure the vault root first
+
+The root is configured once per user and is not selected independently by the
+provider flow:
+
+```sh
+cifrarium setup --root "$HOME/.local/share/cifrarium"
+cifrarium -command=doctor
+```
+
+After this, normal Cifrarium commands omit `-root`. Supplying a different
+explicit root is a security failure and must not be overridden.
+
 ## 1. Prepare the local provider checkout
 
 Use a dedicated directory with mode `0700`. It must not contain application
@@ -107,6 +120,10 @@ matching the active operational key and a successful private-repository
 verification. The first upload is therefore an explicit operator action after
 privacy, remote-access, and recovery checks are green; the daemon repeats the
 privacy check at the upload boundary.
+
+`provider-health` is read-only and expects this checkout to already exist. It
+does not run `git init`, create directories, add a remote, or repair provider
+state. Run the local setup commands above separately before probing health.
 
 ## 5. Revocation and incident response
 

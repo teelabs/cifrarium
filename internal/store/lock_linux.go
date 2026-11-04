@@ -31,6 +31,16 @@ func withVaultLock(root string, fn func() error) error {
 	return fn()
 }
 
+// ValidateRoot opens the vault root with descriptor-relative no-symlink
+// resolution. Callers use it immediately before opening vault state.
+func ValidateRoot(root string) error {
+	fd, err := openVaultRoot(root)
+	if err != nil {
+		return err
+	}
+	return unix.Close(fd)
+}
+
 func openVaultRoot(root string) (int, error) {
 	fd, err := unix.Openat2(unix.AT_FDCWD, root, &unix.OpenHow{
 		Flags:   uint64(unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC),
