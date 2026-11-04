@@ -4,6 +4,23 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-04
+
+### Added
+
+- Added canonical nested CLI commands (`provider setup`, `provider health`,
+  `recovery shares`, and `recovery import`) and removed the legacy
+  `-command=` interface.
+- Added an interactive provider wizard that validates GitHub access and
+  privacy, preserves existing provider settings, and atomically writes the
+  protected daemon configuration.
+
+### Changed
+
+- Provider setup now requires explicit confirmation for local configuration,
+  recovery-share import or generation, and daemon activation. It never uploads
+  a snapshot automatically and never stores credentials.
+
 ## [0.8.2] - 2026-11-03
 
 ### Changed

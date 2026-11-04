@@ -312,9 +312,9 @@ provider_preflight() {
     return 0
   fi
   [[ "$provider_dir_configured" = /* ]] || die "configured provider directory must be absolute"
-  [[ -d "$provider_dir_configured/.git" ]] || die "Upgrade blocked\n\nWhat happened\nThe configured provider checkout is missing.\n\nWhy it matters\nActivating this version could strand encrypted history.\n\nHow to fix it\nRestore the checkout, then retry.\n\nCOMMAND\ngit -C <provider-directory> status\n\nWhat to do next\nKeep the current version active until provider-health passes."
+  [[ -d "$provider_dir_configured/.git" ]] || die "Upgrade blocked\n\nWhat happened\nThe configured provider checkout is missing.\n\nWhy it matters\nActivating this version could strand encrypted history.\n\nHow to fix it\nRestore the checkout, then retry.\n\nCOMMAND\ngit -C <provider-directory> status\n\nWhat to do next\nKeep the current version active until provider health passes."
   git -C "$provider_dir_configured" status --porcelain >/dev/null 2>&1 || die "configured provider checkout is inaccessible"
-  git -C "$provider_dir_configured" ls-remote "$provider_remote_configured" HEAD >/dev/null 2>&1 || die "Upgrade blocked\n\nWhat happened\nThe configured provider remote is inaccessible.\n\nWhy it matters\nThe upgrade cannot verify the remote backup boundary.\n\nHow to fix it\nRestore GitHub access without putting tokens in daemon.env.\n\nCOMMAND\ncifrarium -command=provider-health -provider-dir <provider-directory> -provider-remote <github-remote>\n\nWhat to do next\nKeep the current version active and retry after provider-health passes."
+  git -C "$provider_dir_configured" ls-remote "$provider_remote_configured" HEAD >/dev/null 2>&1 || die "Upgrade blocked\n\nWhat happened\nThe configured provider remote is inaccessible.\n\nWhy it matters\nThe upgrade cannot verify the remote backup boundary.\n\nHow to fix it\nRestore GitHub access without putting tokens in daemon.env.\n\nCOMMAND\ncifrarium provider health -provider-dir <provider-directory> -provider-remote <github-remote>\n\nWhat to do next\nKeep the current version active and retry after provider health passes."
   command -v gh >/dev/null 2>&1 || die "configured GitHub provider requires gh for privacy verification"
   local slug
   slug=$(python3 - "$provider_remote_configured" <<'PY'
@@ -346,7 +346,7 @@ if data.get("schema") != 1 or not isinstance(root, str) or not root.startswith("
 if os.path.realpath(root) != root or not os.path.isdir(root):
     raise SystemExit("configured vault root is missing or not canonical")
 PY
-  if ! "$active_link" -command=doctor -format=json >/dev/null 2>&1; then
+  if ! "$active_link" doctor -format=json >/dev/null 2>&1; then
     die "Upgrade blocked\n\nWhat happened\nThe active version could not validate the configured root and keyring binding.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and repair the reported local state.\n\nWhat to do next\nKeep the active version in place and retry."
   fi
 }
@@ -596,7 +596,7 @@ fi
 step 'Running staged preflight'
 [[ "$($version_dir/cifrarium -version 2>/dev/null)" == "$version" ]] || die "candidate binary preflight failed"
 set +e
-"$version_dir/cifrarium" -command=doctor -format=json >/dev/null 2>&1
+"$version_dir/cifrarium" doctor -format=json >/dev/null 2>&1
 candidate_diagnostic_status=$?
 set -e
 ((candidate_diagnostic_status <= 1)) || die "candidate diagnostic preflight failed"
@@ -607,7 +607,7 @@ atomic_symlink "../lib/$PRODUCT/versions/$version/cifrarium" "$active_link"
 
 step 'Running final read-only diagnostic'
 set +e
-"$active_link" -command=doctor -format=json >/dev/null 2>&1
+"$active_link" doctor -format=json >/dev/null 2>&1
 diagnostic_status=$?
 set -e
 ((diagnostic_status <= 1)) || die "final diagnostic failed"

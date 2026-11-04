@@ -62,10 +62,11 @@ credentials. It is sufficient to check whether required variables are present.
 | --- | --- | --- |
 | `status` | Read-only, human output by default | May run after root setup and report; use `-format=json` for parsing |
 | `doctor` | Read-only local and configured-provider diagnostic | May run and report; it never initializes state |
-| `provider-health` | Read-only local/remote diagnostic | Requires an existing provider checkout; it never initializes Git or writes provider state |
+| `provider health` | Read-only local/remote diagnostic | Requires an existing provider checkout; it never initializes Git or writes provider state |
+| `provider setup` | Local configuration and optional remote provisioning | Human-only; requires explicit confirmations and never runs in `--non-interactive` mode |
 | `snapshot` | Local mutation | Run only when explicitly requested |
-| `recovery-shares` | Secret creation/display | Human-only by default; never capture output |
-| `recover` | Keyring mutation and integrity-sensitive | Require explicit human confirmation and two supplied shares |
+| `recovery shares` | Secret creation/display | Human-only by default; never capture output |
+| `recovery import` | Keyring mutation and integrity-sensitive | Require explicit human confirmation and two supplied shares |
 | `migrate-catalog` | Local data migration | Require explicit confirmation and backup/rollback plan |
 | `daemon` | Persistent process and remote-capable | Require explicit confirmation before activation |
 | `snapshot.plan` | Read-only MCP plan | May inspect; does not perform upload |
@@ -108,7 +109,7 @@ For a remote upload:
 ~~~text
 Planned effect: enable the user daemon, which may push ciphertext to the
 configured GitHub repository.
-Preconditions: provider-health passed; repository reported private; two shares
+Preconditions: provider health passed; repository reported private; two shares
 are available through the protected environment.
 Residual: GitHub visibility can change externally after the check.
 Proceed?
@@ -120,7 +121,7 @@ Proceed?
 
 ~~~sh
 cifrarium setup --root "$HOME/.local/share/cifrarium"
-cifrarium -command=status
+cifrarium status
 ~~~
 
 Success means exit code zero and a readable status response. Use
@@ -136,7 +137,7 @@ action before retrying.
 ### 5.1.1 Run the complete doctor
 
 ~~~sh
-cifrarium -command=doctor -format=json
+cifrarium doctor -format=json
 ~~~
 
 `doctor` does not create keyring material, a vault, a provider checkout, a
@@ -156,7 +157,7 @@ Do not treat an `overall` report as proof that a remote upload completed.
 ### 5.2 Create a local snapshot
 
 ~~~sh
-go run ./cmd/cifrarium -command=snapshot
+go run ./cmd/cifrarium snapshot
 ~~~
 
 Check that a snapshot identifier was returned. Do not read or print the
@@ -170,7 +171,7 @@ the wizard to create a regular file, and retry setup or snapshot afterward.
 ### 5.3 Check a GitHub provider
 
 ~~~sh
-go run ./cmd/cifrarium -command=provider-health \
+go run ./cmd/cifrarium provider health \
   -provider-dir "$PROVIDER_DIR" \
   -provider-remote "$PROVIDER_REMOTE" \
   -verify-private
@@ -184,7 +185,7 @@ token to a remote URL, disabling privacy checks, or editing encrypted objects.
 Run only when the human explicitly asks for new shares:
 
 ~~~sh
-go run ./cmd/cifrarium -command=recovery-shares
+go run ./cmd/cifrarium recovery shares
 ~~~
 
 The command's stdout is secret material. Keep it out of agent transcripts,
@@ -198,7 +199,7 @@ the operation changes keyring state and may reject a rollback. After explicit
 confirmation, use a protected input mechanism:
 
 ~~~sh
-cifrarium -command=recover \
+cifrarium recovery import \
   -recovery-share "$SHARE_1_FROM_PROTECTED_INPUT" \
   -recovery-share "$SHARE_2_FROM_PROTECTED_INPUT"
 ~~~
@@ -215,8 +216,8 @@ Preconditions:
 - no concurrent daemon or snapshot operation is running.
 
 ~~~sh
-go run ./cmd/cifrarium -command=migrate-catalog
-go run ./cmd/cifrarium -command=status
+go run ./cmd/cifrarium migrate-catalog
+go run ./cmd/cifrarium status
 ~~~
 
 The agent must report whether migration changed anything. A failure is not a
@@ -229,7 +230,7 @@ Use read-only observation first:
 ~~~sh
 systemctl --user status cifrarium.service
 journalctl --user -u cifrarium.service -n 100 --no-pager
-cifrarium -command=doctor -format=json
+cifrarium doctor -format=json
 ~~~
 
 The agent may recommend restarting a service only after the human requests an
@@ -240,7 +241,7 @@ during diagnosis.
 
 | Observation | Safe interpretation | Next action |
 | --- | --- | --- |
-| Provider access failure | Remote operation is not proven | Run provider-health; preserve queue |
+| Provider access failure | Remote operation is not proven | Run provider health; preserve queue |
 | Repository is public | Privacy policy failed | Stop uploads; fix external policy; re-check |
 | Queue exists after offline period | Work may be pending | Inspect logs and provider; do not delete |
 | Queue persistence failure | Durability is not proven | Stop/leave daemon stopped; preserve vault |
@@ -284,7 +285,7 @@ Example:
 ~~~text
 Result: PASS
 Scope: provider diagnostic
-Commands: provider-health with configured non-secret paths
+Commands: provider health with configured non-secret paths
 Evidence: exit 0; status=ok; repository reported private
 State: no local or remote mutation performed
 Risks: external GitHub visibility can change after the check

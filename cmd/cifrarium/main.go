@@ -42,14 +42,30 @@ func (s *stringList) String() string     { return fmt.Sprint([]string(*s)) }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "setup" {
-		os.Args = append([]string{os.Args[0], "-command=setup"}, os.Args[2:]...)
+	commandName, commandArgs, commandErr := canonicalCommand(os.Args[1:])
+	if commandErr != nil {
+		fmt.Fprintln(os.Stderr, "cifrarium:", commandErr)
+		os.Exit(2)
 	}
+	os.Args = append([]string{os.Args[0]}, commandArgs...)
 	home, _ := os.UserHomeDir()
+	fileProvider, providerConfigErr := loadProviderConfig(home)
+	if providerConfigErr != nil && (commandName == "doctor" || commandName == "provider-health") {
+		fmt.Fprintln(os.Stderr, "cifrarium:", providerConfigErr)
+		os.Exit(1)
+	}
 	root := flag.String("root", "", "vault directory (setup only on a new computer; otherwise must match configuration)")
-	cmd := flag.String("command", "status", "status, doctor, or snapshot")
-	providerDir := flag.String("provider-dir", os.Getenv("CIFRARIUM_PROVIDER_DIR"), "local Git provider directory (daemon only)")
-	providerRemote := flag.String("provider-remote", os.Getenv("CIFRARIUM_PROVIDER_REMOTE"), "HTTPS GitHub remote URL (daemon only; no embedded credentials)")
+	cmd := commandName
+	providerDirDefault := os.Getenv("CIFRARIUM_PROVIDER_DIR")
+	if providerDirDefault == "" {
+		providerDirDefault = fileProvider.Dir
+	}
+	providerRemoteDefault := os.Getenv("CIFRARIUM_PROVIDER_REMOTE")
+	if providerRemoteDefault == "" {
+		providerRemoteDefault = fileProvider.Remote
+	}
+	providerDir := flag.String("provider-dir", providerDirDefault, "local Git provider directory")
+	providerRemote := flag.String("provider-remote", providerRemoteDefault, "HTTPS GitHub remote URL (no embedded credentials)")
 	verifyPrivate := flag.Bool("verify-private", false, "verify GitHub repository privacy with gh (provider-health only)")
 	showVersion := flag.Bool("version", false, "print the Cifrarium version")
 	nonInteractive := flag.Bool("non-interactive", false, "never prompt, capture, upload, or enable services")
@@ -71,11 +87,18 @@ func main() {
 		fmt.Println(version)
 		return
 	}
-	if *nonInteractive && commandMutatesOrHandlesSecrets(*cmd) {
-		fmt.Fprintf(os.Stderr, "cifrarium: --non-interactive cannot run %s because it may mutate local or remote state or handle secrets\n", *cmd)
+	if *nonInteractive && commandMutatesOrHandlesSecrets(cmd) {
+		fmt.Fprintf(os.Stderr, "cifrarium: --non-interactive cannot run %s because it may mutate local or remote state or handle secrets\n", cmd)
 		os.Exit(1)
 	}
-	if *cmd == "provider-health" {
+	if cmd == "provider-setup" {
+		if err := runProviderSetup(home, *root, *nonInteractive, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if cmd == "provider-health" {
 		if *providerDir == "" || *providerRemote == "" {
 			fmt.Fprintln(os.Stderr, "cifrarium: provider-health requires -provider-dir and -provider-remote")
 			os.Exit(2)
@@ -94,8 +117,8 @@ func main() {
 		fmt.Printf("{\"provider\":\"github\",\"remote\":%q,\"status\":\"ok\"}\n", *providerRemote)
 		return
 	}
-	if *cmd == "doctor" {
-		resolvedRoot, rootErr := resolveVaultRoot(*cmd, *root, home)
+	if cmd == "doctor" {
+		resolvedRoot, rootErr := resolveVaultRoot(cmd, *root, home)
 		if rootErr != nil && !errors.Is(rootErr, errRootNotConfigured) {
 			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", rootErr)
 			os.Exit(1)
@@ -114,14 +137,14 @@ func main() {
 		}
 		return
 	}
-	if *cmd == "setup" {
+	if cmd == "setup" {
 		configPath := config.ConfigPathForHome(home)
 		_, configErr := config.LoadFrom(configPath)
 		if errors.Is(configErr, os.ErrNotExist) && *nonInteractive {
 			fmt.Fprintln(os.Stderr, "cifrarium: non-interactive setup cannot configure a new vault root; run cifrarium setup in a terminal")
 			os.Exit(1)
 		}
-		setupRoot, err := resolveVaultRoot(*cmd, *root, home)
+		setupRoot, err := resolveVaultRoot(cmd, *root, home)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 			os.Exit(1)
@@ -133,14 +156,14 @@ func main() {
 		}
 		return
 	}
-	resolvedRoot, err := resolveVaultRoot(*cmd, *root, home)
+	resolvedRoot, err := resolveVaultRoot(cmd, *root, home)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	root = &resolvedRoot
 	keyringStore := store.NewKeyring()
-	if *cmd == "recover" {
+	if cmd == "recover" {
 		shares, err := parseRecoveryShares(recoveryValues)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -158,7 +181,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 		os.Exit(1)
 	}
-	if *cmd == "migrate-catalog" {
+	if cmd == "migrate-catalog" {
 		changed, err := store.MigrateCatalog(*root, op, sign.Public().(ed25519.PublicKey))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: catalog migration failed: %v\n", err)
@@ -176,7 +199,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "cifrarium: vault integrity check failed: %v\n", err)
 		os.Exit(1)
 	}
-	switch *cmd {
+	switch cmd {
 	case "status":
 		report := statusReport{
 			Vault:        *root,
@@ -285,8 +308,50 @@ func main() {
 		default:
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cifrarium setup | -command=status|doctor|snapshot|recovery-shares|recover|migrate-catalog|provider-health -format=human|json -recovery-share label:value")
+		fmt.Fprintln(os.Stderr, "usage: cifrarium setup | status | doctor | snapshot | daemon | migrate-catalog | provider setup|health | recovery shares|import")
 		os.Exit(2)
+	}
+}
+
+func canonicalCommand(args []string) (string, []string, error) {
+	if len(args) == 0 {
+		return "status", args, nil
+	}
+	if strings.HasPrefix(args[0], "-command=") || args[0] == "-command" {
+		return "", nil, fmt.Errorf("-command is no longer supported; use a subcommand")
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return "status", args, nil
+	}
+	switch args[0] {
+	case "provider":
+		if len(args) < 2 {
+			return "", nil, fmt.Errorf("provider requires setup or health")
+		}
+		switch args[1] {
+		case "setup":
+			return "provider-setup", append([]string{}, args[2:]...), nil
+		case "health":
+			return "provider-health", append([]string{}, args[2:]...), nil
+		default:
+			return "", nil, fmt.Errorf("unknown provider command %q", args[1])
+		}
+	case "recovery":
+		if len(args) < 2 {
+			return "", nil, fmt.Errorf("recovery requires shares or import")
+		}
+		switch args[1] {
+		case "shares":
+			return "recovery-shares", append([]string{}, args[2:]...), nil
+		case "import":
+			return "recover", append([]string{}, args[2:]...), nil
+		default:
+			return "", nil, fmt.Errorf("unknown recovery command %q", args[1])
+		}
+	case "status", "doctor", "setup", "snapshot", "daemon", "migrate-catalog":
+		return args[0], append([]string{}, args[1:]...), nil
+	default:
+		return "", nil, fmt.Errorf("unknown command %q; use cifrarium --help", args[0])
 	}
 }
 
@@ -300,7 +365,7 @@ func parseOutputFormat(value string) (outputFormat, error) {
 
 func commandMutatesOrHandlesSecrets(command string) bool {
 	switch command {
-	case "provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon":
+	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon":
 		return true
 	default:
 		return false
@@ -386,9 +451,14 @@ func runSetupWithCommit(root, home string, nonInteractive bool, output io.Writer
 	fmt.Fprintf(output, "Ready at %s.\n", root)
 	if choices.Provider {
 		ui.Section("Private backup")
-		fmt.Fprintln(output, "No remote repository was changed.")
-		fmt.Fprintln(output, "Review these commands and run them only after confirming the repository name and private visibility:")
-		ui.CommandBlock(providerSetupCommands(home))
+		initialShares := map[string]string{}
+		if len(shares) >= 2 {
+			initialShares["CIFRARIUM_RECOVERY_SHARE_1"] = shares[0].Label + ":" + shares[0].Value
+			initialShares["CIFRARIUM_RECOVERY_SHARE_2"] = shares[1].Label + ":" + shares[1].Value
+		}
+		if err := runProviderSetupWithInitialShares(home, root, false, output, initialShares); err != nil {
+			return err
+		}
 	}
 	if choices.Capture {
 		ui.Section("First local capture")
@@ -502,7 +572,8 @@ func renderSetupDiagnostics(output io.Writer, root, home string, configured bool
 		systemdState = "available"
 	}
 	providerState := "not configured"
-	if os.Getenv("CIFRARIUM_PROVIDER_DIR") != "" || os.Getenv("CIFRARIUM_PROVIDER_REMOTE") != "" {
+	configuredProvider, _ := loadProviderConfig(home)
+	if os.Getenv("CIFRARIUM_PROVIDER_DIR") != "" || os.Getenv("CIFRARIUM_PROVIDER_REMOTE") != "" || configuredProvider.Dir != "" || configuredProvider.Remote != "" {
 		providerState = "configured"
 	}
 	daemonState := "not enabled"

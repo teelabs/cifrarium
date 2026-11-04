@@ -18,7 +18,7 @@ file is only the routing pointer and the repository gate summary.
   activation, restore activation, deletion, merge, publication, or deployment.
 - Never request, print, copy, synthesize, or commit real recovery shares or
   tokens.
-- Treat `status`, `provider-health`, and `migrate-catalog` output as evidence,
+- Treat `status`, `provider health`, and `migrate-catalog` output as evidence,
   not as permission to change external state.
 - Preserve `pending.queue`, `head.json`, keyring state, and unrelated dirty
   work.

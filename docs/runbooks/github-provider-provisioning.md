@@ -23,7 +23,7 @@ provider flow:
 
 ```sh
 cifrarium setup --root "$HOME/.local/share/cifrarium"
-cifrarium -command=doctor
+cifrarium doctor
 ```
 
 After this, normal Cifrarium commands omit `-root`. Supplying a different
@@ -96,7 +96,7 @@ the interactive environment setup approved by the operator.
 chmod 600 "$HOME/.config/cifrarium/daemon.env"
 export CIFRARIUM_PROVIDER_DIR="$HOME/.local/share/cifrarium-provider"
 export CIFRARIUM_PROVIDER_REMOTE="https://github.com/OWNER/REPO.git"
-go run ./cmd/cifrarium -command=provider-health \
+go run ./cmd/cifrarium provider health \
   -provider-dir "$CIFRARIUM_PROVIDER_DIR" \
   -provider-remote "$CIFRARIUM_PROVIDER_REMOTE" \
   -verify-private
@@ -121,7 +121,7 @@ verification. The first upload is therefore an explicit operator action after
 privacy, remote-access, and recovery checks are green; the daemon repeats the
 privacy check at the upload boundary.
 
-`provider-health` is read-only and expects this checkout to already exist. It
+`provider health` is read-only and expects this checkout to already exist. It
 does not run `git init`, create directories, add a remote, or repair provider
 state. Run the local setup commands above separately before probing health.
 

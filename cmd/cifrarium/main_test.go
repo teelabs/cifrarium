@@ -104,6 +104,88 @@ func TestShellQuoteProtectsProviderPaths(t *testing.T) {
 	}
 }
 
+func TestCanonicalCommandUsesNestedSubcommands(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+		rest []string
+	}{
+		{[]string{"doctor", "--format=json"}, "doctor", []string{"--format=json"}},
+		{[]string{"provider", "health", "--verify-private"}, "provider-health", []string{"--verify-private"}},
+		{[]string{"provider", "setup"}, "provider-setup", nil},
+		{[]string{"recovery", "shares"}, "recovery-shares", nil},
+		{[]string{"recovery", "import", "--recovery-share", "one"}, "recover", []string{"--recovery-share", "one"}},
+	}
+	for _, tc := range cases {
+		got, rest, err := canonicalCommand(tc.args)
+		if err != nil || got != tc.want || strings.Join(rest, "\x00") != strings.Join(tc.rest, "\x00") {
+			t.Fatalf("canonicalCommand(%v) = %q, %v, %v; want %q, %v", tc.args, got, rest, err, tc.want, tc.rest)
+		}
+	}
+}
+
+func TestCanonicalCommandRejectsLegacyFlag(t *testing.T) {
+	if _, _, err := canonicalCommand([]string{"-command=doctor"}); err == nil {
+		t.Fatal("legacy -command syntax was accepted")
+	}
+}
+
+func TestLoadProviderConfigIgnoresRecoveryShares(t *testing.T) {
+	home := t.TempDir()
+	configHome := filepath.Join(home, ".config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	path := filepath.Join(configHome, "cifrarium")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "daemon.env"), []byte("CIFRARIUM_PROVIDER_DIR=/provider\nCIFRARIUM_PROVIDER_REMOTE='https://github.com/o/r.git'\nCIFRARIUM_RECOVERY_SHARE_1='secret-looking-share'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadProviderConfig(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Dir != "/provider" || got.Remote != "https://github.com/o/r.git" {
+		t.Fatalf("provider config = %#v", got)
+	}
+}
+
+func TestWriteDaemonEnvPreservesUnrelatedValues(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	path := filepath.Join(home, ".config", "cifrarium")
+	if err := os.MkdirAll(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(path, "daemon.env")
+	if err := os.WriteFile(envPath, []byte("OTHER_SETTING=preserve\nCIFRARIUM_PROVIDER_DIR=/old\nCIFRARIUM_RECOVERY_SHARE_1=old\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeDaemonEnv(home, "/new/provider", "https://github.com/o/r.git", map[string]string{
+		"CIFRARIUM_RECOVERY_SHARE_1": "cifrarium-1:new",
+		"CIFRARIUM_RECOVERY_SHARE_2": "cifrarium-2:new",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"OTHER_SETTING=preserve", "CIFRARIUM_PROVIDER_DIR=/new/provider", "CIFRARIUM_PROVIDER_REMOTE=https://github.com/o/r.git", "CIFRARIUM_RECOVERY_SHARE_1=cifrarium-1:new", "CIFRARIUM_RECOVERY_SHARE_2=cifrarium-2:new"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("daemon.env missing %q: %s", want, text)
+		}
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("daemon.env mode = %v; want 0600", info.Mode().Perm())
+	}
+}
+
 func TestSetupCancellationHappensBeforeCommitChoices(t *testing.T) {
 	called := 0
 	_, err := collectSetupChoices(func(prompt string) (bool, error) {
@@ -150,7 +232,7 @@ func TestSystemdUsesConfiguredRootResolver(t *testing.T) {
 	if strings.Contains(text, "-root=") {
 		t.Fatalf("systemd unit hardcodes a root: %s", text)
 	}
-	if !strings.Contains(text, "ExecStart=%h/.local/bin/cifrarium -command=daemon") {
+	if !strings.Contains(text, "ExecStart=%h/.local/bin/cifrarium daemon") {
 		t.Fatalf("systemd unit does not use the configured-root daemon command: %s", text)
 	}
 	if !strings.Contains(text, "Environment=XDG_CONFIG_HOME=%h/.config") {
@@ -159,7 +241,7 @@ func TestSystemdUsesConfiguredRootResolver(t *testing.T) {
 }
 
 func TestNonInteractiveRejectsStatefulCommands(t *testing.T) {
-	for _, command := range []string{"provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon"} {
+	for _, command := range []string{"provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon"} {
 		if !commandMutatesOrHandlesSecrets(command) {
 			t.Fatalf("%s was not classified as stateful", command)
 		}

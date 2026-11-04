@@ -43,13 +43,17 @@ Check the current interface before copying examples:
 go run ./cmd/cifrarium -h
 ~~~
 
-The main commands are status, doctor, snapshot, recovery-shares, recover,
-migrate-catalog, provider-health, and daemon.
+The main commands are `status`, `doctor`, `snapshot`, `daemon`,
+`migrate-catalog`, `provider setup`, `provider health`, `recovery shares`, and
+`recovery import`. Options follow the subcommand, for example
+`cifrarium provider health --verify-private`.
 
 Upgrading Cifrarium preserves the configured vault root, keyring, snapshot
 history, provider checkout, and existing recovery shares. Setup is idempotent:
 an upgrade or retry reuses existing key material and does not print new shares.
-Use `recovery-shares` only when you explicitly need a new set.
+Use `recovery shares` only when you explicitly need a new set. Provider setup
+can preserve existing shares, import a protected pair, or generate a new set
+only after explicit confirmation.
 
 The root configuration is non-secret and per-user:
 `${XDG_CONFIG_HOME:-$HOME/.config}/cifrarium/config.json`. It contains only
@@ -67,9 +71,9 @@ Use this path to test the vault or keep snapshots only on the current machine.
 
 ~~~sh
 go run ./cmd/cifrarium setup --root "$HOME/.local/share/cifrarium"
-go run ./cmd/cifrarium -command=status
-go run ./cmd/cifrarium -command=snapshot
-go run ./cmd/cifrarium -command=status
+go run ./cmd/cifrarium status
+go run ./cmd/cifrarium snapshot
+go run ./cmd/cifrarium status
 ~~~
 
 Success criteria:
@@ -90,7 +94,7 @@ again. The wizard does not upload anything while this correction is pending.
 Generate shares after the first vault is working:
 
 ~~~sh
-go run ./cmd/cifrarium -command=recovery-shares
+go run ./cmd/cifrarium recovery shares
 ~~~
 
 The output has three lines like:
@@ -114,8 +118,21 @@ The command does not print the operational or signing private keys.
 ## 5. Private GitHub provider
 
 The provider has two layers: a local checkout and a remote repository. The
-local checkout contains encrypted objects only. The complete procedure is in
-the GitHub provider provisioning runbook.
+local checkout contains encrypted objects only. The guided path is:
+
+~~~sh
+cifrarium provider setup
+~~~
+
+The wizard can keep the provider local-only, validate an existing private
+GitHub repository, or create a new private repository through the operator's
+authenticated `gh` CLI. It writes `daemon.env` atomically with mode `0600`,
+preserves unrelated variables, and never stores or asks for a GitHub token.
+It also preserves existing shares, or offers a protected-file import or
+explicit share generation. No snapshot or upload occurs during setup.
+
+For environments where the wizard cannot be used, the complete manual
+procedure is in the GitHub provider provisioning runbook.
 
 Short setup:
 
@@ -126,7 +143,9 @@ git -C "$HOME/.local/share/cifrarium-provider" init --initial-branch=main
 gh auth status
 ~~~
 
-Create an operator-managed environment file:
+The wizard creates the operator-managed environment file. Its shape is shown
+below only to explain what it manages; do not paste real shares into tickets,
+logs, or prompts:
 
 ~~~sh
 mkdir -p "$HOME/.config/cifrarium"
@@ -150,7 +169,7 @@ Check access and privacy before enabling uploads:
 PROVIDER_DIR="$HOME/.local/share/cifrarium-provider"
 PROVIDER_REMOTE="https://github.com/OWNER/REPO.git"
 
-go run ./cmd/cifrarium -command=provider-health \
+go run ./cmd/cifrarium provider health \
   -provider-dir "$PROVIDER_DIR" \
   -provider-remote "$PROVIDER_REMOTE" \
   -verify-private
@@ -190,7 +209,7 @@ The daemon:
 - exposes a local MCP socket with mode 0600.
 
 A running process is not proof that an upload succeeded. Check logs, queue
-state, and provider-health.
+state, and provider health.
 
 ## 7. Common failures and response
 
@@ -200,7 +219,7 @@ To see the state of the local vault, keyring, daemon, MCP socket, adapters, and
 provider in one report, run:
 
 ~~~sh
-cifrarium -command=doctor
+cifrarium doctor
 ~~~
 
 The command is read-only. It does not initialize missing keyring material,
@@ -216,7 +235,7 @@ Symptoms include GitHub access errors, timeouts, or pending items.
 PROVIDER_DIR="$HOME/.local/share/cifrarium-provider"
 PROVIDER_REMOTE="https://github.com/OWNER/REPO.git"
 
-go run ./cmd/cifrarium -command=provider-health \
+go run ./cmd/cifrarium provider health \
   -provider-dir "$PROVIDER_DIR" \
   -provider-remote "$PROVIDER_REMOTE" \
   -verify-private
@@ -238,10 +257,10 @@ actually lost or on a new machine.
 Copy the encrypted vault if it is available and provide two distinct shares:
 
 ~~~sh
-go run ./cmd/cifrarium -command=recover \
+go run ./cmd/cifrarium recovery import \
   -recovery-share 'cifrarium-1:VALUE_1' \
   -recovery-share 'cifrarium-2:VALUE_2'
-go run ./cmd/cifrarium -command=status
+go run ./cmd/cifrarium status
 ~~~
 
 Recovery verifies the head and signed chain before replacing the keyring. A
@@ -254,8 +273,8 @@ Run migration only when the vault came from a version that used the legacy
 catalog format:
 
 ~~~sh
-go run ./cmd/cifrarium -command=migrate-catalog
-go run ./cmd/cifrarium -command=status
+go run ./cmd/cifrarium migrate-catalog
+go run ./cmd/cifrarium status
 ~~~
 
 Back up the directory before migration. “Already uses encrypted metadata”
@@ -282,7 +301,7 @@ restore.plan is planning only. Agents must state this clearly.
 | Scenario | Recommended path | Success evidence |
 | --- | --- | --- |
 | Local evaluation | status -> snapshot | Snapshot created and status remains healthy |
-| Recurring private backup | provider-health -> daemon | Clean logs and provider updated |
+| Recurring private backup | provider health -> daemon | Clean logs and provider updated |
 | New laptop | Copy vault -> two shares -> recover -> status | Chain verified and keyring imported |
 | Offline period | Keep daemon running | Encrypted queue persists and later uploads |
 | Repository became public | Stop uploads, check GitHub, fix policy | Provider is private before resuming |

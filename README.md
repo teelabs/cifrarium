@@ -60,7 +60,7 @@ side effects:
 
 ~~~sh
 curl -fsSL https://usecifrarium.pages.dev/install.sh \
-  | bash -s -- --version 0.8.2 --non-interactive
+  | bash -s -- --version 0.9.0 --non-interactive
 ~~~
 
 The daemon is never enabled by non-interactive installation.
@@ -76,7 +76,7 @@ Equivalent `wget` form:
 ~~~sh
 bash -o pipefail -c \
   'wget -qO- https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1"' \
-  bash 0.8.2
+  bash 0.9.0
 ~~~
 
 The stream form is convenient, but it does not let you inspect the installer
@@ -95,7 +95,7 @@ cosign verify-blob --bundle /tmp/cifrarium-install.sh.bundle \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   /tmp/cifrarium-install.sh
 chmod 0755 /tmp/cifrarium-install.sh
-/tmp/cifrarium-install.sh --version 0.8.2 --non-interactive
+/tmp/cifrarium-install.sh --version 0.9.0 --non-interactive
 ~~~
 
 Both forms refuse invalid metadata, signatures, checksums, architectures, or
@@ -114,7 +114,7 @@ Use a different absolute, user-owned prefix in the stream form when required:
 ~~~sh
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --version "$1" --prefix "$2"' \
-  bash 0.8.2 "$HOME/opt/cifrarium"
+  bash 0.9.0 "$HOME/opt/cifrarium"
 "$HOME/opt/cifrarium/bin/cifrarium" --version
 ~~~
 
@@ -129,7 +129,7 @@ bash -o pipefail -c \
   bash 0.4.1
 bash -o pipefail -c \
   'curl --fail --silent --show-error --location https://usecifrarium.pages.dev/install.sh | bash -s -- --rollback "$1"' \
-  bash 0.8.2
+  bash 0.9.0
 ~~~
 
 Rollback selects a version already staged under the prefix; it does not fetch
@@ -153,10 +153,10 @@ Configure the vault root once. Normal commands then resolve it automatically:
 ~~~sh
 ROOT="$HOME/.local/share/cifrarium"
 cifrarium setup --root "$ROOT"
-cifrarium -command=status
-cifrarium -command=status -format=json
-cifrarium -command=snapshot
-cifrarium -command=status
+cifrarium status
+cifrarium status -format=json
+cifrarium snapshot
+cifrarium status
 ~~~
 
 The normal `status` output is written for humans. Use `-format=json` when a
@@ -198,7 +198,7 @@ Use `doctor` for one read-only report of the vault, keyring, daemon, local MCP
 socket, adapters, and optional GitHub provider:
 
 ~~~sh
-cifrarium -command=doctor
+cifrarium doctor
 ~~~
 
 The report does not create keys, a vault, a provider checkout, a socket, or a
@@ -211,7 +211,7 @@ problem and returns exit code 1.
 For scripts and agents, request structured output and preserve the exit code:
 
 ~~~sh
-cifrarium -command=doctor -format=json
+cifrarium doctor -format=json
 ~~~
 
 The remote path belongs to the provider. Adapters report only their local
@@ -225,7 +225,7 @@ ticket, screenshot, shell history, or chat transcript:
 
 ~~~sh
 umask 077
-cifrarium -command=recovery-shares
+cifrarium recovery shares
 ~~~
 
 The command prints three complete `label:value` lines, for example:
@@ -310,7 +310,7 @@ Check access and privacy before any upload:
 PROVIDER_DIR="$HOME/.local/share/cifrarium-provider"
 PROVIDER_REMOTE="https://github.com/OWNER/REPO.git"
 
-cifrarium -command=provider-health \
+cifrarium provider health \
   -provider-dir "$PROVIDER_DIR" \
   -provider-remote "$PROVIDER_REMOTE" \
   -verify-private
@@ -328,10 +328,10 @@ is in the [GitHub provider provisioning runbook](docs/runbooks/github-provider-p
 
 Before activation, confirm all of the following:
 
-- `cifrarium -command=status` succeeds;
+- `cifrarium status` succeeds;
 - two distinct recovery shares are available in the protected environment
   file;
-- `provider-health -verify-private` reports success;
+- `provider health --verify-private` reports success;
 - the provider checkout and remote URL are the intended ones;
 - no concurrent migration, restore, or snapshot operation is running.
 
@@ -362,10 +362,10 @@ available, and provide two trusted distinct shares through a protected local
 input path:
 
 ~~~sh
-cifrarium -command=recover \
+cifrarium recovery import \
   -recovery-share "$SHARE_1_FROM_PROTECTED_INPUT" \
   -recovery-share "$SHARE_2_FROM_PROTECTED_INPUT"
-cifrarium -command=status
+cifrarium status
 ~~~
 
 Recovery verifies the existing signed catalog and head before replacing the
@@ -378,8 +378,8 @@ force an import. A historical or inconsistent head must be rejected.
 | Symptom | Safe response |
 | --- | --- |
 | Installer checksum, signature, manifest, archive, or platform failure | Stop. Do not disable TLS or Cosign, substitute a different script, or retry with an unreviewed version. |
-| `keyring unavailable` | Preserve the vault. Repair the user keyring/session and rerun `status`; use `recover` only when keys were actually lost. |
-| Provider access timeout or authentication failure | Run `provider-health`, inspect Git credentials, and preserve `pending.queue`; never embed a token in a URL. |
+| `keyring unavailable` | Preserve the vault. Repair the user keyring/session and rerun `status`; use `recovery import` only when keys were actually lost. |
+| Provider access timeout or authentication failure | Run `provider health`, inspect Git credentials, and preserve `pending.queue`; never embed a token in a URL. |
 | Repository reported public | Stop uploads, fix GitHub visibility/policy, rerun the privacy check, and retain existing encrypted history. |
 | Pending queue exists | Treat it as durable encrypted work. Do not delete it to make the daemon appear healthy. |
 | Queue or catalog persistence failure | Stop or leave the daemon stopped and preserve the vault, queue, and head for investigation. |
@@ -401,7 +401,7 @@ before using the CLI, daemon, recovery flow, provider, or MCP.
 
 For every operation, distinguish:
 
-- read-only diagnostics: `status`, `provider-health`, and MCP plans;
+- read-only diagnostics: `status`, `provider health`, and MCP plans;
 - local mutations: `snapshot`, `migrate-catalog`, and recovery import;
 - persistent/remote effects: daemon activation and provider upload;
 - destructive effects: uninstalling, deleting queue/history, or replacing
