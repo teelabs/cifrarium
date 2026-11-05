@@ -143,12 +143,24 @@ func runDaemonRefresh(root string) (daemonRefreshReadiness, error) {
 	socket := filepath.Join(root, "cifrarium.sock")
 	controlSocket := filepath.Join(root, "control.sock")
 	deadline := time.Now().Add(daemonRefreshTimeout)
+	systemdStateUnconfirmed := false
 	for time.Now().Before(deadline) {
 		if err := runDaemonRefreshSystemctl("is-active", "--quiet", "cifrarium.service"); err != nil {
-			state, _ := daemonRefreshSystemdStateProbe()
-			if state.ActiveState != "activating" && state.ActiveState != "reloading" && state.ActiveState != "active" {
-				return daemonRefreshReadiness{}, daemonRefreshServiceExitedError(state)
+			state, stateErr := daemonRefreshSystemdStateProbe()
+			if stateErr != nil {
+				systemdStateUnconfirmed = true
+			} else {
+				switch state.ActiveState {
+				case "failed", "inactive":
+					return daemonRefreshReadiness{}, daemonRefreshServiceExitedError(state)
+				case "active", "activating", "reloading":
+					systemdStateUnconfirmed = false
+				default:
+					systemdStateUnconfirmed = true
+				}
 			}
+		} else {
+			systemdStateUnconfirmed = false
 		}
 		if err := daemonRefreshProbe(socket); err == nil {
 			readiness, err := daemonRefreshBackendProbe(controlSocket)
@@ -157,6 +169,9 @@ func runDaemonRefresh(root string) (daemonRefreshReadiness, error) {
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if systemdStateUnconfirmed {
+		return daemonRefreshReadiness{}, fmt.Errorf("daemon did not become ready and systemd could not confirm cifrarium.service state. Check `systemctl --user status cifrarium.service`, resolve any reported manager or startup issue, then run `cifrarium daemon refresh` again.")
 	}
 	return daemonRefreshReadiness{}, fmt.Errorf("daemon service is active but MCP did not become ready")
 }

@@ -4,7 +4,7 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
-## [0.10.3] - 2026-11-04
+## [0.10.3] - 2026-11-05
 
 ### Added
 
@@ -22,6 +22,8 @@ All notable changes to Cifrarium will be documented here.
   XDG configuration root used by the CLI and installer.
 - Detect a Cifrarium systemd service exit during readiness polling and report
   sanitized state, result, exit status, and a safe recovery step.
+- Retry readiness when systemd state cannot be observed, and report an
+  unconfirmed state separately from a confirmed service exit.
 
 ## [0.10.2] - 2026-11-04
 

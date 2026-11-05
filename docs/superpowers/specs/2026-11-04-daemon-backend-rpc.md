@@ -51,6 +51,9 @@ recovery/provider setup is pending, refresh exits successfully and reports both
 states with a safe next step. It claims full readiness only when both are ready.
 If systemd reports that the service exited before readiness, refresh returns a
 sanitized systemd state/result/exit-status diagnostic and a safe next step.
+If systemd state cannot be read or sanitized, refresh keeps waiting and reports
+that the service state could not be confirmed instead of claiming that it
+exited.
 
 The Linux service uses systemd user lifecycle. macOS launchd, Windows service
 or user-process lifecycle, Unix sockets on macOS, and Windows Named Pipes are

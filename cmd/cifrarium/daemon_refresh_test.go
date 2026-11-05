@@ -132,3 +132,52 @@ func TestDaemonAlreadyRunningUsesManagedEndpoints(t *testing.T) {
 		t.Fatal("daemonManagedServiceActive() = false; want active managed service")
 	}
 }
+
+func TestRunDaemonRefreshDoesNotReportExitWhenSystemdStateIsUnavailable(t *testing.T) {
+	oldSystemctl := runDaemonRefreshSystemctl
+	oldMCPProbe := daemonRefreshProbe
+	oldBackendProbe := daemonRefreshBackendProbe
+	oldStateProbe := daemonRefreshSystemdStateProbe
+	activeChecks := 0
+	mcpChecks := 0
+	runDaemonRefreshSystemctl = func(args ...string) error {
+		if len(args) > 0 && args[0] == "is-active" {
+			activeChecks++
+			if activeChecks == 1 {
+				return errors.New("manager temporarily unavailable")
+			}
+			return nil
+		}
+		return nil
+	}
+	daemonRefreshProbe = func(string) error {
+		mcpChecks++
+		if mcpChecks == 1 {
+			return errors.New("socket not ready yet")
+		}
+		return nil
+	}
+	daemonRefreshBackendProbe = func(string) (daemonRefreshReadiness, error) {
+		return daemonRefreshReadiness{Backend: "ready", MCP: "ready"}, nil
+	}
+	daemonRefreshSystemdStateProbe = func() (daemonRefreshServiceState, error) {
+		return daemonRefreshServiceState{}, errors.New("manager temporarily unavailable")
+	}
+	defer func() {
+		runDaemonRefreshSystemctl = oldSystemctl
+		daemonRefreshProbe = oldMCPProbe
+		daemonRefreshBackendProbe = oldBackendProbe
+		daemonRefreshSystemdStateProbe = oldStateProbe
+	}()
+
+	readiness, err := runDaemonRefresh(t.TempDir())
+	if err != nil {
+		t.Fatalf("refresh failed after systemd observation recovered: %v", err)
+	}
+	if readiness.Backend != "ready" || readiness.MCP != "ready" {
+		t.Fatalf("readiness = %#v; want ready endpoints", readiness)
+	}
+	if activeChecks != 2 || mcpChecks != 2 {
+		t.Fatalf("is-active checks = %d and MCP checks = %d; want retry after unconfirmed systemd state", activeChecks, mcpChecks)
+	}
+}
