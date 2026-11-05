@@ -390,6 +390,15 @@ func TestInspectAdaptersDoesNotReadConfigurationContents(t *testing.T) {
 
 func TestRunDoctorDoesNotCreateVaultOrKeyringState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "vault")
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	systemctl := filepath.Join(bin, "systemctl")
+	if err := os.WriteFile(systemctl, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var output bytes.Buffer
 	originalLoadDoctorKeys := loadDoctorKeys
 	originalLoadDoctorKeysForRoot := loadDoctorKeysForRoot

@@ -4,6 +4,12 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added an isolated lifecycle audit harness for installer state preservation,
+  local snapshots, encrypted queue recovery, provider resume, and daemon
+  readiness diagnostics.
+
 ## [0.10.2] - 2026-11-04
 
 ### Fixed

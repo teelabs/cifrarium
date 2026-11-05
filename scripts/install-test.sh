@@ -240,12 +240,14 @@ PROVIDER_DIR="$TEST_ROOT/provider"
 mkdir -p "$PROVIDER_DIR/.git" "$HOME_DIR/.local/share/cifrarium/snapshots"
 printf 'history sentinel\n' >"$HOME_DIR/.local/share/cifrarium/snapshots/history"
 printf 'keyring sentinel\n' >"$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+printf 'encrypted queue sentinel\n' >"$HOME_DIR/.local/share/cifrarium/pending.queue"
 DAEMON_ENV="$HOME_DIR/.config/cifrarium/daemon.env"
 mkdir -p "$(dirname "$DAEMON_ENV")"
 printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\nCIFRARIUM_RECOVERY_SHARE_1=placeholder-one\nCIFRARIUM_RECOVERY_SHARE_2=placeholder-two\n' "$PROVIDER_DIR" >"$DAEMON_ENV"
 chmod 0600 "$DAEMON_ENV"
 cp "$HOME_DIR/.local/share/cifrarium/snapshots/history" "$TEST_ROOT/history.before"
 cp "$HOME_DIR/.local/share/cifrarium/keyring-sentinel" "$TEST_ROOT/keyring.before"
+cp "$HOME_DIR/.local/share/cifrarium/pending.queue" "$TEST_ROOT/pending.before"
 
 "$ROOT_DIR/scripts/build-release.sh" --version 0.8.3 --out-dir "$TEST_ROOT/release-0.8.3"
 cp "$TEST_ROOT/release-0.8.3"/* "$PUBLIC_DIR/"
@@ -260,6 +262,7 @@ grep -Fq 'installation mode: upgrade' "$upgrade_output"
 ! grep -Fq 'placeholder-two' "$upgrade_output"
 cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
 cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 cmp -s "$DAEMON_ENV" <(printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\nCIFRARIUM_RECOVERY_SHARE_1=placeholder-one\nCIFRARIUM_RECOVERY_SHARE_2=placeholder-two\n' "$PROVIDER_DIR")
 
 mv "$PROVIDER_DIR" "$PROVIDER_DIR.missing"
@@ -271,6 +274,7 @@ if "$ROOT_DIR/scripts/install.sh" --version 0.8.4 --prefix "$PREFIX" \
   echo 'missing provider checkout unexpectedly upgraded' >&2; exit 1
 fi
 [[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 mv "$PROVIDER_DIR.missing" "$PROVIDER_DIR"
 
 export CIFRARIUM_TEST_REMOTE_FAIL=1
@@ -282,6 +286,7 @@ if "$ROOT_DIR/scripts/install.sh" --version 0.8.5 --prefix "$PREFIX" \
   echo 'inaccessible provider remote unexpectedly upgraded' >&2; exit 1
 fi
 [[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 unset CIFRARIUM_TEST_REMOTE_FAIL
 
 export CIFRARIUM_TEST_PUBLIC_REPO=1
@@ -293,6 +298,7 @@ if "$ROOT_DIR/scripts/install.sh" --version 0.8.6 --prefix "$PREFIX" \
   echo 'public provider repository unexpectedly upgraded' >&2; exit 1
 fi
 [[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 unset CIFRARIUM_TEST_PUBLIC_REPO
 
 cp "$DAEMON_ENV" "$TEST_ROOT/daemon.env.valid"
@@ -339,6 +345,7 @@ if "$ROOT_DIR/scripts/install.sh" --version 0.8.7 --prefix "$PREFIX" \
   echo 'migration-required release unexpectedly upgraded' >&2; exit 1
 fi
 [[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 [[ ! -e "$MIGRATION_MARKER" ]]
 grep -Fqi 'migration' "$TEST_ROOT/migration-pending.txt"
 
@@ -378,6 +385,7 @@ grep -Fq 'enable --now cifrarium.service' "$SYSTEMCTL_LOG"
 
 "$ROOT_DIR/scripts/install.sh" --rollback "$VERSION" --prefix "$PREFIX"
 [[ "$("$PREFIX/bin/cifrarium" -version)" == "$VERSION" ]]
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 
 "$ROOT_DIR/scripts/build-release.sh" --version 0.4.2 --out-dir "$TEST_ROOT/release-0.4.2"
 cp "$TEST_ROOT/release-0.4.2"/* "$PUBLIC_DIR/"
