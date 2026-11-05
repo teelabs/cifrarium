@@ -284,6 +284,14 @@ by answering `n` at `Retry?`, or stop a systemd-managed daemon with
 `systemctl --user stop cifrarium.service` before running `cifrarium snapshot`.
 A successful local snapshot does not prove that the daemon backend is ready.
 
+When initial daemon work fails, diagnostics identify whether Cifrarium was
+draining pending uploads, uploading a new capture, or unable to retain a failed
+upload because the queue is full. A full-queue message means the new local
+snapshot was captured but was not queued and its provider upload was not
+confirmed. Keep the daemon stopped, do not edit or delete `pending.queue`, and
+check `cifrarium status -format=json` plus `cifrarium provider health
+--verify-private` before retrying.
+
 A running process is not proof that an upload succeeded. Check logs, queue
 state, and provider health.
 

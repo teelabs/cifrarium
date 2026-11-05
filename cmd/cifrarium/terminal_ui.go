@@ -262,14 +262,38 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 func renderDaemonFailure(w io.Writer, home string, err error) {
 	ui := newTerminalUI(w)
 	reason := daemonUploadFailureReasonFor(err)
+	var enqueueFailure *daemon.QueueEnqueueFailure
+	hasEnqueueFailure := errors.As(err, &enqueueFailure)
+	var uploadFailure *daemon.UploadFailure
+	hasUploadFailure := errors.As(err, &uploadFailure)
+	var persistenceFailure *daemon.PersistenceError
+	hasPersistenceFailure := errors.As(err, &persistenceFailure)
+	var recoveryQueueFailure *daemon.RecoveryQueueFailure
+	hasRecoveryQueueFailure := errors.As(err, &recoveryQueueFailure)
 	var recoveryFailure *daemon.RecoverySnapshotError
 	hasRecoveryFailure := errors.As(err, &recoveryFailure)
 	var captureErr *daemon.CaptureError
 	isCaptureFailure := errors.As(err, &captureErr)
 	ui.Header("Daemon needs attention")
 	ui.Section("What happened")
-	if reason != daemonUploadNone && hasRecoveryFailure {
+	if hasEnqueueFailure && errors.Is(enqueueFailure.Enqueue, daemon.ErrQueueFull) {
+		ui.Failure("Upload of the new snapshot was not confirmed, and it could not be queued because the pending queue is full.")
+	} else if hasEnqueueFailure {
+		ui.Failure("Upload of the new snapshot was not confirmed, and it could not be retained in the pending queue.")
+	} else if hasRecoveryQueueFailure && errors.Is(recoveryQueueFailure.Enqueue, daemon.ErrQueueFull) {
+		ui.Failure("Initial work failed, and the recovery snapshot could not be queued because the pending queue is full.")
+	} else if hasRecoveryQueueFailure {
+		ui.Failure("Initial work failed, and the recovery snapshot could not be retained in the pending queue.")
+	} else if hasPersistenceFailure && persistenceFailure.Stage == daemon.PersistenceStagePendingDrain {
+		ui.Failure("A pending upload may have completed, but removing it from the queue could not be persisted.")
+	} else if hasPersistenceFailure && persistenceFailure.Stage == daemon.PersistenceStageSnapshot {
+		ui.Failure("Upload of the new snapshot was not confirmed, and the pending queue update could not be persisted.")
+	} else if hasPersistenceFailure {
+		ui.Failure("A recovery queue update could not be persisted.")
+	} else if reason != daemonUploadNone && hasRecoveryFailure {
 		ui.Failure("The daemon could not confirm a pending upload or complete its recovery snapshot.")
+	} else if hasUploadFailure && uploadFailure.Stage == daemon.UploadStageSnapshot {
+		ui.Failure("The daemon could not confirm upload of the newly captured snapshot.")
 	} else if reason != daemonUploadNone {
 		ui.Failure("The daemon could not upload pending encrypted work.")
 	} else if hasRecoveryFailure {
@@ -280,8 +304,22 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 		ui.Failure("The daemon could not complete its initial work.")
 	}
 	ui.Section("Why it matters")
-	if reason != daemonUploadNone && hasRecoveryFailure {
+	if hasEnqueueFailure && errors.Is(enqueueFailure.Enqueue, daemon.ErrQueueFull) {
+		ui.Text(colorSecondary, "The local snapshot was captured, but upload was not confirmed and this new item was not queued. Existing pending.queue entries remain intact.")
+	} else if hasEnqueueFailure {
+		ui.Text(colorSecondary, "The local snapshot was captured, but upload was not confirmed and this new item could not be queued. Existing pending.queue entries remain intact.")
+	} else if hasRecoveryQueueFailure {
+		ui.Text(colorSecondary, "A local recovery snapshot was captured but not queued; existing pending.queue entries remain intact. The initial failure is not safe to display here.")
+	} else if hasPersistenceFailure && persistenceFailure.Stage == daemon.PersistenceStagePendingDrain {
+		ui.Text(colorSecondary, "The queue entry remains available for retry; the provider may already have accepted it, so a later retry may repeat the same encrypted snapshot.")
+	} else if hasPersistenceFailure && persistenceFailure.Stage == daemon.PersistenceStageSnapshot {
+		ui.Text(colorSecondary, "The local snapshot was captured, but its upload was not confirmed and its new pending queue entry may not have reached disk.")
+	} else if hasPersistenceFailure {
+		ui.Text(colorSecondary, "A recovery snapshot queue update was attempted, but its persisted state could not be confirmed.")
+	} else if reason != daemonUploadNone && hasRecoveryFailure {
 		ui.Text(colorSecondary, "The encrypted pending queue was preserved because the provider upload was not confirmed. The follow-up recovery snapshot also failed.")
+	} else if hasUploadFailure && uploadFailure.Stage == daemon.UploadStageSnapshot {
+		ui.Text(colorSecondary, "The local snapshot was captured and retained in pending.queue, but upload was not confirmed. Existing vault history was preserved.")
 	} else if reason != daemonUploadNone {
 		ui.Text(colorSecondary, "Cifrarium preserved the encrypted pending queue and stopped before remote upload. Existing vault history was preserved.")
 	} else if hasRecoveryFailure {
@@ -292,7 +330,22 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 		ui.Text(colorSecondary, "Cifrarium could not confirm a completed snapshot. The underlying error is not safe to display in this message.")
 	}
 	ui.Section("How to fix it")
-	if reason != daemonUploadNone && hasRecoveryFailure {
+	if hasPersistenceFailure {
+		ui.Text(colorSecondary, "Preserve the vault and pending.queue. Inspect local status and provider health before any retry; do not edit the queue manually.")
+		renderStopDaemonForDiagnostics(ui, w)
+	} else if hasEnqueueFailure {
+		ui.Text(colorSecondary, "Inspect the pending count and resolve the upload prerequisite before allowing retries; do not delete or edit pending.queue.")
+		renderStopDaemonForDiagnostics(ui, w)
+		renderDaemonUploadGuidance(ui, reason)
+	} else if hasRecoveryQueueFailure {
+		ui.Text(colorSecondary, "Keep the daemon stopped and preserve the vault and pending.queue. Inspect local state before retrying; do not edit the queue manually.")
+		renderStopDaemonForDiagnostics(ui, w)
+		if reason == daemonUploadNone {
+			ui.Command("cifrarium doctor -format=json")
+		} else {
+			renderDaemonUploadGuidance(ui, reason)
+		}
+	} else if reason != daemonUploadNone && hasRecoveryFailure {
 		renderDaemonUploadGuidance(ui, reason)
 		renderRecoverySnapshotGuidance(ui, home, recoveryFailure.Recovery)
 	} else if isCaptureFailure && captureErr.Stage == daemon.CaptureStageAdapters {
@@ -321,7 +374,11 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 		renderLocalSnapshotRecovery(ui, w, true)
 	}
 	ui.Section("What to do next")
-	if reason != daemonUploadNone && hasRecoveryFailure {
+	if hasPersistenceFailure || hasRecoveryQueueFailure {
+		ui.Text(colorWarning, "Do not delete or edit pending.queue. Do not restart the daemon until local state and provider health have been checked.")
+	} else if hasEnqueueFailure {
+		ui.Text(colorWarning, "Do not delete pending.queue. Resolve the provider or queue issue first; the new local snapshot was not retained for upload.")
+	} else if reason != daemonUploadNone && hasRecoveryFailure {
 		ui.Text(colorWarning, "Preserve pending.queue. Keep the daemon stopped until a local snapshot succeeds; resolve the provider issue before allowing queued uploads to retry.")
 	} else if reason != daemonUploadNone {
 		ui.Text(colorWarning, "Do not delete pending.queue or put recovery material in shell history. Use another console for the corrective action, then return here and press Enter or wait for the retry.")
@@ -332,6 +389,17 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 	} else {
 		ui.Text(colorWarning, "Keep the daemon stopped until `cifrarium doctor -format=json` reports the backend state and a local snapshot succeeds.")
 	}
+}
+
+func renderStopDaemonForDiagnostics(ui terminalUI, w io.Writer) {
+	if writerIsTerminal(w) {
+		ui.Text(colorSecondary, "For a foreground daemon already retrying, press Ctrl+C to stop it, or answer `n` at the next Retry? prompt. For a systemd-managed daemon, stop the service before these read-only checks.")
+		ui.Command("cifrarium status -format=json")
+		ui.Command("cifrarium provider health --verify-private")
+		return
+	}
+	ui.Text(colorSecondary, "Stop the systemd-managed daemon before running these read-only checks. For a foreground daemon, answer `n` at Retry? first.")
+	ui.CommandBlock("systemctl --user stop cifrarium.service\ncifrarium status -format=json\ncifrarium provider health --verify-private")
 }
 
 func renderLocalSnapshotRecovery(ui terminalUI, w io.Writer, inspectDoctor bool) {
@@ -425,12 +493,23 @@ const (
 	daemonUploadPrivacy
 	daemonUploadProvider
 	daemonUploadAccess
+	daemonUploadUnknown
 )
 
 func daemonUploadFailureReasonFor(err error) daemonUploadFailureReason {
+	if err == nil {
+		return daemonUploadNone
+	}
 	var recoveryFailure *daemon.RecoverySnapshotError
 	if errors.As(err, &recoveryFailure) {
 		return daemonUploadFailureReasonFor(recoveryFailure.Primary)
+	}
+	var uploadFailure *daemon.UploadFailure
+	if errors.As(err, &uploadFailure) {
+		if reason := daemonUploadFailureReasonFor(uploadFailure.Err); reason != daemonUploadNone {
+			return reason
+		}
+		return daemonUploadUnknown
 	}
 	var captureFailure interface{ CaptureFailure() }
 	if errors.As(err, &captureFailure) {
@@ -453,6 +532,9 @@ func daemonUploadFailureReasonFor(err error) daemonUploadFailureReason {
 
 func renderDaemonUploadGuidance(ui terminalUI, reason daemonUploadFailureReason) {
 	switch reason {
+	case daemonUploadUnknown:
+		ui.Text(colorSecondary, "The upload could not be classified safely. Check backend and provider health; do not change recovery configuration or edit pending.queue based on this message.")
+		ui.CommandBlock("cifrarium doctor -format=json\ncifrarium provider health --verify-private")
 	case daemonUploadRecovery:
 		ui.Text(colorSecondary, "The pending snapshots need protected recovery verification for the active vault before remote upload can continue.")
 		ui.CommandBlock("cifrarium provider setup\ncifrarium doctor")
