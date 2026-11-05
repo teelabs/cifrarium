@@ -276,6 +276,105 @@ cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sen
 cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 cmp -s "$DAEMON_ENV" <(printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\nCIFRARIUM_RECOVERY_SHARE_1=placeholder-one\nCIFRARIUM_RECOVERY_SHARE_2=placeholder-two\n' "$PROVIDER_DIR")
 
+# A non-zero doctor exit caused by an unrelated daemon problem must not block
+# an upgrade when its JSON proves that configuration and the vault are ready.
+CONFIGURED_ROOT="$HOME_DIR/.local/share/cifrarium"
+mkdir -p "$CONFIGURED_ROOT"
+CONFIG_FILE="$XDG_CONFIG_HOME/cifrarium/config.json"
+mkdir -p "$(dirname "$CONFIG_FILE")"
+printf '{"schema":1,"root":"%s"}\n' "$CONFIGURED_ROOT" >"$CONFIG_FILE"
+chmod 0600 "$CONFIG_FILE"
+cp "$CONFIG_FILE" "$TEST_ROOT/config.before"
+cp "$DAEMON_ENV" "$TEST_ROOT/daemon-env.before"
+ACTIVE_BINARY="$PREFIX/lib/cifrarium/versions/0.8.3/cifrarium"
+mv "$ACTIVE_BINARY" "$ACTIVE_BINARY.test-real"
+DOCTOR_REPORT="$TEST_ROOT/doctor-report.json"
+cat >"$ACTIVE_BINARY" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == doctor ]]; then
+  cat "${CIFRARIUM_TEST_DOCTOR_REPORT:?}"
+  exit "${CIFRARIUM_TEST_DOCTOR_EXIT:?}"
+fi
+exec "$(readlink -f "$0").test-real" "$@"
+EOF
+chmod 0755 "$ACTIVE_BINARY"
+export CIFRARIUM_TEST_DOCTOR_REPORT="$DOCTOR_REPORT"
+export CIFRARIUM_TEST_DOCTOR_EXIT=1
+cat >"$DOCTOR_REPORT" <<'EOF'
+{"configuration":{"state":"configured","severity":"healthy"},"overall":"problem","vault":{"state":"ready","severity":"healthy"},"daemon":{"state":"enabled-but-inactive","severity":"problem"}}
+EOF
+
+for scenario in vault-problem vault-not-ready configuration-problem malformed-json missing-json incomplete-json top-level-array wrong-field-types; do
+  case "$scenario" in
+    vault-problem)
+      printf '%s\n' '{"configuration":{"state":"configured","severity":"healthy"},"overall":"problem","vault":{"state":"keyring-unavailable","severity":"problem"}}' >"$DOCTOR_REPORT"
+      ;;
+    vault-not-ready)
+      printf '%s\n' '{"configuration":{"state":"configured","severity":"healthy"},"overall":"healthy","vault":{"state":"not-initialized","severity":"healthy"}}' >"$DOCTOR_REPORT"
+      ;;
+    configuration-problem)
+      printf '%s\n' '{"configuration":{"state":"problem","severity":"problem"},"overall":"problem","vault":{"state":"ready","severity":"healthy"}}' >"$DOCTOR_REPORT"
+      ;;
+    malformed-json)
+      printf '%s\n' '{not-json' >"$DOCTOR_REPORT"
+      ;;
+    missing-json)
+      : >"$DOCTOR_REPORT"
+      ;;
+    incomplete-json)
+      printf '%s\n' '{"overall":"healthy"}' >"$DOCTOR_REPORT"
+      ;;
+    top-level-array)
+      printf '%s\n' '[]' >"$DOCTOR_REPORT"
+      ;;
+    wrong-field-types)
+      printf '%s\n' '{"configuration":[],"vault":{"state":[],"severity":"healthy"}}' >"$DOCTOR_REPORT"
+      ;;
+  esac
+  if "$ROOT_DIR/scripts/install.sh" --version 0.8.36 --prefix "$PREFIX" \
+    --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/doctor-$scenario.txt" 2>&1; then
+    echo "doctor preflight unexpectedly accepted $scenario" >&2
+    exit 1
+  fi
+  grep -Fq 'The active version could not confirm that the configured root and keyring are healthy.' \
+    "$TEST_ROOT/doctor-$scenario.txt" || {
+    echo "doctor preflight did not reject $scenario using its report" >&2
+    cat "$TEST_ROOT/doctor-$scenario.txt" >&2
+    exit 1
+  }
+  [[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+  cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
+  cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
+  cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+  cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+  cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+done
+
+cat >"$DOCTOR_REPORT" <<'EOF'
+{"configuration":{"state":"configured","severity":"healthy"},"overall":"problem","vault":{"state":"ready","severity":"healthy"},"daemon":{"state":"enabled-but-inactive","severity":"problem"}}
+EOF
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.35 --out-dir "$TEST_ROOT/release-0.8.35"
+cp "$TEST_ROOT/release-0.8.35"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.35-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+upgrade_output="$TEST_ROOT/doctor-daemon-problem-upgrade.txt"
+if ! "$ROOT_DIR/scripts/install.sh" --version 0.8.35 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$upgrade_output" 2>&1; then
+  cat "$upgrade_output" >&2
+  exit 1
+fi
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.35 ]]
+cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
+cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
+cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+
+unset CIFRARIUM_TEST_DOCTOR_REPORT CIFRARIUM_TEST_DOCTOR_EXIT
+rm -f "$CONFIG_FILE"
+"$ROOT_DIR/scripts/install.sh" --rollback 0.8.3 --prefix "$PREFIX"
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+
 mv "$PROVIDER_DIR" "$PROVIDER_DIR.missing"
 "$ROOT_DIR/scripts/build-release.sh" --version 0.8.4 --out-dir "$TEST_ROOT/release-0.8.4"
 cp "$TEST_ROOT/release-0.8.4"/* "$PUBLIC_DIR/"
@@ -481,7 +580,7 @@ cat >"$ACTIVE_BINARY" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == doctor ]]; then
-  printf '{"overall":"healthy"}\n'
+  printf '{"configuration":{"state":"configured","severity":"healthy"},"overall":"healthy","vault":{"state":"ready","severity":"healthy"}}\n'
   exit 0
 fi
 exec "$(readlink -f "$0").test-real" "$@"

@@ -359,9 +359,31 @@ if data.get("schema") != 1 or not isinstance(root, str) or not root.startswith("
 if os.path.realpath(root) != root or not os.path.isdir(root):
     raise SystemExit("configured vault root is missing or not canonical")
 PY
-  if ! "$active_link" doctor -format=json >/dev/null 2>&1; then
-    die "Upgrade blocked\n\nWhat happened\nThe active version could not validate the configured root and keyring binding.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and repair the reported local state.\n\nWhat to do next\nKeep the active version in place and retry."
+  local doctor_report
+  doctor_report=$("$active_link" doctor -format=json 2>/dev/null) || true
+  if ! printf '%s' "$doctor_report" | python3 -c '
+import json
+import sys
+
+try:
+    report = json.load(sys.stdin)
+except (json.JSONDecodeError, UnicodeDecodeError):
+    raise SystemExit(1)
+
+configuration = report.get("configuration")
+vault = report.get("vault")
+if not isinstance(configuration, dict) or not isinstance(vault, dict):
+    raise SystemExit(1)
+if configuration.get("state") != "configured" or configuration.get("severity") != "healthy":
+    raise SystemExit(1)
+if vault.get("state") != "ready" or vault.get("severity") != "healthy":
+    raise SystemExit(1)
+' >/dev/null 2>&1; then
+    die "Upgrade blocked\n\nWhat happened\nThe active version could not confirm that the configured root and keyring are healthy.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and resolve any Configuration or Vault problem.\n\nWhat to do next\nKeep the active version in place and retry."
   fi
+  # A non-zero doctor status can reflect an unrelated daemon, MCP, provider, or
+  # adapter problem. The Configuration and Vault JSON fields above are the
+  # upgrade safety proof; the full doctor status remains available to users.
 }
 
 if [[ "$action" == install ]]; then
