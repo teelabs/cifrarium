@@ -135,11 +135,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", rootErr)
 			os.Exit(1)
 		}
-		if err := runDaemonRefresh(resolvedRoot); err != nil {
+		readiness, err := runDaemonRefresh(resolvedRoot)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: daemon refresh failed: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("daemon refreshed; backend and MCP are ready")
+		fmt.Println(daemonRefreshMessage(readiness))
 		return
 	}
 	if cmd == "doctor" {

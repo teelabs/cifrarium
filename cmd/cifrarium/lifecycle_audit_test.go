@@ -255,16 +255,18 @@ func TestLifecycleAuditRefreshMasksExitedService(t *testing.T) {
 	}
 	oldMCPProbe, oldBackendProbe := daemonRefreshProbe, daemonRefreshBackendProbe
 	daemonRefreshProbe = func(string) error { return fmt.Errorf("socket unavailable") }
-	daemonRefreshBackendProbe = func(string) error { return fmt.Errorf("backend unavailable") }
+	daemonRefreshBackendProbe = func(string) (daemonRefreshReadiness, error) {
+		return daemonRefreshReadiness{}, fmt.Errorf("backend unavailable")
+	}
 	t.Cleanup(func() {
 		runDaemonRefreshSystemctl = func(...string) error { return nil }
 		daemonRefreshProbe = oldMCPProbe
 		daemonRefreshBackendProbe = oldBackendProbe
 	})
 
-	err := runDaemonRefresh(filepath.Join(t.TempDir(), "vault"))
-	if err == nil || err.Error() != "daemon service is active but MCP did not become ready" {
-		t.Fatalf("refresh error = %v; want generic active/MCP timeout after the service exited", err)
+	_, err := runDaemonRefresh(filepath.Join(t.TempDir(), "vault"))
+	if err == nil || err.Error() != "daemon service did not become ready" {
+		t.Fatalf("refresh error = %v; want generic readiness timeout while the service exit remains unchecked", err)
 	}
 	for _, call := range calls {
 		if len(call) > 0 && call[0] == "is-active" {

@@ -268,9 +268,12 @@ changing protected daemon configuration, use:
 cifrarium daemon refresh
 ~~~
 
-This reloads and restarts the managed user service, then verifies backend and
-MCP readiness. MCP tools remain protocol operations; they are not exposed as
-`cifrarium mcp ...` shell commands.
+This reloads and restarts the managed user service, then reports MCP and
+backend readiness separately. If MCP is ready while the backend is waiting for
+recovery/provider setup, the command exits successfully with both states and a
+safe next step. Full readiness requires both endpoints; an early service exit
+includes a sanitized systemd cause. MCP tools remain protocol operations; they
+are not exposed as `cifrarium mcp ...` shell commands.
 
 A running process is not proof that an upload succeeded. Check logs, queue
 state, and provider health.

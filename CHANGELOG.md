@@ -14,6 +14,8 @@ All notable changes to Cifrarium will be documented here.
 
 - Validate generated v1 recovery shares against both active keyring keys before
   allowing provider uploads.
+- Report MCP and backend readiness separately after daemon refresh, including
+  a safe next step while the backend is waiting for recovery/provider setup.
 
 ## [0.10.2] - 2026-11-04
 

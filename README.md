@@ -415,9 +415,12 @@ When `daemon.env` or the service unit changes, refresh the managed daemon:
 cifrarium daemon refresh
 ~~~
 
-The command reloads the user service, restarts the daemon, and waits for both
-the backend and MCP endpoint to become ready. It never starts a second
-foreground daemon.
+The command reloads the user service, restarts the daemon, and reports MCP and
+backend readiness separately. If MCP is ready while the backend is waiting for
+recovery/provider setup, refresh exits successfully with both states and a safe
+next step. It reports full readiness only when both are ready, and reports a
+sanitized systemd cause if the service exits before readiness. It never starts
+a second foreground daemon.
 
 ## Recover a fresh environment
 

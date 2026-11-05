@@ -18,26 +18,44 @@ var runDaemonRefreshSystemctl = func(args ...string) error {
 
 var daemonRefreshProbe = func(socket string) error { return probeMCP(socket) }
 
-var daemonRefreshBackendProbe = func(socket string) error {
+type daemonRefreshReadiness struct {
+	Backend string
+	MCP     string
+}
+
+var daemonRefreshBackendProbe = func(socket string) (daemonRefreshReadiness, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	var result struct {
+	var status struct {
 		Backend string `json:"backend"`
 		MCP     struct {
 			State string `json:"state"`
 		} `json:"mcp"`
 	}
-	if err := rpc.Call(ctx, socket, "mcp.status", nil, &result); err != nil {
-		return err
+	if err := rpc.Call(ctx, socket, "mcp.status", nil, &status); err != nil {
+		return daemonRefreshReadiness{}, err
 	}
-	if !daemonRefreshReady(result.Backend, result.MCP.State) {
-		return fmt.Errorf("backend=%s mcp=%s", result.Backend, result.MCP.State)
-	}
-	return nil
+	return daemonRefreshReadiness{Backend: safeReadinessState(status.Backend), MCP: safeReadinessState(status.MCP.State)}, nil
 }
 
 func daemonRefreshReady(backend, mcp string) bool {
-	return mcp == "ready"
+	return backend == "ready" && mcp == "ready"
+}
+
+func safeReadinessState(state string) string {
+	switch state {
+	case "ready", "starting":
+		return state
+	default:
+		return "unknown"
+	}
+}
+
+func daemonRefreshMessage(readiness daemonRefreshReadiness) string {
+	if daemonRefreshReady(readiness.Backend, readiness.MCP) {
+		return "daemon refreshed; backend and MCP are ready"
+	}
+	return fmt.Sprintf("daemon refreshed; MCP is ready; backend is %s.\nNext: complete recovery/provider setup, then run `cifrarium daemon refresh` again.", safeReadinessState(readiness.Backend))
 }
 
 func daemonManagedServiceActive() bool {
@@ -51,32 +69,34 @@ func daemonAlreadyRunning(root string) bool {
 	if root == "" {
 		return false
 	}
-	return daemonRefreshProbe(filepath.Join(root, "cifrarium.sock")) == nil &&
-		daemonRefreshBackendProbe(filepath.Join(root, "control.sock")) == nil
+	if daemonRefreshProbe(filepath.Join(root, "cifrarium.sock")) != nil {
+		return false
+	}
+	readiness, err := daemonRefreshBackendProbe(filepath.Join(root, "control.sock"))
+	return err == nil && daemonRefreshReady(readiness.Backend, readiness.MCP)
 }
 
-func runDaemonRefresh(root string) error {
+func runDaemonRefresh(root string) (daemonRefreshReadiness, error) {
 	if root == "" {
-		return fmt.Errorf("configured vault root is required")
+		return daemonRefreshReadiness{}, fmt.Errorf("configured vault root is required")
 	}
 	if err := runDaemonRefreshSystemctl("daemon-reload"); err != nil {
-		return fmt.Errorf("could not reload the user service manager: %w", err)
+		return daemonRefreshReadiness{}, fmt.Errorf("could not reload the user service manager: %w", err)
 	}
 	if err := runDaemonRefreshSystemctl("restart", "cifrarium.service"); err != nil {
-		return fmt.Errorf("could not restart cifrarium.service: %w", err)
+		return daemonRefreshReadiness{}, fmt.Errorf("could not restart cifrarium.service: %w", err)
 	}
 	socket := filepath.Join(root, "cifrarium.sock")
 	controlSocket := filepath.Join(root, "control.sock")
 	deadline := time.Now().Add(daemonRefreshTimeout)
 	for time.Now().Before(deadline) {
 		if err := daemonRefreshProbe(socket); err == nil {
-			if err := daemonRefreshBackendProbe(controlSocket); err != nil {
-				time.Sleep(50 * time.Millisecond)
-				continue
+			readiness, err := daemonRefreshBackendProbe(controlSocket)
+			if err == nil && readiness.MCP == "ready" {
+				return readiness, nil
 			}
-			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("daemon service is active but MCP did not become ready")
+	return daemonRefreshReadiness{}, fmt.Errorf("daemon service did not become ready")
 }
