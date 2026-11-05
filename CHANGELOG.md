@@ -18,6 +18,8 @@ All notable changes to Cifrarium will be documented here.
   a safe next step while the backend is waiting for recovery/provider setup.
 - Resolve systemd's Cifrarium configuration and provider paths from the same
   XDG configuration root used by the CLI and installer.
+- Detect a Cifrarium systemd service exit during readiness polling and report
+  sanitized state, result, exit status, and a safe recovery step.
 
 ## [0.10.2] - 2026-11-04
 

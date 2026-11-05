@@ -254,7 +254,7 @@ func TestLifecycleAuditDefaultXDGSystemdPathsMatchCLIAndInstaller(t *testing.T) 
 	}
 }
 
-func TestLifecycleAuditRefreshMasksExitedService(t *testing.T) {
+func TestLifecycleAuditRefreshReportsExitedServiceCause(t *testing.T) {
 	serviceActive := true
 	var calls [][]string
 	runDaemonRefreshSystemctl = func(args ...string) error {
@@ -268,26 +268,34 @@ func TestLifecycleAuditRefreshMasksExitedService(t *testing.T) {
 		return nil
 	}
 	oldMCPProbe, oldBackendProbe := daemonRefreshProbe, daemonRefreshBackendProbe
+	oldServiceStateProbe := daemonRefreshSystemdStateProbe
 	daemonRefreshProbe = func(string) error { return fmt.Errorf("socket unavailable") }
 	daemonRefreshBackendProbe = func(string) (daemonRefreshReadiness, error) {
 		return daemonRefreshReadiness{}, fmt.Errorf("backend unavailable")
+	}
+	daemonRefreshSystemdStateProbe = func() (daemonRefreshServiceState, error) {
+		return daemonRefreshServiceState{ActiveState: "failed", SubState: "failed", Result: "exit-code", ExitStatus: "17"}, nil
 	}
 	t.Cleanup(func() {
 		runDaemonRefreshSystemctl = func(...string) error { return nil }
 		daemonRefreshProbe = oldMCPProbe
 		daemonRefreshBackendProbe = oldBackendProbe
+		daemonRefreshSystemdStateProbe = oldServiceStateProbe
 	})
 
 	_, err := runDaemonRefresh(filepath.Join(t.TempDir(), "vault"))
-	if err == nil || err.Error() != "daemon service did not become ready" {
-		t.Fatalf("refresh error = %v; want generic readiness timeout while the service exit remains unchecked", err)
+	if err == nil || !strings.Contains(err.Error(), "cifrarium.service exited before readiness") || !strings.Contains(err.Error(), "state=failed/failed") || !strings.Contains(err.Error(), "result=exit-code") || !strings.Contains(err.Error(), "exit-status=17") || !strings.Contains(err.Error(), "systemctl --user status cifrarium.service") {
+		t.Fatalf("refresh error = %v; want sanitized systemd exit cause and next step", err)
 	}
+	checkedService := false
 	for _, call := range calls {
 		if len(call) > 0 && call[0] == "is-active" {
-			t.Fatal("refresh unexpectedly checked whether the service exited")
+			checkedService = true
 		}
 	}
-	t.Log("reproduced: exited service is reported as active after a generic MCP readiness timeout")
+	if !checkedService {
+		t.Fatal("refresh did not check systemd service state while waiting for readiness")
+	}
 }
 
 var _ provider.Provider = (*lifecycleAuditProvider)(nil)

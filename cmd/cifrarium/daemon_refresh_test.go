@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -40,7 +41,7 @@ func TestRunDaemonRefreshReloadsRestartsAndWaitsForMCP(t *testing.T) {
 	if !daemonRefreshReady(readiness.Backend, readiness.MCP) {
 		t.Fatalf("readiness = %#v", readiness)
 	}
-	if want := [][]string{{"daemon-reload"}, {"restart", "cifrarium.service"}}; !reflect.DeepEqual(calls, want) {
+	if want := [][]string{{"daemon-reload"}, {"restart", "cifrarium.service"}, {"is-active", "--quiet", "cifrarium.service"}}; !reflect.DeepEqual(calls, want) {
 		t.Fatalf("systemctl calls = %#v; want %#v", calls, want)
 	}
 	if want := []string{filepath.Join(root, "cifrarium.sock")}; !reflect.DeepEqual(probes, want) {
@@ -101,6 +102,20 @@ func TestDaemonRefreshReadinessRequiresBothEndpointsReady(t *testing.T) {
 	}
 	if daemonRefreshReady("ready", "starting") {
 		t.Fatal("combined readiness accepted an MCP endpoint that was not ready")
+	}
+}
+
+func TestDaemonRefreshServiceStateSanitizesSystemdOutput(t *testing.T) {
+	state, err := parseDaemonRefreshServiceState("failed\n/home/secret\nprivate-remote\n17\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ActiveState != "failed" || state.SubState != "unknown" || state.Result != "unknown" || state.ExitStatus != "17" {
+		t.Fatalf("parsed service state = %#v", state)
+	}
+	message := daemonRefreshServiceExitedError(state).Error()
+	if strings.Contains(message, "/home/secret") || strings.Contains(message, "private-remote") {
+		t.Fatalf("service diagnostic leaked raw systemd output: %q", message)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/teelabs/cifrarium/internal/rpc"
@@ -21,6 +23,21 @@ var daemonRefreshProbe = func(socket string) error { return probeMCP(socket) }
 type daemonRefreshReadiness struct {
 	Backend string
 	MCP     string
+}
+
+type daemonRefreshServiceState struct {
+	ActiveState string
+	SubState    string
+	Result      string
+	ExitStatus  string
+}
+
+var daemonRefreshSystemdStateProbe = func() (daemonRefreshServiceState, error) {
+	output, err := exec.Command("systemctl", "--user", "show", "--property=ActiveState,SubState,Result,ExecMainStatus", "--value", "cifrarium.service").Output()
+	if err != nil {
+		return daemonRefreshServiceState{}, err
+	}
+	return parseDaemonRefreshServiceState(string(output))
 }
 
 var daemonRefreshBackendProbe = func(socket string) (daemonRefreshReadiness, error) {
@@ -49,6 +66,43 @@ func safeReadinessState(state string) string {
 	default:
 		return "unknown"
 	}
+}
+
+func parseDaemonRefreshServiceState(output string) (daemonRefreshServiceState, error) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 4 {
+		return daemonRefreshServiceState{}, fmt.Errorf("unexpected systemd state output")
+	}
+	status := "unknown"
+	if parsed, err := strconv.Atoi(strings.TrimSpace(lines[3])); err == nil && parsed >= 0 && parsed <= 255 {
+		status = strconv.Itoa(parsed)
+	}
+	return daemonRefreshServiceState{
+		ActiveState: safeSystemdValue(strings.TrimSpace(lines[0]), "active", "activating", "deactivating", "failed", "inactive", "reloading", "maintenance", "refreshing"),
+		SubState:    safeSystemdValue(strings.TrimSpace(lines[1]), "running", "start", "start-pre", "start-post", "dead", "failed", "exited", "auto-restart", "stop", "stop-sigterm", "stop-post", "condition", "assert", "reload", "maintenance"),
+		Result:      safeSystemdValue(strings.TrimSpace(lines[2]), "success", "resources", "timeout", "exit-code", "signal", "core-dump", "watchdog", "start-limit-hit", "oom-kill", "protocol", "condition", "assert", "clean"),
+		ExitStatus:  status,
+	}, nil
+}
+
+func safeSystemdValue(value string, allowed ...string) string {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return value
+		}
+	}
+	return "unknown"
+}
+
+func daemonRefreshServiceExitedError(state daemonRefreshServiceState) error {
+	active := safeSystemdValue(state.ActiveState, "active", "activating", "deactivating", "failed", "inactive", "reloading", "maintenance", "refreshing")
+	sub := safeSystemdValue(state.SubState, "running", "start", "start-pre", "start-post", "dead", "failed", "exited", "auto-restart", "stop", "stop-sigterm", "stop-post", "condition", "assert", "reload", "maintenance")
+	result := safeSystemdValue(state.Result, "success", "resources", "timeout", "exit-code", "signal", "core-dump", "watchdog", "start-limit-hit", "oom-kill", "protocol", "condition", "assert", "clean")
+	exitStatus := "unknown"
+	if status, err := strconv.Atoi(state.ExitStatus); err == nil && status >= 0 && status <= 255 {
+		exitStatus = strconv.Itoa(status)
+	}
+	return fmt.Errorf("cifrarium.service exited before readiness (systemd state=%s/%s, result=%s, exit-status=%s). Check `systemctl --user status cifrarium.service`, resolve the reported startup issue, then run `cifrarium daemon refresh` again.", active, sub, result, exitStatus)
 }
 
 func daemonRefreshMessage(readiness daemonRefreshReadiness) string {
@@ -90,6 +144,12 @@ func runDaemonRefresh(root string) (daemonRefreshReadiness, error) {
 	controlSocket := filepath.Join(root, "control.sock")
 	deadline := time.Now().Add(daemonRefreshTimeout)
 	for time.Now().Before(deadline) {
+		if err := runDaemonRefreshSystemctl("is-active", "--quiet", "cifrarium.service"); err != nil {
+			state, _ := daemonRefreshSystemdStateProbe()
+			if state.ActiveState != "activating" && state.ActiveState != "reloading" && state.ActiveState != "active" {
+				return daemonRefreshReadiness{}, daemonRefreshServiceExitedError(state)
+			}
+		}
 		if err := daemonRefreshProbe(socket); err == nil {
 			readiness, err := daemonRefreshBackendProbe(controlSocket)
 			if err == nil && readiness.MCP == "ready" {
@@ -98,5 +158,5 @@ func runDaemonRefresh(root string) (daemonRefreshReadiness, error) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return daemonRefreshReadiness{}, fmt.Errorf("daemon service did not become ready")
+	return daemonRefreshReadiness{}, fmt.Errorf("daemon service is active but MCP did not become ready")
 }

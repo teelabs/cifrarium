@@ -16,6 +16,6 @@ printf '%s\n' 'Lifecycle audit: MCP/backend readiness mismatch reproduction'
 go test ./cmd/cifrarium -run '^TestRunDaemonRefreshReportsMCPReadyWhileBackendIsStarting$' -count=1 -v
 
 printf '%s\n' 'Lifecycle audit: exited service diagnostic reproduction (10 second bound)'
-go test ./cmd/cifrarium -run '^TestLifecycleAuditRefreshMasksExitedService$' -count=1 -v
+go test ./cmd/cifrarium -run '^TestLifecycleAuditRefreshReportsExitedServiceCause$' -count=1 -v
 
 printf '%s\n' 'Lifecycle audit harness completed'
