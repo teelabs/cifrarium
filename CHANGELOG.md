@@ -8,9 +8,11 @@ All notable changes to Cifrarium will be documented here.
 
 ### Added
 
-- Added an isolated lifecycle audit harness for installer state preservation,
-  local snapshots, encrypted queue recovery, provider resume, and daemon
-  readiness diagnostics.
+- Added an isolated lifecycle audit harness that runs the real installer
+  against the same temporary vault, recovery configuration, encrypted queue,
+  and in-memory keyring used by the real daemon service/backend. It checks
+  byte-for-byte state preservation across preflight, migration, and rollback
+  failures, then verifies queued items drain before the post-upgrade capture.
 
 ### Fixed
 

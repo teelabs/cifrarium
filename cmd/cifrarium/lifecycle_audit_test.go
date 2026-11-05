@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -57,6 +58,17 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 	home := filepath.Join(work, "home")
 	xdg := filepath.Join(work, "xdg")
 	root := filepath.Join(work, "vault")
+	bridge := os.Getenv("CIFRARIUM_LIFECYCLE_INSTALL_BRIDGE")
+	sharedInstall := bridge != ""
+	if sharedInstall {
+		home = os.Getenv("HOME")
+		xdg = os.Getenv("XDG_CONFIG_HOME")
+		work = filepath.Join(home, ".local", "share", "cifrarium-lifecycle")
+		root = filepath.Join(work, "vault")
+		if home == "" || xdg == "" {
+			t.Fatal("shared installer lifecycle requires HOME and XDG_CONFIG_HOME")
+		}
+	}
 	for _, dir := range []string{home, xdg, filepath.Join(home, ".codex")} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
@@ -103,9 +115,23 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 	if err != nil || len(shares) != 3 {
 		t.Fatalf("in-memory test recovery setup failed: count=%d err=%v", len(shares), err)
 	}
+	if sharedInstall {
+		configDir := filepath.Join(xdg, "cifrarium")
+		if err := os.MkdirAll(configDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		recoveryConfig := fmt.Sprintf("CIFRARIUM_RECOVERY_SHARE_1=%s:%s\nCIFRARIUM_RECOVERY_SHARE_2=%s:%s\n", shares[0].Label, shares[0].Value, shares[1].Label, shares[1].Value)
+		if err := os.WriteFile(filepath.Join(configDir, "daemon.env"), []byte(recoveryConfig), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, "keyring-sentinel"), []byte("in-memory test keyring sentinel\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, _, err := store.RecoverKeys([]recovery.Share{shares[0], shares[1]}); err != nil {
 		t.Fatalf("generated shares do not recover keyring material: %v", err)
 	}
+	keyringDigest := auditKeyringDigest(op, signing)
 	provider := &lifecycleAuditProvider{}
 	queuePath := filepath.Join(root, "pending.queue")
 	queue := &daemon.Queue{}
@@ -167,6 +193,25 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 	if len(queuedBeforeRestart) != 2 {
 		t.Fatalf("persisted queue items=%d, want 2", len(queuedBeforeRestart))
 	}
+	if sharedInstall {
+		if err := os.WriteFile(filepath.Join(bridge, "ready"), []byte("ready\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(2 * time.Minute)
+		for {
+			if _, err := os.Stat(filepath.Join(bridge, "continue")); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("installer integration did not resume the lifecycle process")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		loadedOperational, loadedSigning, err := keys.LoadExistingForRoot(root)
+		if err != nil || !bytes.Equal(loadedOperational, op) || !bytes.Equal(loadedSigning, signing) || auditKeyringDigest(loadedOperational, loadedSigning) != keyringDigest {
+			t.Fatal("in-memory keyring changed during installer preflight, migration, rollback, or upgrade checks")
+		}
+	}
 
 	// Restart with valid recovery verification and the provider restored. Draining
 	// must upload the old queue before the normal immediate post-restart capture.
@@ -215,6 +260,13 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 			t.Fatalf("restart upload %d = (%q, %d ciphertext bytes), want original queued item (%q, %d ciphertext bytes)", i, got.ID, len(got.Ciphertext), queued.ID, len(queued.Ciphertext))
 		}
 	}
+}
+
+func auditKeyringDigest(operational []byte, signing []byte) [32]byte {
+	material := make([]byte, 0, len(operational)+len(signing))
+	material = append(material, operational...)
+	material = append(material, signing...)
+	return sha256.Sum256(material)
 }
 
 func TestLifecycleAuditCustomXDGSystemdPathsMatchCLIAndInstaller(t *testing.T) {

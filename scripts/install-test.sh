@@ -11,11 +11,17 @@ HOME_DIR="$TEST_ROOT/home"
 PREFIX="$HOME_DIR/.local"
 FAKE_BIN="$TEST_ROOT/bin"
 SYSTEMCTL_LOG="$TEST_ROOT/systemctl.log"
+LIFECYCLE_BRIDGE=""
+LIFECYCLE_PID=""
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 CERT="$TEST_ROOT/cert.pem"
 KEY="$TEST_ROOT/key.pem"
 
 cleanup() {
+  if [[ -n "$LIFECYCLE_PID" ]]; then
+    : >"$LIFECYCLE_BRIDGE/continue" 2>/dev/null || true
+    wait "$LIFECYCLE_PID" 2>/dev/null || true
+  fi
   if [[ -n "${SERVER_PID:-}" ]]; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
@@ -458,5 +464,171 @@ if command -v systemd-analyze >/dev/null 2>&1; then
 fi
 "$ROOT_DIR/scripts/install.sh" --uninstall --prefix "$PREFIX" --yes
 [[ ! -e "$PREFIX/bin/cifrarium" ]]
+
+# Run the real installer against the same home/XDG/vault/queue fixture that a
+# real Service/Backend process holds open across an upgrade.
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.9 --out-dir "$TEST_ROOT/release-0.8.9"
+cp "$TEST_ROOT/release-0.8.9"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.9-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+"$ROOT_DIR/scripts/install.sh" --version 0.8.9 --prefix "$PREFIX" --base-url "https://127.0.0.1:$PORT" >/dev/null
+[[ "$("$PREFIX/bin/cifrarium" -version)" == 0.8.9 ]]
+# The real keyring is intentionally in the Go test process' in-memory keyring.
+# The active binary is a separate process, so stub only its read-only doctor
+# preflight; keep its version command and all candidate binaries real.
+ACTIVE_BINARY="$PREFIX/lib/cifrarium/versions/0.8.9/cifrarium"
+mv "$ACTIVE_BINARY" "$ACTIVE_BINARY.test-real"
+cat >"$ACTIVE_BINARY" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == doctor ]]; then
+  printf '{"overall":"healthy"}\n'
+  exit 0
+fi
+exec "$(readlink -f "$0").test-real" "$@"
+EOF
+chmod 0755 "$ACTIVE_BINARY"
+
+LIFECYCLE_BRIDGE="$TEST_ROOT/lifecycle-bridge"
+mkdir -m 0700 "$LIFECYCLE_BRIDGE"
+CIFRARIUM_LIFECYCLE_INSTALL_BRIDGE="$LIFECYCLE_BRIDGE" \
+  go test ./cmd/cifrarium -run '^TestLifecycleAuditFreshInstallQueueResume$' -count=1 -v \
+  >"$LIFECYCLE_BRIDGE/go-test.log" 2>&1 &
+LIFECYCLE_PID=$!
+for _ in {1..1200}; do
+  [[ -f "$LIFECYCLE_BRIDGE/ready" ]] && break
+  if ! kill -0 "$LIFECYCLE_PID" 2>/dev/null; then
+    cat "$LIFECYCLE_BRIDGE/go-test.log" >&2
+    echo 'shared installer lifecycle test exited before preparing its fixture' >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+[[ -f "$LIFECYCLE_BRIDGE/ready" ]] || {
+  cat "$LIFECYCLE_BRIDGE/go-test.log" >&2
+  echo 'shared installer lifecycle fixture did not become ready' >&2
+  exit 1
+}
+
+lifecycle_state_digest() {
+  python3 - "$HOME_DIR" "$XDG_CONFIG_HOME" <<'PY'
+import hashlib, json, os, pathlib, stat, sys
+home, xdg = map(pathlib.Path, sys.argv[1:])
+records = []
+for label, root in (("home", home / ".local/share/cifrarium-lifecycle"), ("xdg", xdg / "cifrarium")):
+    if not root.exists():
+        continue
+    for directory, _, files in os.walk(root):
+        for name in files:
+            path = pathlib.Path(directory) / name
+            if path.is_symlink() or not path.is_file():
+                raise SystemExit("unexpected non-regular lifecycle state")
+            relative = f"{label}/{path.relative_to(root).as_posix()}"
+            records.append((relative, stat.S_IMODE(path.stat().st_mode), hashlib.sha256(path.read_bytes()).hexdigest()))
+records.sort()
+payload = json.dumps(records, separators=(",", ":")).encode()
+print(hashlib.sha256(payload).hexdigest())
+PY
+}
+
+state_before=$(lifecycle_state_digest)
+assert_lifecycle_state_preserved() {
+  local label=$1 state_after
+  state_after=$(lifecycle_state_digest)
+  [[ "$state_after" == "$state_before" ]] || {
+    echo "installer $label changed vault, keyring sentinel, recovery config, or queue state" >&2
+    exit 1
+  }
+}
+
+# A rejected manifest is a failed preflight against the real queued vault.
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.10 --out-dir "$TEST_ROOT/release-0.8.10"
+cp "$TEST_ROOT/release-0.8.10"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.10-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+cp "$PUBLIC_DIR/manifest.json" "$TEST_ROOT/lifecycle-manifest.valid.json"
+python3 - "$PUBLIC_DIR/manifest.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+manifest["version"] = "9.9.9"
+path.write_text(json.dumps(manifest, indent=2) + "\n")
+PY
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.10 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/lifecycle-preflight-failure.txt" 2>&1; then
+  echo 'invalid lifecycle manifest unexpectedly installed' >&2
+  exit 1
+fi
+cp "$TEST_ROOT/lifecycle-manifest.valid.json" "$PUBLIC_DIR/manifest.json"
+assert_lifecycle_state_preserved 'preflight failure'
+[[ "$("$PREFIX/bin/cifrarium" -version)" == 0.8.9 ]]
+
+# A migration-required candidate must leave the same real vault and queue intact.
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.11 --out-dir "$TEST_ROOT/release-0.8.11"
+python3 - "$TEST_ROOT/release-0.8.11/cifrarium-0.8.11-linux-amd64.tar.gz" "$TEST_ROOT/lifecycle-migration-ran" <<'PY'
+import io, json, pathlib, sys, tarfile
+archive, marker = map(pathlib.Path, sys.argv[1:])
+rewritten = archive.with_suffix('.migration.tar.gz')
+with tarfile.open(archive, 'r:gz') as source, tarfile.open(rewritten, 'w:gz') as target:
+    for member in source.getmembers():
+        data = source.extractfile(member).read() if member.isfile() else None
+        if member.name == 'release.json':
+            metadata = json.loads(data)
+            metadata['provider']['migrationRequired'] = True
+            metadata['provider']['migrationCommand'] = f'touch {marker}'
+            data = (json.dumps(metadata, indent=2) + '\n').encode()
+            member.size = len(data)
+        target.addfile(member, io.BytesIO(data) if data is not None else None)
+rewritten.replace(archive)
+PY
+sha256sum "$TEST_ROOT/release-0.8.11/cifrarium-0.8.11-linux-amd64.tar.gz" \
+  | awk '{print $1 "  " $2}' >"$TEST_ROOT/release-0.8.11/cifrarium-0.8.11-linux-amd64.tar.gz.sha256"
+cp "$TEST_ROOT/release-0.8.11"/* "$PUBLIC_DIR/"
+python3 - "$PUBLIC_DIR/manifest.json" "$TEST_ROOT/release-0.8.11/cifrarium-0.8.11-linux-amd64.tar.gz" <<'PY'
+import hashlib, json, pathlib, sys
+manifest_path, archive = map(pathlib.Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text())
+for release in manifest['releases']:
+    if release['architecture'] == 'linux-amd64':
+        release['sha256'] = hashlib.sha256(archive.read_bytes()).hexdigest()
+manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+PY
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.11-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.11 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/lifecycle-migration-failure.txt" 2>&1; then
+  echo 'migration-required lifecycle candidate unexpectedly installed' >&2
+  exit 1
+fi
+[[ ! -e "$TEST_ROOT/lifecycle-migration-ran" ]]
+assert_lifecycle_state_preserved 'migration failure'
+[[ "$("$PREFIX/bin/cifrarium" -version)" == 0.8.9 ]]
+
+# A failed rollback to a nonexistent version must leave user state untouched.
+if "$ROOT_DIR/scripts/install.sh" --rollback 0.8.99 --prefix "$PREFIX" \
+  >"$TEST_ROOT/lifecycle-rollback-failure.txt" 2>&1; then
+  echo 'rollback to a missing lifecycle version unexpectedly succeeded' >&2
+  exit 1
+fi
+assert_lifecycle_state_preserved 'rollback failure'
+[[ "$("$PREFIX/bin/cifrarium" -version)" == 0.8.9 ]]
+
+# Now execute a successful real installer upgrade while the service test
+# process keeps the in-memory keyring and old encrypted queue alive.
+cp "$TEST_ROOT/release-0.8.10"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.10-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+if ! "$ROOT_DIR/scripts/install.sh" --version 0.8.10 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/lifecycle-upgrade.txt" 2>&1; then
+  cat "$TEST_ROOT/lifecycle-upgrade.txt" >&2
+  exit 1
+fi
+[[ "$("$PREFIX/bin/cifrarium" -version)" == 0.8.10 ]]
+assert_lifecycle_state_preserved 'successful upgrade'
+: >"$LIFECYCLE_BRIDGE/continue"
+if ! wait "$LIFECYCLE_PID"; then
+  cat "$LIFECYCLE_BRIDGE/go-test.log" >&2
+  echo 'real Service/Backend queue resume failed after installer upgrade' >&2
+  exit 1
+fi
+LIFECYCLE_PID=""
+cat "$LIFECYCLE_BRIDGE/go-test.log"
+unset CIFRARIUM_LIFECYCLE_INSTALL_BRIDGE
 
 printf 'installer integration tests passed\n'
