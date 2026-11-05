@@ -351,6 +351,7 @@ for scenario in vault-problem vault-not-ready configuration-problem malformed-js
     cat "$TEST_ROOT/doctor-$scenario.txt" >&2
     exit 1
   }
+  grep -Fq "$PREFIX/bin/cifrarium doctor -format=json and resolve" "$TEST_ROOT/doctor-$scenario.txt"
   [[ "$($PREFIX/bin/cifrarium -version)" == 0.10.2 ]]
   cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
   cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
@@ -408,6 +409,25 @@ EOF
 chmod 0755 "$LEGACY_BINARY"
 export CIFRARIUM_TEST_LEGACY_SIDE_EFFECT="$LEGACY_STATUS_SIDE_EFFECT"
 ln -sfn ../lib/cifrarium/versions/0.8.2/cifrarium "$PREFIX/bin/cifrarium"
+printf '%s\n' '{"configuration":{"state":"configured","severity":"healthy"},"overall":"problem","vault":{"state":"keyring-unavailable","severity":"problem"}}' >"$DOCTOR_REPORT"
+legacy_blocked_output="$TEST_ROOT/legacy-doctor-blocked.txt"
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.37 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$legacy_blocked_output" 2>&1; then
+  echo 'legacy doctor unhealthy vault unexpectedly upgraded' >&2
+  exit 1
+fi
+grep -Fq -- "$PREFIX/bin/cifrarium -command=doctor -format=json and resolve" "$legacy_blocked_output"
+[[ ! -e "$LEGACY_STATUS_SIDE_EFFECT" ]]
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.2 ]]
+cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
+cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
+cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+
+cat >"$DOCTOR_REPORT" <<'EOF'
+{"configuration":{"state":"configured","severity":"healthy"},"overall":"problem","vault":{"state":"ready","severity":"healthy"},"daemon":{"state":"enabled-but-inactive","severity":"problem"}}
+EOF
 "$ROOT_DIR/scripts/build-release.sh" --version 0.8.37 --out-dir "$TEST_ROOT/release-0.8.37"
 cp "$TEST_ROOT/release-0.8.37"/* "$PUBLIC_DIR/"
 for archive in "$PUBLIC_DIR"/cifrarium-0.8.37-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
@@ -425,6 +445,90 @@ cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/h
 cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
 cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 unset CIFRARIUM_TEST_LEGACY_SIDE_EFFECT
+
+# An expected-looking managed symlink must not redirect execution through a
+# symlinked version binary into an external program.
+INTERNAL_LINKED_BINARY="$PREFIX/lib/cifrarium/versions/0.10.99/cifrarium"
+INTERNAL_LINK_SIDE_EFFECT="$TEST_ROOT/internal-linked-binary-executed"
+mkdir -p "$(dirname "$INTERNAL_LINKED_BINARY")" "$TEST_ROOT/internal-linked"
+cat >"$TEST_ROOT/internal-linked/cifrarium" <<'EOF'
+#!/usr/bin/env bash
+printf 'executed\n' >"${CIFRARIUM_TEST_EXTERNAL_SIDE_EFFECT:?}"
+printf '{"configuration":{"state":"configured","severity":"healthy"},"vault":{"state":"ready","severity":"healthy"}}\n'
+EOF
+chmod 0755 "$TEST_ROOT/internal-linked/cifrarium"
+ln -s "$TEST_ROOT/internal-linked/cifrarium" "$INTERNAL_LINKED_BINARY"
+export CIFRARIUM_TEST_EXTERNAL_SIDE_EFFECT="$INTERNAL_LINK_SIDE_EFFECT"
+ln -sfn ../lib/cifrarium/versions/0.10.99/cifrarium "$PREFIX/bin/cifrarium"
+internal_link_output="$TEST_ROOT/internal-linked-target.txt"
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.38 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$internal_link_output" 2>&1; then
+  echo 'symlinked managed binary unexpectedly upgraded' >&2
+  exit 1
+fi
+grep -Fq 'symlinked path component' "$internal_link_output"
+[[ ! -e "$INTERNAL_LINK_SIDE_EFFECT" ]]
+[[ "$(readlink "$PREFIX/bin/cifrarium")" == ../lib/cifrarium/versions/0.10.99/cifrarium ]]
+cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
+cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
+cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+
+# Unsupported pre-v0.8 and external symlink targets must not be executed.
+UNSUPPORTED_BINARY="$PREFIX/lib/cifrarium/versions/0.7.0/cifrarium"
+UNSUPPORTED_SIDE_EFFECT="$TEST_ROOT/unsupported-binary-executed"
+mkdir -p "$(dirname "$UNSUPPORTED_BINARY")"
+cat >"$UNSUPPORTED_BINARY" <<'EOF'
+#!/usr/bin/env bash
+printf 'executed\n' >"${CIFRARIUM_TEST_UNSUPPORTED_SIDE_EFFECT:?}"
+printf '{"configuration":{"state":"configured","severity":"healthy"},"vault":{"state":"ready","severity":"healthy"}}\n'
+EOF
+chmod 0755 "$UNSUPPORTED_BINARY"
+export CIFRARIUM_TEST_UNSUPPORTED_SIDE_EFFECT="$UNSUPPORTED_SIDE_EFFECT"
+ln -sfn ../lib/cifrarium/versions/0.7.0/cifrarium "$PREFIX/bin/cifrarium"
+unsupported_output="$TEST_ROOT/unsupported-version.txt"
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.38 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$unsupported_output" 2>&1; then
+  echo 'unsupported v0.7 active version unexpectedly upgraded' >&2
+  exit 1
+fi
+grep -Fq 'The installer cannot safely inspect this active version.' "$unsupported_output"
+[[ ! -e "$UNSUPPORTED_SIDE_EFFECT" ]]
+[[ "$(readlink "$PREFIX/bin/cifrarium")" == ../lib/cifrarium/versions/0.7.0/cifrarium ]]
+cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
+cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
+cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+
+EXTERNAL_BINARY="$TEST_ROOT/external/versions/0.10.2/cifrarium"
+EXTERNAL_SIDE_EFFECT="$TEST_ROOT/external-binary-executed"
+mkdir -p "$(dirname "$EXTERNAL_BINARY")"
+cat >"$EXTERNAL_BINARY" <<'EOF'
+#!/usr/bin/env bash
+printf 'executed\n' >"${CIFRARIUM_TEST_EXTERNAL_SIDE_EFFECT:?}"
+printf '{"configuration":{"state":"configured","severity":"healthy"},"vault":{"state":"ready","severity":"healthy"}}\n'
+EOF
+chmod 0755 "$EXTERNAL_BINARY"
+export CIFRARIUM_TEST_EXTERNAL_SIDE_EFFECT="$EXTERNAL_SIDE_EFFECT"
+ln -sfn "$EXTERNAL_BINARY" "$PREFIX/bin/cifrarium"
+external_output="$TEST_ROOT/external-active-target.txt"
+if "$ROOT_DIR/scripts/install.sh" --version 0.8.38 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$external_output" 2>&1; then
+  echo 'external active binary unexpectedly upgraded' >&2
+  exit 1
+fi
+grep -Fq 'The installer cannot safely inspect this active version.' "$external_output"
+[[ ! -e "$EXTERNAL_SIDE_EFFECT" ]]
+[[ "$(readlink "$PREFIX/bin/cifrarium")" == "$EXTERNAL_BINARY" ]]
+cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
+cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
+cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+unset CIFRARIUM_TEST_UNSUPPORTED_SIDE_EFFECT CIFRARIUM_TEST_EXTERNAL_SIDE_EFFECT
+ln -sfn ../lib/cifrarium/versions/0.8.37/cifrarium "$PREFIX/bin/cifrarium"
 
 unset CIFRARIUM_TEST_DOCTOR_REPORT CIFRARIUM_TEST_DOCTOR_EXIT
 rm -f "$CONFIG_FILE"

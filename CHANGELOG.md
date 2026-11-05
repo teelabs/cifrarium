@@ -11,8 +11,8 @@ All notable changes to Cifrarium will be documented here.
 - Allow upgrades when the active doctor confirms a healthy configured vault,
   even if an unrelated system health problem makes its overall exit status
   non-zero. Select the doctor invocation supported by the active version,
-  while malformed reports and unhealthy configuration or vault state still
-  block the upgrade.
+  while rejecting unknown versions and symlinked binaries; malformed reports
+  and unhealthy configuration or vault state still block the upgrade.
 
 ## [0.10.3] - 2026-11-05
 

@@ -359,22 +359,29 @@ if data.get("schema") != 1 or not isinstance(root, str) or not root.startswith("
 if os.path.realpath(root) != root or not os.path.isdir(root):
     raise SystemExit("configured vault root is missing or not canonical")
 PY
-  local doctor_report
+  local doctor_report doctor_command
   local active_target active_version active_major active_minor active_patch
   local -a doctor_args
-  active_target=$(readlink "$active_link") || die "Upgrade blocked\n\nWhat happened\nThe active version could not confirm that the configured root and keyring are healthy.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and resolve any Configuration or Vault problem.\n\nWhat to do next\nKeep the active version in place and retry."
-  if [[ ! "$active_target" =~ /versions/([0-9]+\.[0-9]+\.[0-9]+)/cifrarium$ ]]; then
-    die "Upgrade blocked\n\nWhat happened\nThe active version could not confirm that the configured root and keyring are healthy.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and resolve any Configuration or Vault problem.\n\nWhat to do next\nKeep the active version in place and retry."
+  active_target=$(readlink "$active_link") || die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because the active executable is not a recognized managed release. Keep it in place and consult its documented upgrade guidance."
+  if [[ ! "$active_target" =~ ^\.\./lib/cifrarium/versions/([0-9]+\.[0-9]+\.[0-9]+)/cifrarium$ ]]; then
+    die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because the active executable is not a recognized managed release. Keep it in place and consult its documented upgrade guidance."
   fi
   active_version=${BASH_REMATCH[1]}
+  active_binary="$prefix/lib/$PRODUCT/versions/$active_version/$PRODUCT"
+  reject_symlinked_path_components "$active_binary"
+  [[ -f "$active_binary" && -x "$active_binary" ]] || die "The installer cannot safely inspect this active version.\n\nThe managed executable is missing or is not a regular executable file. Keep it in place and consult its documented upgrade guidance."
   IFS=. read -r active_major active_minor active_patch <<<"$active_version"
   if ((10#$active_major == 0 && 10#$active_minor == 8 && 10#$active_patch <= 2)); then
     # v0.8.0-v0.8.2 parse doctor through the legacy flag. A modern positional
     # argument is treated as the default status command and can update keyring
     # catalog metadata before returning non-JSON output.
     doctor_args=(-command=doctor -format=json)
-  else
+    doctor_command="$active_link -command=doctor -format=json"
+  elif ((10#$active_major > 0 || 10#$active_minor >= 9 || (10#$active_minor == 8 && 10#$active_patch >= 3))); then
     doctor_args=(doctor -format=json)
+    doctor_command="$active_link doctor -format=json"
+  else
+    die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because its doctor interface is not known to be safe for upgrade preflight. Keep it in place and consult its documented upgrade guidance."
   fi
   doctor_report=$("$active_link" "${doctor_args[@]}" 2>/dev/null) || true
   if ! printf '%s' "$doctor_report" | python3 -c '
@@ -395,7 +402,7 @@ if configuration.get("state") != "configured" or configuration.get("severity") !
 if vault.get("state") != "ready" or vault.get("severity") != "healthy":
     raise SystemExit(1)
 ' >/dev/null 2>&1; then
-    die "Upgrade blocked\n\nWhat happened\nThe active version could not confirm that the configured root and keyring are healthy.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and resolve any Configuration or Vault problem.\n\nWhat to do next\nKeep the active version in place and retry."
+    die "Upgrade blocked\n\nWhat happened\nThe active version could not confirm that the configured root and keyring are healthy.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun $doctor_command and resolve any Configuration or Vault problem.\n\nWhat to do next\nKeep the active version in place and retry."
   fi
   # A non-zero doctor status can reflect an unrelated daemon, MCP, provider, or
   # adapter problem. The Configuration and Vault JSON fields above are the
