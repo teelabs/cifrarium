@@ -360,7 +360,23 @@ if os.path.realpath(root) != root or not os.path.isdir(root):
     raise SystemExit("configured vault root is missing or not canonical")
 PY
   local doctor_report
-  doctor_report=$("$active_link" doctor -format=json 2>/dev/null) || true
+  local active_target active_version active_major active_minor active_patch
+  local -a doctor_args
+  active_target=$(readlink "$active_link") || die "Upgrade blocked\n\nWhat happened\nThe active version could not confirm that the configured root and keyring are healthy.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and resolve any Configuration or Vault problem.\n\nWhat to do next\nKeep the active version in place and retry."
+  if [[ ! "$active_target" =~ /versions/([0-9]+\.[0-9]+\.[0-9]+)/cifrarium$ ]]; then
+    die "Upgrade blocked\n\nWhat happened\nThe active version could not confirm that the configured root and keyring are healthy.\n\nWhy it matters\nChanging versions without that proof risks losing access to the vault.\n\nHow to fix it\nRun cifrarium doctor and resolve any Configuration or Vault problem.\n\nWhat to do next\nKeep the active version in place and retry."
+  fi
+  active_version=${BASH_REMATCH[1]}
+  IFS=. read -r active_major active_minor active_patch <<<"$active_version"
+  if ((10#$active_major == 0 && 10#$active_minor == 8 && 10#$active_patch <= 2)); then
+    # v0.8.0-v0.8.2 parse doctor through the legacy flag. A modern positional
+    # argument is treated as the default status command and can update keyring
+    # catalog metadata before returning non-JSON output.
+    doctor_args=(-command=doctor -format=json)
+  else
+    doctor_args=(doctor -format=json)
+  fi
+  doctor_report=$("$active_link" "${doctor_args[@]}" 2>/dev/null) || true
   if ! printf '%s' "$doctor_report" | python3 -c '
 import json
 import sys

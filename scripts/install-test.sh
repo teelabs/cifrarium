@@ -286,19 +286,27 @@ printf '{"schema":1,"root":"%s"}\n' "$CONFIGURED_ROOT" >"$CONFIG_FILE"
 chmod 0600 "$CONFIG_FILE"
 cp "$CONFIG_FILE" "$TEST_ROOT/config.before"
 cp "$DAEMON_ENV" "$TEST_ROOT/daemon-env.before"
-ACTIVE_BINARY="$PREFIX/lib/cifrarium/versions/0.8.3/cifrarium"
-mv "$ACTIVE_BINARY" "$ACTIVE_BINARY.test-real"
+ACTIVE_BINARY="$PREFIX/lib/cifrarium/versions/0.10.2/cifrarium"
+mkdir -p "$(dirname "$ACTIVE_BINARY")"
 DOCTOR_REPORT="$TEST_ROOT/doctor-report.json"
 cat >"$ACTIVE_BINARY" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == doctor ]]; then
-  cat "${CIFRARIUM_TEST_DOCTOR_REPORT:?}"
-  exit "${CIFRARIUM_TEST_DOCTOR_EXIT:?}"
-fi
-exec "$(readlink -f "$0").test-real" "$@"
+case "${1:-}" in
+  doctor)
+    cat "${CIFRARIUM_TEST_DOCTOR_REPORT:?}"
+    exit "${CIFRARIUM_TEST_DOCTOR_EXIT:?}"
+    ;;
+  -version)
+    printf '0.10.2\n'
+    ;;
+  *)
+    exit 2
+    ;;
+esac
 EOF
 chmod 0755 "$ACTIVE_BINARY"
+ln -sfn ../lib/cifrarium/versions/0.10.2/cifrarium "$PREFIX/bin/cifrarium"
 export CIFRARIUM_TEST_DOCTOR_REPORT="$DOCTOR_REPORT"
 export CIFRARIUM_TEST_DOCTOR_EXIT=1
 cat >"$DOCTOR_REPORT" <<'EOF'
@@ -343,7 +351,7 @@ for scenario in vault-problem vault-not-ready configuration-problem malformed-js
     cat "$TEST_ROOT/doctor-$scenario.txt" >&2
     exit 1
   }
-  [[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+  [[ "$($PREFIX/bin/cifrarium -version)" == 0.10.2 ]]
   cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
   cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
   cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
@@ -369,6 +377,54 @@ cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
 cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
 cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
 cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+
+# v0.8.0-v0.8.2 require the legacy -command syntax. A positional "doctor"
+# invokes status in those binaries and may mutate the keyring catalog guard.
+LEGACY_BINARY="$PREFIX/lib/cifrarium/versions/0.8.2/cifrarium"
+LEGACY_STATUS_SIDE_EFFECT="$TEST_ROOT/legacy-status-mutated-keyring"
+mkdir -p "$(dirname "$LEGACY_BINARY")"
+cat >"$LEGACY_BINARY" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  -command=doctor)
+    [[ "${2:-}" == -format=json ]] || exit 64
+    cat "${CIFRARIUM_TEST_DOCTOR_REPORT:?}"
+    exit "${CIFRARIUM_TEST_DOCTOR_EXIT:?}"
+    ;;
+  doctor)
+    printf 'catalog guard changed\n' >"${CIFRARIUM_TEST_LEGACY_SIDE_EFFECT:?}"
+    printf 'Cifrarium status\n'
+    exit 0
+    ;;
+  -version)
+    printf '0.8.2\n'
+    ;;
+  *)
+    printf 'Cifrarium status\n'
+    ;;
+esac
+EOF
+chmod 0755 "$LEGACY_BINARY"
+export CIFRARIUM_TEST_LEGACY_SIDE_EFFECT="$LEGACY_STATUS_SIDE_EFFECT"
+ln -sfn ../lib/cifrarium/versions/0.8.2/cifrarium "$PREFIX/bin/cifrarium"
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.37 --out-dir "$TEST_ROOT/release-0.8.37"
+cp "$TEST_ROOT/release-0.8.37"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.37-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+legacy_upgrade_output="$TEST_ROOT/legacy-doctor-upgrade.txt"
+if ! "$ROOT_DIR/scripts/install.sh" --version 0.8.37 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$legacy_upgrade_output" 2>&1; then
+  cat "$legacy_upgrade_output" >&2
+  exit 1
+fi
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.37 ]]
+[[ ! -e "$LEGACY_STATUS_SIDE_EFFECT" ]]
+cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
+cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
+cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+unset CIFRARIUM_TEST_LEGACY_SIDE_EFFECT
 
 unset CIFRARIUM_TEST_DOCTOR_REPORT CIFRARIUM_TEST_DOCTOR_EXIT
 rm -f "$CONFIG_FILE"
