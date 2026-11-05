@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -31,6 +32,10 @@ func (e *RemoteAccessError) Error() string {
 func (e *RemoteAccessError) Unwrap() error { return e.Err }
 
 func (g Git) run(ctx context.Context, args ...string) error {
+	return g.runWithIndex(ctx, "", args...)
+}
+
+func (g Git) runWithIndex(ctx context.Context, indexPath string, args ...string) error {
 	if err := g.validateRepositoryConfig(ctx); err != nil {
 		return err
 	}
@@ -39,6 +44,9 @@ func (g Git) run(ctx context.Context, args ...string) error {
 		return err
 	}
 	defer cleanup()
+	if indexPath != "" {
+		c.Env = append(c.Env, "GIT_INDEX_FILE="+indexPath)
+	}
 	if out, err := c.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %v: %w (%s)", args, err, out)
 	}
@@ -265,7 +273,14 @@ func (g Git) writeObject(ctx context.Context, relative string, data []byte) erro
 }
 
 func (g Git) commitAndPush(ctx context.Context, message string, objects ...gitObject) error {
-	for _, object := range objects {
+	indexPath, cleanupIndex, err := g.newUploadIndex(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanupIndex()
+
+	hashes := make([]string, len(objects))
+	for i, object := range objects {
 		cmd, cleanup, err := g.commandAtDir(ctx, "git", "hash-object", "-w", "--stdin")
 		if err != nil {
 			return err
@@ -280,11 +295,30 @@ func (g Git) commitAndPush(ctx context.Context, message string, objects ...gitOb
 		if len(hashText) != 40 {
 			return fmt.Errorf("invalid Git object hash for %s", object.path)
 		}
-		if err := g.run(ctx, "update-index", "--add", "--cacheinfo", "100644,"+hashText+","+object.path); err != nil {
+		hashes[i] = hashText
+		if err := g.runWithIndex(ctx, indexPath, "update-index", "--add", "--cacheinfo", "100644,"+hashText+","+object.path); err != nil {
 			return err
 		}
 	}
-	if err := g.run(ctx, "commit", "-m", message); err != nil {
+	// Provider checkouts may predate Cifrarium or may already exist without
+	// local commit identity. Set a stable service identity for this command
+	// rather than mutating the user's repository configuration.
+	if g.Remote != "" {
+		if err := g.VerifyPrivate(ctx); err != nil {
+			return fmt.Errorf("privacy verification before push failed: %w", err)
+		}
+		return g.commitAndPushRemote(ctx, indexPath, message, objects, hashes)
+	}
+	for i, object := range objects {
+		if err := g.run(ctx, "update-index", "--add", "--cacheinfo", "100644,"+hashes[i]+","+object.path); err != nil {
+			return err
+		}
+	}
+	if err := g.runWithIndex(ctx, indexPath,
+		"-c", "user.name=cifrarium",
+		"-c", "user.email=cifrarium@localhost",
+		"commit", "-m", message,
+	); err != nil {
 		// A retry after a successful remote upload may have nothing new to
 		// commit. Continue to the push so a prior local-only commit is still
 		// delivered, and let the remote remain the idempotency boundary.
@@ -292,13 +326,139 @@ func (g Git) commitAndPush(ctx context.Context, message string, objects ...gitOb
 			return err
 		}
 	}
-	if g.Remote != "" {
-		if err := g.VerifyPrivate(ctx); err != nil {
-			return fmt.Errorf("privacy verification before push failed: %w", err)
-		}
-		return g.run(ctx, "push", g.Remote, "HEAD")
-	}
 	return nil
+}
+
+// commitAndPushRemote creates the upload commit on the fetched remote branch,
+// so unrelated local commits can never become ancestors sent by this upload.
+func (g Git) commitAndPushRemote(ctx context.Context, indexPath, message string, objects []gitObject, hashes []string) error {
+	branch, parent, err := g.remoteHead(ctx)
+	if err != nil {
+		return err
+	}
+	if parent == "" {
+		if err := g.runWithIndex(ctx, indexPath, "read-tree", "--empty"); err != nil {
+			return err
+		}
+	} else if err := g.runWithIndex(ctx, indexPath, "read-tree", parent); err != nil {
+		return err
+	}
+	unchanged := parent != ""
+	for i, object := range objects {
+		staged, err := g.outputWithIndex(ctx, indexPath, "ls-files", "--stage", "--", object.path)
+		if err != nil {
+			return err
+		}
+		fields := strings.Fields(string(staged))
+		if len(fields) >= 2 && (fields[0] != "100644" || fields[1] != hashes[i]) {
+			return fmt.Errorf("provider object already exists with different content: %s", object.path)
+		}
+		if len(fields) < 2 {
+			unchanged = false
+		}
+		if err := g.runWithIndex(ctx, indexPath, "update-index", "--add", "--cacheinfo", "100644,"+hashes[i]+","+object.path); err != nil {
+			return err
+		}
+	}
+	if unchanged {
+		return nil
+	}
+	tree, err := g.outputWithIndex(ctx, indexPath, "write-tree")
+	if err != nil {
+		return err
+	}
+	args := []string{"-c", "user.name=cifrarium", "-c", "user.email=cifrarium@localhost", "commit-tree", strings.TrimSpace(string(tree)), "-m", message}
+	if parent != "" {
+		args = []string{"-c", "user.name=cifrarium", "-c", "user.email=cifrarium@localhost", "commit-tree", strings.TrimSpace(string(tree)), "-p", parent, "-m", message}
+	}
+	commit, err := g.output(ctx, args...)
+	if err != nil {
+		return fmt.Errorf("create provider upload commit: %w", err)
+	}
+	return g.run(ctx, "push", g.Remote, strings.TrimSpace(string(commit))+":"+branch)
+}
+
+func (g Git) remoteHead(ctx context.Context) (string, string, error) {
+	out, err := g.output(ctx, "ls-remote", "--symref", g.Remote, "HEAD")
+	if err != nil {
+		return "", "", err
+	}
+	branch, remoteHash := "", ""
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 2 {
+			continue
+		}
+		if strings.HasPrefix(fields[0], "ref: refs/heads/") && fields[1] == "HEAD" {
+			branch = strings.TrimPrefix(fields[0], "ref: ")
+		} else if fields[1] == "HEAD" {
+			remoteHash = fields[0]
+		}
+	}
+	if branch == "" {
+		branchOutput, err := g.output(ctx, "symbolic-ref", "--quiet", "HEAD")
+		if err != nil {
+			return "", "", fmt.Errorf("cannot determine provider branch for initial upload: %w", err)
+		}
+		branch = strings.TrimSpace(string(branchOutput))
+	}
+	if !strings.HasPrefix(branch, "refs/heads/") || strings.ContainsAny(branch, " \t\r\n") {
+		return "", "", fmt.Errorf("invalid remote provider branch")
+	}
+	if remoteHash == "" {
+		return branch, "", nil
+	}
+	if err := g.run(ctx, "fetch", "--no-tags", g.Remote, branch); err != nil {
+		return "", "", fmt.Errorf("fetch provider branch: %w", err)
+	}
+	fetched, err := g.output(ctx, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	if err != nil {
+		return "", "", err
+	}
+	return branch, strings.TrimSpace(string(fetched)), nil
+}
+
+func (g Git) outputWithIndex(ctx context.Context, indexPath string, args ...string) ([]byte, error) {
+	if err := g.validateRepositoryConfig(ctx); err != nil {
+		return nil, err
+	}
+	cmd, cleanup, err := g.commandAtDir(ctx, "git", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	cmd.Env = append(cmd.Env, "GIT_INDEX_FILE="+indexPath)
+	return cmd.Output()
+}
+
+func (g Git) newUploadIndex(ctx context.Context) (string, func(), error) {
+	indexDir, err := os.MkdirTemp("", "cifrarium-provider-index-")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create isolated provider index: %w", err)
+	}
+	indexPath := filepath.Join(indexDir, "index")
+	cleanup := func() { _ = os.RemoveAll(indexDir) }
+	if err := g.runWithIndex(ctx, indexPath, "read-tree", "HEAD"); err == nil {
+		return indexPath, cleanup, nil
+	} else {
+		initializationErr := err
+		headRef, refErr := g.output(ctx, "symbolic-ref", "--quiet", "HEAD")
+		if refErr != nil {
+			cleanup()
+			return "", func() {}, initializationErr
+		}
+		_, refErr = g.output(ctx, "show-ref", "--verify", "--quiet", strings.TrimSpace(string(headRef)))
+		var exitErr *exec.ExitError
+		if ctx.Err() != nil || !errors.As(refErr, &exitErr) || exitErr.ExitCode() != 1 {
+			cleanup()
+			return "", func() {}, initializationErr
+		}
+		if err := g.runWithIndex(ctx, indexPath, "read-tree", "--empty"); err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+	}
+	return indexPath, cleanup, nil
 }
 
 // Ensure initializes only the local repository and verifies an existing

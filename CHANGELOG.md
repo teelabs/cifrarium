@@ -4,6 +4,15 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.8] - 2026-11-05
+
+### Fixed
+
+- Use a stable Cifrarium commit identity for provider uploads when an existing
+  local Git checkout has no configured author, without changing local Git
+  configuration; isolate upload commits from staged files and unpublished local
+  history while preserving retry idempotency.
+
 ## [0.10.7] - 2026-11-05
 
 ### Fixed

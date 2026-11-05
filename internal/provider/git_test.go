@@ -5,8 +5,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func runProviderGitTest(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@localhost", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@localhost")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return string(out)
+}
 
 func TestGitProviderRejectsObjectTraversal(t *testing.T) {
 	g := Git{Dir: t.TempDir()}
@@ -66,6 +78,118 @@ func TestGitUploadSnapshotCommitsCiphertextAndCatalogTogether(t *testing.T) {
 	out, err := cmd.Output()
 	if err != nil || string(out) != "1\n" {
 		t.Fatalf("commits=%q err=%v", out, err)
+	}
+}
+
+func TestGitUploadSnapshotUsesServiceIdentityWithoutCommittingUnrelatedStagedFiles(t *testing.T) {
+	dir := t.TempDir()
+	runProviderGitTest(t, dir, "init", "--initial-branch=main")
+
+	// A Cifrarium upload must not commit unrelated content already staged in
+	// the existing checkout's shared index.
+	if err := os.WriteFile(filepath.Join(dir, "private.txt"), []byte("plaintext sentinel"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runProviderGitTest(t, dir, "add", "private.txt")
+
+	if err := (Git{Dir: dir}).UploadSnapshot(context.Background(), "current", []byte("ciphertext"), []byte(`{"snapshot":"current"}`)); err != nil {
+		t.Fatalf("upload through existing checkout without local identity: %v", err)
+	}
+	if got, want := runProviderGitTest(t, dir, "show", "-s", "--format=%an <%ae>", "HEAD"), "cifrarium <cifrarium@localhost>\n"; got != want {
+		t.Fatalf("commit identity = %q, want %q", got, want)
+	}
+	if got, want := runProviderGitTest(t, dir, "ls-tree", "-r", "--name-only", "HEAD"), "catalog/current.json\nobjects/current\n"; got != want {
+		t.Fatalf("committed paths = %q, want %q", got, want)
+	}
+	if got, want := runProviderGitTest(t, dir, "diff", "--cached", "--name-only"), "private.txt\n"; got != want {
+		t.Fatalf("staged paths = %q, want %q", got, want)
+	}
+	for _, key := range []string{"user.name", "user.email"} {
+		if err := exec.Command("git", "-C", dir, "config", "--local", "--get", key).Run(); err == nil {
+			t.Errorf("provider local %s was modified", key)
+		}
+	}
+}
+
+func TestGitRemoteUploadExcludesLocalCommitHistory(t *testing.T) {
+	bare, seed, local := t.TempDir(), t.TempDir(), t.TempDir()
+	runProviderGitTest(t, bare, "init", "--bare", "--initial-branch=main")
+	runProviderGitTest(t, seed, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(seed, "remote.txt"), []byte("remote base"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runProviderGitTest(t, seed, "add", "remote.txt")
+	runProviderGitTest(t, seed, "commit", "-m", "remote base")
+	runProviderGitTest(t, seed, "push", bare, "HEAD:refs/heads/main")
+	runProviderGitTest(t, local, "init", "--initial-branch=main")
+	if err := os.WriteFile(filepath.Join(local, "plaintext.txt"), []byte("must not publish"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runProviderGitTest(t, local, "add", "plaintext.txt")
+	runProviderGitTest(t, local, "commit", "-m", "unpublished local history")
+	if err := os.WriteFile(filepath.Join(local, "staged.txt"), []byte("also private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runProviderGitTest(t, local, "add", "staged.txt")
+	g := Git{Dir: local, Remote: bare}
+	for _, id := range []string{"first", "second", "second"} {
+		objects := []gitObject{{"objects/" + id, []byte("ciphertext")}, {"catalog/" + id + ".json", []byte(`{"snapshot":"` + id + `"}`)}}
+		hashes := make([]string, len(objects))
+		for i, object := range objects {
+			path := filepath.Join(local, "hash-input")
+			if err := os.WriteFile(path, object.data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			hashes[i] = strings.TrimSpace(runProviderGitTest(t, local, "hash-object", "-w", path))
+		}
+		index, cleanup, err := g.newUploadIndex(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = g.commitAndPushRemote(context.Background(), index, "snapshot "+id, objects, hashes)
+		cleanup()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := runProviderGitTest(t, bare, "--git-dir", bare, "ls-tree", "-r", "--name-only", "refs/heads/main"); got != "catalog/first.json\ncatalog/second.json\nobjects/first\nobjects/second\nremote.txt\n" {
+		t.Fatalf("remote paths = %q", got)
+	}
+	if got := runProviderGitTest(t, bare, "--git-dir", bare, "rev-list", "--count", "refs/heads/main"); got != "3\n" {
+		t.Fatalf("remote history length = %q", got)
+	}
+	if got := runProviderGitTest(t, local, "diff", "--cached", "--name-only"); got != "staged.txt\n" {
+		t.Fatalf("local staged files = %q", got)
+	}
+	if got := runProviderGitTest(t, local, "show", "HEAD:plaintext.txt"); got != "must not publish" {
+		t.Fatalf("local-only history changed: %q", got)
+	}
+}
+
+func TestGitRemoteUploadStartsAnUnbornRemote(t *testing.T) {
+	bare, local := t.TempDir(), t.TempDir()
+	runProviderGitTest(t, bare, "init", "--bare", "--initial-branch=main")
+	runProviderGitTest(t, local, "init", "--initial-branch=main")
+	g := Git{Dir: local, Remote: bare}
+	objects := []gitObject{{"objects/first", []byte("ciphertext")}, {"catalog/first.json", []byte(`{"snapshot":"first"}`)}}
+	hashes := make([]string, len(objects))
+	for i, object := range objects {
+		path := filepath.Join(local, "hash-input")
+		if err := os.WriteFile(path, object.data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		hashes[i] = strings.TrimSpace(runProviderGitTest(t, local, "hash-object", "-w", path))
+	}
+	index, cleanup, err := g.newUploadIndex(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if err := g.commitAndPushRemote(context.Background(), index, "snapshot first", objects, hashes); err != nil {
+		t.Fatal(err)
+	}
+	if got := runProviderGitTest(t, bare, "--git-dir", bare, "ls-tree", "-r", "--name-only", "refs/heads/main"); got != "catalog/first.json\nobjects/first\n" {
+		t.Fatalf("remote paths = %q", got)
 	}
 }
 
