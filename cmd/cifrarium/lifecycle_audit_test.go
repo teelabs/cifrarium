@@ -217,7 +217,7 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 	}
 }
 
-func TestLifecycleAuditCustomXDGSystemdUnitMismatch(t *testing.T) {
+func TestLifecycleAuditCustomXDGSystemdPathsMatchCLIAndInstaller(t *testing.T) {
 	work := t.TempDir()
 	home := filepath.Join(work, "home")
 	xdg := filepath.Join(work, "config-home")
@@ -232,12 +232,26 @@ func TestLifecycleAuditCustomXDGSystemdUnitMismatch(t *testing.T) {
 	unit := string(unitBytes)
 	cliConfig := config.ConfigPathForHome(home)
 	customDaemonEnv := providerConfigPath(home)
-	unitDaemonEnv := filepath.Join(home, ".config", "cifrarium", "daemon.env")
-	if strings.Contains(unit, "Environment=XDG_CONFIG_HOME=%h/.config") && strings.Contains(unit, "EnvironmentFile=-%h/.config/cifrarium/daemon.env") && cliConfig != filepath.Join(home, ".config", "cifrarium", "config.json") && customDaemonEnv != unitDaemonEnv {
-		t.Log("reproduced: CLI custom XDG root config and systemd unit default config path diverge")
-		return
+	if cliConfig != filepath.Join(xdg, "cifrarium", "config.json") {
+		t.Fatalf("CLI config path = %q; want custom XDG path", cliConfig)
 	}
-	t.Fatal("expected custom-XDG/systemd default-path mismatch was not reproduced")
+	if customDaemonEnv != filepath.Join(xdg, "cifrarium", "daemon.env") {
+		t.Fatalf("installer daemon.env path = %q; want custom XDG path", customDaemonEnv)
+	}
+	if !strings.Contains(unit, "Environment=XDG_CONFIG_HOME=%E") || !strings.Contains(unit, "EnvironmentFile=-%E/cifrarium/daemon.env") {
+		t.Fatalf("systemd unit does not resolve its config paths from the XDG config root:\n%s", unit)
+	}
+}
+
+func TestLifecycleAuditDefaultXDGSystemdPathsMatchCLIAndInstaller(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if got, want := config.ConfigPathForHome(home), filepath.Join(home, ".config", "cifrarium", "config.json"); got != want {
+		t.Fatalf("default CLI config path = %q; want %q", got, want)
+	}
+	if got, want := providerConfigPath(home), filepath.Join(home, ".config", "cifrarium", "daemon.env"); got != want {
+		t.Fatalf("default installer daemon.env path = %q; want %q", got, want)
+	}
 }
 
 func TestLifecycleAuditRefreshMasksExitedService(t *testing.T) {

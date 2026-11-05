@@ -137,7 +137,7 @@ chmod 0755 "$FAKE_BIN/git" "$FAKE_BIN/gh"
 
 export PATH="$FAKE_BIN:$PATH"
 export HOME="$HOME_DIR"
-export XDG_CONFIG_HOME="$HOME_DIR/.config"
+export XDG_CONFIG_HOME="$TEST_ROOT/custom-xdg-config"
 export GOCACHE="$GO_CACHE"
 export GOMODCACHE="$GO_MOD_CACHE"
 export CURL_CA_BUNDLE="$CERT"
@@ -208,7 +208,12 @@ install_output="$TEST_ROOT/install-output.txt"
   --base-url "https://127.0.0.1:$PORT" >"$install_output" 2>&1
 [[ "$("$PREFIX/bin/cifrarium" -version)" == "$VERSION" ]]
 [[ -L "$PREFIX/bin/cifrarium" ]]
-[[ -f "$HOME_DIR/.config/systemd/user/cifrarium.service" ]]
+[[ -f "$XDG_CONFIG_HOME/systemd/user/cifrarium.service" ]]
+grep -Fq 'Environment=XDG_CONFIG_HOME=%E' "$XDG_CONFIG_HOME/systemd/user/cifrarium.service"
+grep -Fq 'EnvironmentFile=-%E/cifrarium/daemon.env' "$XDG_CONFIG_HOME/systemd/user/cifrarium.service"
+if command -v systemd-analyze >/dev/null 2>&1; then
+  XDG_CONFIG_HOME="$XDG_CONFIG_HOME" systemd-analyze verify "$XDG_CONFIG_HOME/systemd/user/cifrarium.service"
+fi
 for step in 'Checking platform' 'Checking dependencies' 'Downloading manifest' 'Verifying archive signature'; do
   grep -Fq "$step" "$install_output" || {
     echo "progress step was not reported: $step" >&2
@@ -241,7 +246,7 @@ mkdir -p "$PROVIDER_DIR/.git" "$HOME_DIR/.local/share/cifrarium/snapshots"
 printf 'history sentinel\n' >"$HOME_DIR/.local/share/cifrarium/snapshots/history"
 printf 'keyring sentinel\n' >"$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
 printf 'encrypted queue sentinel\n' >"$HOME_DIR/.local/share/cifrarium/pending.queue"
-DAEMON_ENV="$HOME_DIR/.config/cifrarium/daemon.env"
+DAEMON_ENV="$XDG_CONFIG_HOME/cifrarium/daemon.env"
 mkdir -p "$(dirname "$DAEMON_ENV")"
 printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\nCIFRARIUM_RECOVERY_SHARE_1=placeholder-one\nCIFRARIUM_RECOVERY_SHARE_2=placeholder-two\n' "$PROVIDER_DIR" >"$DAEMON_ENV"
 chmod 0600 "$DAEMON_ENV"
@@ -355,14 +360,14 @@ for dependency in bash env uname mkdir rm rmdir grep mktemp mv ln install dirnam
   ln -s "$(command -v "$dependency")" "$NO_SYSTEMCTL_BIN/$dependency"
 done
 ln -s "$FAKE_BIN/cosign" "$NO_SYSTEMCTL_BIN/cosign"
-if PATH="$NO_SYSTEMCTL_BIN" HOME="$HOME_DIR" XDG_CONFIG_HOME="$HOME_DIR/.config" \
+if PATH="$NO_SYSTEMCTL_BIN" HOME="$HOME_DIR" XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
   "$ROOT_DIR/scripts/install.sh" --uninstall --prefix "$PREFIX" --yes \
   >"$TEST_ROOT/no-systemctl-output.txt" 2>&1; then
   echo 'uninstall unexpectedly passed without systemctl' >&2
   exit 1
 fi
 grep -Fq 'systemctl' "$TEST_ROOT/no-systemctl-output.txt"
-[[ -f "$HOME_DIR/.config/systemd/user/cifrarium.service" ]]
+[[ -f "$XDG_CONFIG_HOME/systemd/user/cifrarium.service" ]]
 [[ -L "$PREFIX/bin/cifrarium" ]]
 
 "$ROOT_DIR/scripts/build-release.sh" --version 0.4.1 --out-dir "$TEST_ROOT/release-0.4.1"
@@ -435,10 +440,22 @@ if "$ROOT_DIR/scripts/install.sh" --uninstall --prefix "$PREFIX" --yes >/dev/nul
   echo 'uninstall unexpectedly removed an active service' >&2
   exit 1
 fi
-[[ -f "$HOME_DIR/.config/systemd/user/cifrarium.service" ]]
+[[ -f "$XDG_CONFIG_HOME/systemd/user/cifrarium.service" ]]
 [[ -L "$PREFIX/bin/cifrarium" ]]
 [[ "$("$PREFIX/bin/cifrarium" -version)" == "$VERSION" ]]
 unset CIFRARIUM_TEST_SYSTEMCTL_ACTIVE
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.8 --out-dir "$TEST_ROOT/release-0.8.8"
+cp "$TEST_ROOT/release-0.8.8"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.8-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+cp "$TEST_ROOT/release-0.8.8/manifest.json" "$PUBLIC_DIR/manifest.json"
+XDG_CONFIG_HOME="$HOME_DIR/.config" "$ROOT_DIR/scripts/install.sh" --version 0.8.8 \
+  --prefix "$PREFIX" --base-url "https://127.0.0.1:$PORT" >/dev/null
+[[ -f "$HOME_DIR/.config/systemd/user/cifrarium.service" ]]
+grep -Fq 'Environment=XDG_CONFIG_HOME=%E' "$HOME_DIR/.config/systemd/user/cifrarium.service"
+grep -Fq 'EnvironmentFile=-%E/cifrarium/daemon.env' "$HOME_DIR/.config/systemd/user/cifrarium.service"
+if command -v systemd-analyze >/dev/null 2>&1; then
+  XDG_CONFIG_HOME="$HOME_DIR/.config" systemd-analyze verify "$HOME_DIR/.config/systemd/user/cifrarium.service"
+fi
 "$ROOT_DIR/scripts/install.sh" --uninstall --prefix "$PREFIX" --yes
 [[ ! -e "$PREFIX/bin/cifrarium" ]]
 

@@ -10,7 +10,7 @@ printf '%s\n' 'Lifecycle audit: fresh local snapshot, encrypted queue, restart, 
 go test ./cmd/cifrarium -run '^TestLifecycleAuditFreshInstallQueueResume$' -count=1 -v
 
 printf '%s\n' 'Lifecycle audit: custom XDG/systemd path comparison'
-go test ./cmd/cifrarium -run '^TestLifecycleAuditCustomXDGSystemdUnitMismatch$' -count=1 -v
+go test ./cmd/cifrarium -run '^TestLifecycleAudit(CustomXDG|DefaultXDG)SystemdPathsMatchCLIAndInstaller$' -count=1 -v
 
 printf '%s\n' 'Lifecycle audit: MCP/backend readiness mismatch reproduction'
 go test ./cmd/cifrarium -run '^TestRunDaemonRefreshReportsMCPReadyWhileBackendIsStarting$' -count=1 -v

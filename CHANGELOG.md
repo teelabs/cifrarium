@@ -16,6 +16,8 @@ All notable changes to Cifrarium will be documented here.
   allowing provider uploads.
 - Report MCP and backend readiness separately after daemon refresh, including
   a safe next step while the backend is waiting for recovery/provider setup.
+- Resolve systemd's Cifrarium configuration and provider paths from the same
+  XDG configuration root used by the CLI and installer.
 
 ## [0.10.2] - 2026-11-04
 

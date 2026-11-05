@@ -5,8 +5,8 @@ Description=Cifrarium local encrypted configuration vault
 Type=simple
 UMask=0077
 NoNewPrivileges=yes
-Environment=XDG_CONFIG_HOME=%h/.config
-EnvironmentFile=-%h/.config/cifrarium/daemon.env
+Environment=XDG_CONFIG_HOME=%E
+EnvironmentFile=-%E/cifrarium/daemon.env
 ExecStart=%h/.local/bin/cifrarium daemon
 Restart=on-failure
 RestartSec=30s
