@@ -4,6 +4,17 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-05
+
+### Fixed
+
+- Allow upgrades when the active doctor confirms a healthy configured vault,
+  even if an unrelated system health problem makes its overall exit status
+  non-zero. Select the doctor invocation only for known release families,
+  reject non-canonical versions and symlinked binaries, and stop if the active
+  target changes during preflight; malformed reports and unhealthy
+  configuration or vault state still block the upgrade.
+
 ## [0.10.3] - 2026-11-05
 
 ### Added
