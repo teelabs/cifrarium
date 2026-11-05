@@ -103,7 +103,7 @@ func (b *Backend) CaptureSnapshot(ctx context.Context) (Item, error) {
 		return Item{}, err
 	}
 	if b.Vault == nil {
-		return Item{}, &CaptureError{Err: context.Canceled}
+		return Item{}, &CaptureError{Stage: CaptureStageVaultWrite, Err: context.Canceled}
 	}
 	var records []store.Record
 	for _, adapter := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
@@ -112,7 +112,7 @@ func (b *Backend) CaptureSnapshot(ctx context.Context) (Item, error) {
 		}
 		files, err := adapter.Collect(b.Home)
 		if err != nil {
-			return Item{}, &CaptureError{Err: err}
+			return Item{}, &CaptureError{Stage: CaptureStageAdapters, Err: err}
 		}
 		for _, file := range files {
 			records = append(records, store.Record{Path: file.Relative, Mode: uint32(file.Mode), Data: file.Data})
@@ -123,15 +123,15 @@ func (b *Backend) CaptureSnapshot(ctx context.Context) (Item, error) {
 	}
 	manifest, err := b.Vault.Save(records)
 	if err != nil {
-		return Item{}, err
+		return Item{}, &CaptureError{Stage: CaptureStageVaultWrite, Err: err}
 	}
 	ciphertext, err := b.Vault.SnapshotCiphertext(manifest.Snapshot)
 	if err != nil {
-		return Item{}, err
+		return Item{}, &CaptureError{Stage: CaptureStageSnapshotRead, Err: err}
 	}
 	sealed, err := store.SealManifest(manifest, b.Vault.Operational)
 	if err != nil {
-		return Item{}, err
+		return Item{}, &CaptureError{Stage: CaptureStageManifestPreparation, Err: err}
 	}
 	return Item{ID: manifest.Snapshot, Ciphertext: ciphertext, Manifest: sealed}, nil
 }

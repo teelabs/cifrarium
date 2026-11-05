@@ -113,7 +113,7 @@ func TestCollectSetupChoicesReportsEachDecisionImmediately(t *testing.T) {
 func TestRenderSetupFailureUsesActionableSections(t *testing.T) {
 	var out bytes.Buffer
 	home := t.TempDir()
-	renderSetupFailure(&out, home, errors.New("first capture: symlink rejected: .zshrc"))
+	renderSetupFailure(&out, home, &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "capture", Path: ".zshrc", Err: syscall.ELOOP}})
 	text := out.String()
 	for _, want := range []string{"What happened", "Why it matters", "How to fix it", "What to do next", "cifrarium setup"} {
 		if !strings.Contains(text, want) {
@@ -128,7 +128,7 @@ func TestRenderSetupFailureUsesActionableSections(t *testing.T) {
 func TestRenderSetupFailureIdentifiesRelativeAllowlistedPath(t *testing.T) {
 	var out bytes.Buffer
 	home := t.TempDir()
-	err := &os.PathError{Op: "open", Path: filepath.Join(home, ".codex", "config.toml"), Err: syscall.EACCES}
+	err := &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "open", Path: filepath.Join(home, ".codex", "config.toml"), Err: syscall.EACCES}}
 	renderSetupFailure(&out, home, err)
 	text := out.String()
 	if !strings.Contains(text, "Adapter path: .codex/config.toml") || !strings.Contains(text, "permission") || strings.Contains(text, home) {
@@ -139,7 +139,7 @@ func TestRenderSetupFailureIdentifiesRelativeAllowlistedPath(t *testing.T) {
 func TestRenderDaemonFailureUsesSafeSymlinkRecoveryInstructions(t *testing.T) {
 	var out bytes.Buffer
 	home := t.TempDir()
-	renderDaemonFailure(&out, home, errors.New("recovery snapshot failed: symlink rejected: .zshrc"))
+	renderDaemonFailure(&out, home, &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "capture", Path: ".zshrc", Err: syscall.ELOOP}})
 	text := out.String()
 	for _, want := range []string{
 		"What happened",
@@ -147,8 +147,8 @@ func TestRenderDaemonFailureUsesSafeSymlinkRecoveryInstructions(t *testing.T) {
 		"How to fix it",
 		"Adapter path: .zshrc",
 		"materialize a regular file through its managing tool",
+		"systemctl --user stop cifrarium.service",
 		"cifrarium snapshot",
-		"systemctl --user start cifrarium.service",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("daemon error missing %q: %q", want, text)
@@ -165,7 +165,7 @@ func TestRenderDaemonFailureIdentifiesOnlyRelativeAllowlistedCapturePath(t *test
 	var out bytes.Buffer
 	home := t.TempDir()
 	path := filepath.Join(home, ".codex", "config.toml")
-	err := &os.PathError{Op: "open", Path: path, Err: syscall.EACCES}
+	err := &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "open", Path: path, Err: syscall.EACCES}}
 	renderDaemonFailure(&out, home, err)
 	text := out.String()
 	if !strings.Contains(text, "Adapter path: .codex/config.toml") || !strings.Contains(text, "permission") {
@@ -179,7 +179,7 @@ func TestRenderDaemonFailureIdentifiesOnlyRelativeAllowlistedCapturePath(t *test
 func TestRenderDaemonFailureDoesNotClassifyCustomCapturePathAsProviderFailure(t *testing.T) {
 	var out bytes.Buffer
 	home := t.TempDir()
-	err := &daemon.CaptureError{Err: &os.PathError{Op: "capture", Path: ".oh-my-zsh/custom/provider.zsh", Err: syscall.EACCES}}
+	err := &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "capture", Path: ".oh-my-zsh/custom/provider.zsh", Err: syscall.EACCES}}
 	renderDaemonFailure(&out, home, err)
 	text := out.String()
 	if !strings.Contains(text, "Adapter path: .oh-my-zsh/custom/provider.zsh") || !strings.Contains(text, "permissions") {
@@ -235,7 +235,7 @@ func TestRenderDaemonFailureExplainsMissingProviderAction(t *testing.T) {
 
 func TestRejectedSymlinkPathStopsBeforeRecoverySnapshotSuffix(t *testing.T) {
 	home := t.TempDir()
-	got, ok := rejectedSymlinkPath(home, errors.New("symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: .zshrc"))
+	got, ok := rejectedSymlinkPath(home, &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "capture", Path: ".zshrc", Err: syscall.ELOOP}})
 	want := ".zshrc"
 	if !ok || got != want {
 		t.Fatalf("rejectedSymlinkPath() = %q, %t; want %s, true", got, ok, want)
@@ -243,13 +243,22 @@ func TestRejectedSymlinkPathStopsBeforeRecoverySnapshotSuffix(t *testing.T) {
 }
 
 func TestRejectedSymlinkPathFailsClosedForTraversalAndExternalAbsolutePaths(t *testing.T) {
-	for _, errText := range []string{
-		"symlink rejected: ../outside",
-		"symlink rejected: /tmp/outside",
-		"symlink rejected: ../../outside/.zshrc; recovery snapshot failed: ignored",
+	for _, path := range []string{
+		"../outside",
+		"/tmp/outside",
+		"../../outside/.zshrc",
 	} {
-		if got, ok := rejectedSymlinkPath(t.TempDir(), errors.New(errText)); ok || got != "" {
-			t.Fatalf("rejectedSymlinkPath(%q) = %q, %t; want empty, false", errText, got, ok)
+		err := &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "capture", Path: path, Err: syscall.ELOOP}}
+		if got, ok := rejectedSymlinkPath(t.TempDir(), err); ok || got != "" {
+			t.Fatalf("rejectedSymlinkPath(%q) = %q, %t; want empty, false", path, got, ok)
+		}
+	}
+}
+
+func TestRejectedSymlinkPathDoesNotParseArbitraryErrorText(t *testing.T) {
+	for _, message := range []string{"symlink rejected: .zshrc", "provider failed: symlink rejected: .zshrc"} {
+		if path, ok := rejectedSymlinkPath(t.TempDir(), errors.New(message)); ok || path != "" {
+			t.Fatalf("rejectedSymlinkPath(%q) = %q, %t; want empty, false", message, path, ok)
 		}
 	}
 }
@@ -257,7 +266,8 @@ func TestRejectedSymlinkPathFailsClosedForTraversalAndExternalAbsolutePaths(t *t
 func TestRenderDaemonFailureDoesNotEchoRawErrorOrSensitiveSymlinkTarget(t *testing.T) {
 	var out bytes.Buffer
 	home := t.TempDir()
-	renderDaemonFailure(&out, home, errors.New("recovery snapshot failed: symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: /secret/target"))
+	err := &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "capture", Path: ".zshrc", Err: syscall.ELOOP}}
+	renderDaemonFailure(&out, home, err)
 	text := out.String()
 	for _, forbidden := range []string{"/secret/target", "recovery snapshot failed", "CIFRARIUM_RECOVERY_SHARE", "token"} {
 		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
@@ -272,7 +282,7 @@ func TestRenderDaemonFailureDoesNotEchoRawErrorOrSensitiveSymlinkTarget(t *testi
 func TestRenderDaemonFailureKeepsTypedSymlinkPathRelative(t *testing.T) {
 	var out bytes.Buffer
 	home := t.TempDir()
-	err := &os.PathError{Op: "capture", Path: filepath.Join(home, ".zshrc"), Err: syscall.ELOOP}
+	err := &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "capture", Path: filepath.Join(home, ".zshrc"), Err: syscall.ELOOP}}
 	renderDaemonFailure(&out, home, err)
 	text := out.String()
 	if !strings.Contains(text, "Adapter path: .zshrc") || strings.Contains(text, home) {
@@ -285,7 +295,7 @@ func TestRenderDaemonFailureKeepsTypedSymlinkPathRelative(t *testing.T) {
 
 func TestRenderDaemonFailureKeepsSafeInstructionOrder(t *testing.T) {
 	var out bytes.Buffer
-	renderDaemonFailure(&out, t.TempDir(), errors.New("recovery snapshot failed: symlink rejected: .zshrc"))
+	renderDaemonFailure(&out, t.TempDir(), &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: &os.PathError{Op: "capture", Path: ".zshrc", Err: syscall.ELOOP}})
 	text := out.String()
 	sections := []string{"Daemon needs attention", "What happened", "Why it matters", "How to fix it", "What to do next"}
 	last := -1
@@ -295,6 +305,65 @@ func TestRenderDaemonFailureKeepsSafeInstructionOrder(t *testing.T) {
 			t.Fatalf("section %q is out of order in %q", section, text)
 		}
 		last = index
+	}
+}
+
+func TestRenderDaemonFailureDoesNotInventAdapterPathForUnknownError(t *testing.T) {
+	var out bytes.Buffer
+	home := t.TempDir()
+	renderDaemonFailure(&out, home, errors.New("vault write failed at /private/home/token-value"))
+	text := out.String()
+	for _, forbidden := range []string{"reported adapter path", "/private/home", "token-value", "vault write failed"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("unknown capture diagnostic exposed or misrepresented %q: %q", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, "No validated adapter path or safe cause was identified") {
+		t.Fatalf("unknown capture diagnostic lacks the safe no-path state: %q", text)
+	}
+}
+
+func TestRenderDaemonFailureExplainsVaultWriteStageWithoutRawError(t *testing.T) {
+	var out bytes.Buffer
+	err := &daemon.CaptureError{Stage: daemon.CaptureStageVaultWrite, Err: errors.New("permission denied: /private/home/token-value")}
+	renderDaemonFailure(&out, t.TempDir(), err)
+	text := out.String()
+	for _, want := range []string{"local vault", "doctor"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Fatalf("vault-write diagnostic missing %q: %q", want, text)
+		}
+	}
+	for _, forbidden := range []string{"/private/home", "token-value", "permission denied"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("vault-write diagnostic leaked %q: %q", forbidden, text)
+		}
+	}
+}
+
+func TestRenderDaemonFailureReportsUploadAndRecoveryCaptureFailures(t *testing.T) {
+	var out bytes.Buffer
+	home := t.TempDir()
+	err := &daemon.RecoverySnapshotError{
+		Primary: errors.New("provider offline: /private/home/token-value"),
+		Recovery: &daemon.CaptureError{
+			Stage: daemon.CaptureStageAdapters,
+			Err:   &os.PathError{Op: "capture", Path: ".zshrc", Err: syscall.ELOOP},
+		},
+	}
+	if got := daemonUploadFailureReasonFor(err); got != daemonUploadAccess {
+		t.Fatalf("combined upload failure reason = %v; want provider access", got)
+	}
+	renderDaemonFailure(&out, home, err)
+	text := out.String()
+	for _, want := range []string{"pending upload", "pending.queue", "Recovery adapter path: .zshrc", "Materialize a regular file", "systemctl --user stop cifrarium.service"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("combined failure diagnostic missing %q: %q", want, text)
+		}
+	}
+	for _, forbidden := range []string{"/private/home", "token-value", "provider offline", "stopped before remote upload", "No provider upload was attempted"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("combined failure diagnostic leaked or misstated %q: %q", forbidden, text)
+		}
 	}
 }
 

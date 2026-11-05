@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -49,6 +51,28 @@ func TestBackendStatusIsTheSharedOperationalView(t *testing.T) {
 	}
 	if status.Pending != 0 || status.Snapshots != 0 || status.Signer == "" {
 		t.Fatalf("unexpected backend counters: %#v", status)
+	}
+}
+
+func TestBackendCaptureClassifiesVaultWriteFailure(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(t.TempDir(), "vault")
+	if err := os.WriteFile(root, []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := Backend{Home: home, Vault: store.New(root, make([]byte, 32), signing)}
+	_, err = backend.CaptureSnapshot(context.Background())
+	var captureErr *CaptureError
+	if !errors.As(err, &captureErr) || captureErr.Stage != CaptureStageVaultWrite {
+		t.Fatalf("capture error = %#v (%v), want typed vault-write failure", captureErr, err)
+	}
+	var marker interface{ CaptureFailure() }
+	if !errors.As(err, &marker) {
+		t.Fatal("vault write failure was not classified as a local capture failure")
 	}
 }
 

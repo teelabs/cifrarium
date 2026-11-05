@@ -66,6 +66,7 @@ type doctorReport struct {
 	Vault         componentReport `json:"vault"`
 	Daemon        componentReport `json:"daemon"`
 	MCP           componentReport `json:"mcp"`
+	Backend       componentReport `json:"backend"`
 	Adapters      []adapterReport `json:"adapters"`
 	Provider      componentReport `json:"provider"`
 }
@@ -78,8 +79,10 @@ var loadDoctorKeysForRoot = func(root string) ([]byte, ed25519.PrivateKey, error
 	return store.NewKeyring().LoadExistingForRoot(root)
 }
 
+var doctorMCPProbe = probeMCP
+
 func (r doctorReport) exitCode() int {
-	if r.Overall == severityProblem || r.Vault.Severity == severityProblem || r.Daemon.Severity == severityProblem || r.MCP.Severity == severityProblem || r.Provider.Severity == severityProblem {
+	if r.Overall == severityProblem || r.Vault.Severity == severityProblem || r.Daemon.Severity == severityProblem || r.MCP.Severity == severityProblem || r.Backend.Severity == severityProblem || r.Provider.Severity == severityProblem {
 		return 1
 	}
 	for _, adapter := range r.Adapters {
@@ -127,6 +130,7 @@ func renderDoctor(w io.Writer, report doctorReport, format outputFormat) error {
 	writeComponent(ui, report.Vault)
 	writeComponent(ui, report.Daemon)
 	writeComponent(ui, report.MCP)
+	writeComponent(ui, report.Backend)
 	ui.Section("Adapters")
 	for _, adapter := range report.Adapters {
 		value := adapter.State
@@ -186,6 +190,7 @@ func runDoctor(root, home, providerDir, providerRemote string, _ io.Writer) (doc
 		Vault:         componentReport{Name: "Vault", State: "not-configured", Severity: severityWarning, Detail: root},
 		Daemon:        componentReport{Name: "Daemon", State: "unknown", Severity: severityWarning, Detail: "systemd user service"},
 		MCP:           componentReport{Name: "MCP", State: "not-running", Severity: severityWarning, Detail: filepath.Join(root, "cifrarium.sock")},
+		Backend:       componentReport{Name: "Backend", State: "not-running", Severity: severityWarning, Detail: "daemon control socket"},
 		Adapters:      inspectAdapters(home),
 		Provider:      componentReport{Name: "Provider", State: "not-configured", Severity: severityWarning, Detail: "optional"},
 	}
@@ -244,13 +249,14 @@ func runDoctor(root, home, providerDir, providerRemote string, _ io.Writer) (doc
 			report.Daemon.State = "disabled"
 		}
 	}
+	report.Backend = inspectDoctorBackend(daemonActive, filepath.Join(root, "control.sock"))
 
 	socket := filepath.Join(root, "cifrarium.sock")
 	if info, err := os.Stat(socket); err == nil {
 		if info.Mode().Perm()&0077 != 0 {
 			report.MCP.State = "unsafe-permissions"
 			report.MCP.Severity = severityProblem
-		} else if err := probeMCP(socket); err != nil {
+		} else if err := doctorMCPProbe(socket); err != nil {
 			report.MCP.State = "unreachable"
 			if daemonActive {
 				report.MCP.Severity = severityProblem
@@ -281,7 +287,7 @@ func runDoctor(root, home, providerDir, providerRemote string, _ io.Writer) (doc
 	}
 
 	report.Overall = severityHealthy
-	for _, component := range []componentReport{report.Vault, report.Daemon, report.MCP, report.Provider} {
+	for _, component := range []componentReport{report.Vault, report.Daemon, report.MCP, report.Backend, report.Provider} {
 		if component.Severity == severityProblem {
 			report.Overall = severityProblem
 			break
@@ -291,6 +297,23 @@ func runDoctor(root, home, providerDir, providerRemote string, _ io.Writer) (doc
 		}
 	}
 	return report, nil
+}
+
+func inspectDoctorBackend(daemonActive bool, controlSocket string) componentReport {
+	component := componentReport{Name: "Backend", State: "not-running", Severity: severityWarning, Detail: "daemon is not active"}
+	readiness, err := daemonRefreshBackendProbe(controlSocket)
+	if err != nil {
+		if !daemonActive {
+			return component
+		}
+		return componentReport{Name: "Backend", State: "unknown", Severity: severityProblem, Detail: "backend readiness could not be confirmed"}
+	}
+	state := safeReadinessState(readiness.Backend)
+	severity := severityProblem
+	if state == "ready" {
+		severity = severityHealthy
+	}
+	return componentReport{Name: "Backend", State: state, Severity: severity, Detail: "MCP " + safeReadinessState(readiness.MCP)}
 }
 
 func emptyAs(value, fallback string) string {

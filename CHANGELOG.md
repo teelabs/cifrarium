@@ -4,6 +4,17 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-05
+
+### Fixed
+
+- Report daemon backend readiness separately from systemd and MCP transport
+  health, and return an actionable message when CLI status or snapshot requests
+  are rejected while the backend is starting.
+- Preserve safe capture failure stages through recovery-snapshot errors and
+  avoid suggesting that an adapter path was reported when no validated path is
+  available.
+
 ## [0.10.5] - 2026-11-05
 
 ### Fixed

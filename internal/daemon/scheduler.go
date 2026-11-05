@@ -54,11 +54,36 @@ func (e *PersistenceError) Unwrap() error { return e.Err }
 // failures are not retryable by the daemon because retrying would repeat the
 // same local safety violation and could leave the operator without control of
 // the foreground process.
-type CaptureError struct{ Err error }
+type CaptureStage string
+
+const (
+	CaptureStageAdapters            CaptureStage = "adapters"
+	CaptureStageVaultWrite          CaptureStage = "vault-write"
+	CaptureStageSnapshotRead        CaptureStage = "snapshot-read"
+	CaptureStageManifestPreparation CaptureStage = "manifest-preparation"
+)
+
+type CaptureError struct {
+	Stage CaptureStage
+	Err   error
+}
 
 func (e *CaptureError) Error() string   { return fmt.Sprintf("capture failed: %v", e.Err) }
 func (e *CaptureError) Unwrap() error   { return e.Err }
 func (e *CaptureError) CaptureFailure() {}
+
+type RecoverySnapshotError struct {
+	Primary  error
+	Recovery error
+}
+
+func (e *RecoverySnapshotError) Error() string {
+	return fmt.Sprintf("%v; recovery snapshot failed: %v", e.Primary, e.Recovery)
+}
+
+func (e *RecoverySnapshotError) Unwrap() []error {
+	return []error{e.Primary, e.Recovery}
+}
 
 func NewScheduler(snapshot Snapshotter, upload Uploader, pending *Queue) *Scheduler {
 	return &Scheduler{Interval: DefaultInterval, Retry: RetryPolicy{MaxAttempts: 3, BaseDelay: time.Second}, Snapshot: snapshot, Upload: upload, Pending: pending}
@@ -159,7 +184,7 @@ func (s *Scheduler) missed(ctx context.Context, err error) error {
 	if s.MissedCycles == 1 && s.RecoverySnapshot != nil {
 		recovery, recoveryErr := s.RecoverySnapshot(ctx)
 		if recoveryErr != nil {
-			return fmt.Errorf("%w; recovery snapshot failed: %v", err, recoveryErr)
+			return &RecoverySnapshotError{Primary: err, Recovery: recoveryErr}
 		}
 		if queueErr := s.Pending.Push(recovery); queueErr != nil {
 			return fmt.Errorf("%w; recovery snapshot queue failed: %v", err, queueErr)

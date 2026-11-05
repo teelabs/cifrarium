@@ -243,7 +243,7 @@ to the daemon console and press Enter or wait for its retry.
 ## Diagnose the local installation
 
 Use `doctor` for one read-only report of the vault, keyring, daemon, local MCP
-socket, adapters, and optional GitHub provider:
+socket, daemon backend, adapters, and optional GitHub provider:
 
 ~~~sh
 cifrarium doctor
@@ -253,8 +253,10 @@ The report does not create keys, a vault, a provider checkout, a socket, or a
 service. When a GitHub provider is configured, the doctor also checks remote
 access and repository privacy. An unconfigured provider and a disabled
 optional daemon are warnings; a configured provider that cannot be reached,
-an invalid vault, or a running daemon without a working MCP socket is a
-problem and returns exit code 1.
+an invalid vault, a running daemon without a working MCP socket, or an active
+daemon whose backend is still starting is a problem and returns exit code 1.
+MCP readiness means the transport answers; it does not mean the backend can
+accept status or snapshot requests.
 
 For scripts and agents, request structured output and preserve the exit code:
 
@@ -407,7 +409,12 @@ human commands such as `snapshot` and `restore`; MCP exposes tools through its
 protocol and does not create `cifrarium mcp ...` subcommands. When the managed
 daemon is active, `status` and `snapshot` use its local control endpoint so
 vault and queue operations are coordinated. If no daemon endpoint exists, the
-CLI retains its bootstrap-compatible local behavior.
+CLI retains its bootstrap-compatible local behavior. If the daemon is active
+but the backend is not ready, the CLI reports that state and does not perform a
+second local capture. To test local capture independently, exit a foreground
+daemon by answering `n` at `Retry?`, or stop a systemd-managed daemon with
+`systemctl --user stop cifrarium.service`; a successful local snapshot does
+not by itself prove daemon readiness.
 
 When `daemon.env` or the service unit changes, refresh the managed daemon:
 
