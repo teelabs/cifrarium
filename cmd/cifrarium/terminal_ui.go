@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/teelabs/cifrarium/internal/daemon"
 )
 
 const (
@@ -250,7 +252,8 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 		ui.Text(colorSecondary, cause)
 		ui.Text(colorSecondary, "Correct this path without disabling capture safety, then run setup again.")
 	} else {
-		ui.Text(colorSecondary, "Review the reported adapter path and correct it without disabling capture safety.")
+		ui.Text(colorSecondary, "No validated adapter path or safe cause was identified. Do not change adapter paths based on this message.")
+		ui.Command("cifrarium doctor -format=json")
 	}
 	ui.Section("What to do next")
 	ui.Command("cifrarium setup")
@@ -259,41 +262,155 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 func renderDaemonFailure(w io.Writer, home string, err error) {
 	ui := newTerminalUI(w)
 	reason := daemonUploadFailureReasonFor(err)
+	var recoveryFailure *daemon.RecoverySnapshotError
+	hasRecoveryFailure := errors.As(err, &recoveryFailure)
+	var captureErr *daemon.CaptureError
+	isCaptureFailure := errors.As(err, &captureErr)
 	ui.Header("Daemon needs attention")
 	ui.Section("What happened")
-	if reason != daemonUploadNone {
+	if reason != daemonUploadNone && hasRecoveryFailure {
+		ui.Failure("The daemon could not confirm a pending upload or complete its recovery snapshot.")
+	} else if reason != daemonUploadNone {
 		ui.Failure("The daemon could not upload pending encrypted work.")
+	} else if hasRecoveryFailure {
+		ui.Failure("The initial snapshot and its recovery snapshot both failed.")
+	} else if isCaptureFailure {
+		ui.Failure("The daemon could not complete its local snapshot.")
 	} else {
-		ui.Failure("The daemon could not complete its recovery snapshot.")
+		ui.Failure("The daemon could not complete its initial work.")
 	}
 	ui.Section("Why it matters")
-	if reason != daemonUploadNone {
+	if reason != daemonUploadNone && hasRecoveryFailure {
+		ui.Text(colorSecondary, "The encrypted pending queue was preserved because the provider upload was not confirmed. The follow-up recovery snapshot also failed.")
+	} else if reason != daemonUploadNone {
 		ui.Text(colorSecondary, "Cifrarium preserved the encrypted pending queue and stopped before remote upload. Existing vault history was preserved.")
+	} else if hasRecoveryFailure {
+		ui.Text(colorSecondary, "Cifrarium could not confirm a completed initial or recovery snapshot. The underlying errors are not safe to display in this message.")
+	} else if isCaptureFailure {
+		renderCaptureFailureImpact(ui, captureErr.Stage)
 	} else {
-		ui.Text(colorSecondary, "Cifrarium stopped this capture before saving or uploading a new snapshot. Existing vault history was preserved.")
+		ui.Text(colorSecondary, "Cifrarium could not confirm a completed snapshot. The underlying error is not safe to display in this message.")
 	}
 	ui.Section("How to fix it")
-	if path, ok := rejectedSymlinkPath(home, err); ok {
-		ui.Text(colorSecondary, "Cifrarium does not follow symlinks during capture.")
-		ui.Value("Adapter path", path)
-		ui.Text(colorSecondary, "Leave the daemon stopped. If this link is managed intentionally, materialize a regular file through its managing tool.")
-		ui.CommandBlock("cifrarium snapshot\nsystemctl --user start cifrarium.service")
+	if reason != daemonUploadNone && hasRecoveryFailure {
+		renderDaemonUploadGuidance(ui, reason)
+		renderRecoverySnapshotGuidance(ui, home, recoveryFailure.Recovery)
+	} else if isCaptureFailure && captureErr.Stage == daemon.CaptureStageAdapters {
+		if path, ok := rejectedSymlinkPath(home, err); ok {
+			ui.Text(colorSecondary, "Cifrarium does not follow symlinks during capture.")
+			ui.Value("Adapter path", path)
+			ui.Text(colorSecondary, "If this link is managed intentionally, materialize a regular file through its managing tool.")
+			renderLocalSnapshotRecovery(ui, w, false)
+		} else if path, cause, ok := capturePathDiagnostic(home, err); ok {
+			ui.Value("Adapter path", path)
+			ui.Text(colorSecondary, cause)
+			ui.Text(colorSecondary, "Correct this path without disabling capture safety.")
+			renderLocalSnapshotRecovery(ui, w, false)
+		} else {
+			ui.Text(colorSecondary, "No validated adapter path was identified; do not change adapter paths based on this message.")
+			ui.Command("cifrarium doctor -format=json")
+			renderLocalSnapshotRecovery(ui, w, true)
+		}
 	} else if reason != daemonUploadNone {
 		renderDaemonUploadGuidance(ui, reason)
-	} else if path, cause, ok := capturePathDiagnostic(home, err); ok {
-		ui.Value("Adapter path", path)
-		ui.Text(colorSecondary, cause)
-		ui.Text(colorSecondary, "Correct this path without disabling capture safety, then run `cifrarium snapshot` before starting the daemon again.")
+	} else if isCaptureFailure {
+		renderCaptureStageGuidance(ui, captureErr.Stage)
 	} else {
-		ui.Text(colorSecondary, "Review the reported adapter path and correct it without disabling capture safety.")
-		ui.Command("cifrarium doctor")
+		ui.Text(colorSecondary, "No validated adapter path or safe cause was identified. Do not change adapter paths based on this message.")
+		ui.Command("cifrarium doctor -format=json")
+		renderLocalSnapshotRecovery(ui, w, true)
 	}
 	ui.Section("What to do next")
-	if reason != daemonUploadNone {
+	if reason != daemonUploadNone && hasRecoveryFailure {
+		ui.Text(colorWarning, "Preserve pending.queue. Keep the daemon stopped until a local snapshot succeeds; resolve the provider issue before allowing queued uploads to retry.")
+	} else if reason != daemonUploadNone {
 		ui.Text(colorWarning, "Do not delete pending.queue or put recovery material in shell history. Use another console for the corrective action, then return here and press Enter or wait for the retry.")
-	} else {
+	} else if hasRecoveryFailure {
+		ui.Text(colorWarning, "Keep the daemon stopped until a local snapshot succeeds. Do not alter adapter paths unless a validated path is shown above.")
+	} else if isCaptureFailure {
 		ui.Text(colorWarning, "Do not use rm, source, sudo, or a symlink-following override. Keep the daemon stopped until a local snapshot succeeds.")
+	} else {
+		ui.Text(colorWarning, "Keep the daemon stopped until `cifrarium doctor -format=json` reports the backend state and a local snapshot succeeds.")
 	}
+}
+
+func renderLocalSnapshotRecovery(ui terminalUI, w io.Writer, inspectDoctor bool) {
+	if writerIsTerminal(w) {
+		ui.Text(colorSecondary, "For a foreground daemon, answer `n` to Retry? to exit before running a local snapshot.")
+		if inspectDoctor {
+			ui.Command("cifrarium doctor -format=json")
+		}
+		ui.Command("cifrarium snapshot")
+		return
+	}
+	ui.Text(colorSecondary, "Exit a foreground daemon with `n` at Retry?; stop the systemd service with `systemctl --user stop cifrarium.service` before a local snapshot.")
+	commands := "systemctl --user stop cifrarium.service"
+	if inspectDoctor {
+		commands += "\ncifrarium doctor -format=json"
+	}
+	commands += "\ncifrarium snapshot"
+	ui.CommandBlock(commands)
+}
+
+func renderRecoverySnapshotGuidance(ui terminalUI, home string, err error) {
+	var captureErr *daemon.CaptureError
+	if errors.As(err, &captureErr) && captureErr.Stage == daemon.CaptureStageAdapters {
+		if path, ok := rejectedSymlinkPath(home, err); ok {
+			ui.Value("Recovery adapter path", path)
+			ui.Text(colorSecondary, "The local recovery snapshot rejected a symbolic link.")
+			ui.Text(colorSecondary, "Materialize a regular file through its managing tool; do not follow the link or disable capture safety.")
+		} else if path, cause, ok := capturePathDiagnostic(home, err); ok {
+			ui.Value("Recovery adapter path", path)
+			ui.Text(colorSecondary, cause)
+		} else {
+			ui.Text(colorSecondary, "The recovery snapshot could not read adapter data; no validated path was identified.")
+		}
+		renderLocalSnapshotRecovery(ui, ui.w, false)
+		return
+	}
+	if errors.As(err, &captureErr) {
+		ui.Text(colorSecondary, "The recovery snapshot failed during local snapshot preparation ("+safeCaptureStage(captureErr.Stage)+").")
+		renderLocalSnapshotRecovery(ui, ui.w, true)
+		return
+	}
+	ui.Text(colorSecondary, "The follow-up recovery snapshot also failed; its underlying error is not safe to display.")
+}
+
+func safeCaptureStage(stage daemon.CaptureStage) string {
+	switch stage {
+	case daemon.CaptureStageAdapters, daemon.CaptureStageVaultWrite, daemon.CaptureStageSnapshotRead, daemon.CaptureStageManifestPreparation:
+		return string(stage)
+	default:
+		return "unknown"
+	}
+}
+
+func renderCaptureFailureImpact(ui terminalUI, stage daemon.CaptureStage) {
+	switch stage {
+	case daemon.CaptureStageAdapters:
+		ui.Text(colorSecondary, "Cifrarium stopped before writing a new snapshot or uploading it. Existing vault history was preserved.")
+	case daemon.CaptureStageVaultWrite:
+		ui.Text(colorSecondary, "The local encrypted snapshot could not be persisted. Verify vault health before retrying; no provider upload was attempted.")
+	case daemon.CaptureStageSnapshotRead, daemon.CaptureStageManifestPreparation:
+		ui.Text(colorSecondary, "Snapshot data may already be present locally, but Cifrarium did not attempt a provider upload. Check vault health before retrying.")
+	default:
+		ui.Text(colorSecondary, "Cifrarium could not confirm whether a local snapshot was completed. Check vault health before retrying.")
+	}
+}
+
+func renderCaptureStageGuidance(ui terminalUI, stage daemon.CaptureStage) {
+	switch stage {
+	case daemon.CaptureStageVaultWrite:
+		ui.Text(colorSecondary, "Cifrarium could not persist an encrypted snapshot in the local vault.")
+	case daemon.CaptureStageSnapshotRead:
+		ui.Text(colorSecondary, "Cifrarium saved snapshot data but could not read it back for upload preparation.")
+	case daemon.CaptureStageManifestPreparation:
+		ui.Text(colorSecondary, "Cifrarium saved snapshot data but could not prepare its encrypted manifest for upload.")
+	default:
+		ui.Text(colorSecondary, "Cifrarium could not complete local snapshot preparation.")
+	}
+	ui.Command("cifrarium doctor -format=json")
+	ui.Text(colorSecondary, "Keep the daemon stopped until the local vault is healthy and a local snapshot succeeds.")
 }
 
 func daemonUploadGateFailure(err error) bool {
@@ -311,6 +428,10 @@ const (
 )
 
 func daemonUploadFailureReasonFor(err error) daemonUploadFailureReason {
+	var recoveryFailure *daemon.RecoverySnapshotError
+	if errors.As(err, &recoveryFailure) {
+		return daemonUploadFailureReasonFor(recoveryFailure.Primary)
+	}
 	var captureFailure interface{ CaptureFailure() }
 	if errors.As(err, &captureFailure) {
 		return daemonUploadNone
@@ -355,42 +476,14 @@ func rejectedSymlinkPath(home string, err error) (string, bool) {
 	if path, cause, ok := capturePathDiagnostic(home, err); ok && cause == "Cifrarium rejected a symbolic link during capture." {
 		return path, true
 	}
-	const marker = "symlink rejected: "
-	const recoverySuffix = "; recovery snapshot failed"
-	value := err.Error()
-	index := strings.Index(value, marker)
-	if index < 0 {
-		return "", false
-	}
-	path := strings.TrimSpace(value[index+len(marker):])
-	if suffixIndex := strings.Index(path, recoverySuffix); suffixIndex >= 0 {
-		path = strings.TrimSpace(path[:suffixIndex])
-	}
-	if path == "" {
-		return "", false
-	}
-	if filepath.IsAbs(path) {
-		clean := filepath.Clean(path)
-		relative, relErr := filepath.Rel(home, clean)
-		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return "", false
-		}
-		path = relative
-	}
-	if filepath.Clean(path) != path {
-		return "", false
-	}
-	if path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	path = filepath.ToSlash(path)
-	if !allowedCaptureRelativePath(path) {
-		return "", false
-	}
-	return path, true
+	return "", false
 }
 
 func capturePathDiagnostic(home string, err error) (string, string, bool) {
+	var captureErr *daemon.CaptureError
+	if !errors.As(err, &captureErr) || captureErr.Stage != daemon.CaptureStageAdapters {
+		return "", "", false
+	}
 	var pathErr *os.PathError
 	if !errors.As(err, &pathErr) || pathErr == nil || pathErr.Err == nil {
 		return "", "", false

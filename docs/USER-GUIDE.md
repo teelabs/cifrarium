@@ -275,6 +275,15 @@ safe next step. Full readiness requires both endpoints; an early service exit
 includes a sanitized systemd cause. MCP tools remain protocol operations; they
 are not exposed as `cifrarium mcp ...` shell commands.
 
+`cifrarium doctor` reports daemon process, MCP transport, and backend
+readiness separately. If the daemon is active but the backend is still
+starting, `status` and `snapshot` remain daemon-mediated and report that state;
+`status` and `snapshot` return a safe explanation and do not create a second
+local snapshot. To test local capture independently, exit a foreground daemon
+by answering `n` at `Retry?`, or stop a systemd-managed daemon with
+`systemctl --user stop cifrarium.service` before running `cifrarium snapshot`.
+A successful local snapshot does not prove that the daemon backend is ready.
+
 A running process is not proof that an upload succeeded. Check logs, queue
 state, and provider health.
 

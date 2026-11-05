@@ -142,8 +142,11 @@ cifrarium doctor -format=json
 
 `doctor` does not create keyring material, a vault, a provider checkout, a
 socket, or a daemon. It reports vault/keyring integrity, systemd user service
-state, MCP socket reachability, local adapter paths, and provider state. When a
-provider is configured it performs the remote access and GitHub privacy checks.
+state, MCP socket reachability, daemon backend readiness, local adapter paths,
+and provider state. Backend readiness is probed separately from the MCP
+transport: an active service and ready MCP do not mean the backend can accept
+status or snapshot requests. When a provider is configured, doctor performs
+remote access and GitHub privacy checks.
 
 Human setup, status, and doctor output is organized into headings, separated
 sections, and copyable command blocks. Interactive setup confirms each answer
@@ -161,8 +164,13 @@ go run ./cmd/cifrarium snapshot
 ~~~
 
 Check that a snapshot identifier was returned. Do not read or print the
-snapshot plaintext. If capture fails, report the adapter/path error and leave
-the previous vault state untouched.
+snapshot plaintext. With an active daemon, the CLI sends this request through
+the daemon control socket and does not bypass a backend that is still starting.
+To test local capture without daemon mediation, exit a foreground daemon by
+answering `n` at `Retry?`, or stop a systemd-managed daemon with
+`systemctl --user stop cifrarium.service`. If a failure has no validated
+allowlisted adapter path, do not guess which path to change; use doctor and the
+failure stage instead.
 
 Symlinked allowlisted paths are a deliberate stop condition. Do not bypass the
 check or follow the link. The safe human procedure is to stop the daemon,
@@ -181,16 +189,16 @@ systemctl --user start cifrarium.service
 
 Do not use `rm`, `source`, `sudo`, or a symlink-following override. If the link
 is intentionally managed, leave capture disabled until the manager provides a
-regular file. The foreground daemon stops and does not upload while the local
-capture is failing.
+regular file. An adapter-path failure stops the foreground daemon and does not
+upload. Other local snapshot stages report whether persistence or upload
+preparation failed; messages do not expose raw errors or paths.
 
 Daemon human diagnostics use the sections `Daemon needs attention`, `What
 happened`, `Why it matters`, `How to fix it`, and `What to do next`. A correction
-block is a copyable instruction, not diagnostic output. The parser extracts only
-the first validated path before the compound suffix `; recovery snapshot
-failed`; for example, the real error `symlink rejected: .zshrc; recovery
-snapshot failed: symlink rejected: .zshrc` yields only the local `.zshrc` path.
-It never prints symlink targets, file contents, recovery shares, or tokens.
+block is a copyable instruction, not diagnostic output. Adapter paths are shown
+only when they come from a typed adapter failure and pass the relative allowlist.
+Other stages use safe categories; raw errors, unvalidated paths, symlink
+targets, file contents, recovery shares, and tokens are not printed.
 TTY output uses the muted semantic foreground palette: headers `#58A6FF`,
 commands `#3FB950`, paths `#79C0FF`, warnings `#D29922`, failures `#F85149`,
 identity `#D2A8FF`, and secondary text `#8B949E`. Copyable command blocks are

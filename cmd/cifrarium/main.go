@@ -228,7 +228,7 @@ func main() {
 	switch cmd {
 	case "status":
 		if report, ok, err := callDaemonStatus(*root); err != nil {
-			fmt.Fprintf(os.Stderr, "cifrarium: daemon status failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "cifrarium: daemon status failed: %v\n", daemonBackendNotReadyAdvice(err))
 			os.Exit(1)
 		} else if ok {
 			if err := renderStatus(os.Stdout, report, format); err != nil {
@@ -259,7 +259,7 @@ func main() {
 		}
 	case "snapshot":
 		if snapshotID, ok, err := callDaemonSnapshot(*root); err != nil {
-			fmt.Fprintf(os.Stderr, "cifrarium: daemon snapshot failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "cifrarium: daemon snapshot failed: %v\n", daemonBackendNotReadyAdvice(err))
 			os.Exit(1)
 		} else if ok {
 			fmt.Printf("snapshot %s\n", snapshotID)
@@ -772,6 +772,10 @@ func askSetup(prompt string) (bool, error) {
 }
 
 func writeDaemonServiceError(w io.Writer, err error) {
+	var recoverySnapshotErr *daemon.RecoverySnapshotError
+	if errors.As(err, &recoverySnapshotErr) {
+		return
+	}
 	var captureErr interface{ CaptureFailure() }
 	if errors.As(err, &captureErr) {
 		return
@@ -867,6 +871,14 @@ func newMCPHandlerWithReadiness(root, providerDir string, backend *daemon.Backen
 			return nil, fmt.Errorf("method %q is not available", request.Method)
 		}
 	})
+}
+
+func daemonBackendNotReadyAdvice(err error) error {
+	var rpcErr *rpc.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Code != -32002 || rpcErr.Message != "daemon backend is not ready" {
+		return err
+	}
+	return errors.New("daemon backend is still starting. Run `cifrarium doctor -format=json` to inspect MCP and backend readiness. For a local snapshot, exit a foreground `cifrarium daemon` with `n` at Retry?; for a systemd-managed daemon, run `systemctl --user stop cifrarium.service` first. The CLI does not bypass an active daemon.")
 }
 
 func callDaemonStatus(root string) (statusReport, bool, error) {

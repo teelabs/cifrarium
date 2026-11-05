@@ -54,6 +54,28 @@ func TestSchedulerQueuesAndCreatesRecoveryAfterFailure(t *testing.T) {
 		t.Fatal("recovery snapshot not deduplicated")
 	}
 }
+
+func TestSchedulerPreservesRecoveryCaptureFailureType(t *testing.T) {
+	q := Queue{}
+	recoveryFailure := &CaptureError{Stage: CaptureStageAdapters, Err: errors.New("adapter collection failed")}
+	s := NewScheduler(
+		func(context.Context) (Item, error) { return Item{ID: "s", Ciphertext: []byte("cipher")}, nil },
+		func(context.Context, Item) error { return errors.New("provider offline") },
+		&q,
+	)
+	s.Retry.MaxAttempts = 1
+	s.RecoverySnapshot = func(context.Context) (Item, error) { return Item{}, recoveryFailure }
+	err := s.Cycle(context.Background())
+	var recoverySnapshotErr *RecoverySnapshotError
+	if !errors.As(err, &recoverySnapshotErr) || recoverySnapshotErr.Primary == nil || recoverySnapshotErr.Recovery == nil {
+		t.Fatalf("cycle error did not preserve both recovery failure causes: %#v", recoverySnapshotErr)
+	}
+	var captureErr *CaptureError
+	if !errors.As(err, &captureErr) || captureErr.Stage != CaptureStageAdapters {
+		t.Fatalf("combined cycle error lost typed recovery failure: %#v (%v)", captureErr, err)
+	}
+}
+
 func TestIncidentDeduper(t *testing.T) {
 	d := IncidentDeduper{}
 	if !d.First("network") {

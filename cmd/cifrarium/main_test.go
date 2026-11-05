@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -341,6 +342,115 @@ func TestDoctorExitCodeTreatsOptionalProviderAsWarning(t *testing.T) {
 	if got := report.exitCode(); got != 1 {
 		t.Fatalf("exit code = %d, want 1 for provider problem", got)
 	}
+	report = doctorReport{Backend: componentReport{State: "starting", Severity: severityProblem}}
+	if got := report.exitCode(); got != 1 {
+		t.Fatalf("exit code = %d, want 1 for a starting daemon backend", got)
+	}
+}
+
+func TestDoctorBackendReadinessDistinguishesBackendFromMCP(t *testing.T) {
+	oldProbe := daemonRefreshBackendProbe
+	t.Cleanup(func() { daemonRefreshBackendProbe = oldProbe })
+
+	daemonRefreshBackendProbe = func(string) (daemonRefreshReadiness, error) {
+		return daemonRefreshReadiness{Backend: "starting", MCP: "ready"}, nil
+	}
+	starting := inspectDoctorBackend(true, filepath.Join(t.TempDir(), "control.sock"))
+	if starting.State != "starting" || starting.Severity != severityProblem || !strings.Contains(starting.Detail, "MCP ready") {
+		t.Fatalf("backend diagnostic = %#v; want starting/problem with MCP ready detail", starting)
+	}
+
+	daemonRefreshBackendProbe = func(string) (daemonRefreshReadiness, error) {
+		return daemonRefreshReadiness{Backend: "ready", MCP: "ready"}, nil
+	}
+	ready := inspectDoctorBackend(true, filepath.Join(t.TempDir(), "control.sock"))
+	if ready.State != "ready" || ready.Severity != severityHealthy {
+		t.Fatalf("backend diagnostic = %#v; want ready/healthy", ready)
+	}
+
+	daemonRefreshBackendProbe = func(string) (daemonRefreshReadiness, error) {
+		return daemonRefreshReadiness{}, errors.New("raw /private/provider/token error")
+	}
+	unknown := inspectDoctorBackend(true, filepath.Join(t.TempDir(), "control.sock"))
+	if unknown.State != "unknown" || unknown.Severity != severityProblem || strings.Contains(unknown.Detail, "/private") || strings.Contains(unknown.Detail, "token") {
+		t.Fatalf("backend diagnostic = %#v; want sanitized unknown/problem", unknown)
+	}
+
+	inactive := inspectDoctorBackend(false, filepath.Join(t.TempDir(), "control.sock"))
+	if inactive.State != "not-running" || inactive.Severity != severityWarning {
+		t.Fatalf("backend diagnostic = %#v; want not-running/warning", inactive)
+	}
+	daemonRefreshBackendProbe = func(string) (daemonRefreshReadiness, error) {
+		return daemonRefreshReadiness{Backend: "ready", MCP: "ready"}, nil
+	}
+	manual := inspectDoctorBackend(false, filepath.Join(t.TempDir(), "control.sock"))
+	if manual.State != "ready" || manual.Severity != severityHealthy {
+		t.Fatalf("responsive manual daemon backend = %#v; want ready/healthy", manual)
+	}
+}
+
+func TestRunDoctorReportsActiveMCPButStartingBackendAsProblem(t *testing.T) {
+	oldKeys := loadDoctorKeysForRoot
+	oldMCPProbe := doctorMCPProbe
+	oldBackendProbe := daemonRefreshBackendProbe
+	t.Cleanup(func() {
+		loadDoctorKeysForRoot = oldKeys
+		doctorMCPProbe = oldMCPProbe
+		daemonRefreshBackendProbe = oldBackendProbe
+	})
+
+	root := t.TempDir()
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loadDoctorKeysForRoot = func(string) ([]byte, ed25519.PrivateKey, error) {
+		return make([]byte, 32), signing, nil
+	}
+	if err := os.WriteFile(filepath.Join(root, "cifrarium.sock"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\ncase \"$2\" in is-active) echo active;; is-enabled) echo enabled;; *) exit 1;; esac\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	doctorMCPProbe = func(string) error { return nil }
+	daemonRefreshBackendProbe = func(string) (daemonRefreshReadiness, error) {
+		return daemonRefreshReadiness{Backend: "starting", MCP: "ready"}, nil
+	}
+
+	report, err := runDoctor(root, t.TempDir(), "", "", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Daemon.State != "active" || report.MCP.State != "ready" || report.Backend.State != "starting" || report.Overall != severityProblem || report.exitCode() != 1 {
+		t.Fatalf("doctor report failed to distinguish readiness states: %#v", report)
+	}
+	var output bytes.Buffer
+	if err := renderDoctor(&output, report, outputJSON); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"backend":{"name":"Backend","state":"starting","severity":"problem","detail":"MCP ready"}`) {
+		t.Fatalf("doctor JSON omitted backend readiness: %s", output.String())
+	}
+}
+
+func TestDaemonBackendNotReadyAdviceIsSafeAndActionable(t *testing.T) {
+	got := daemonBackendNotReadyAdvice(&rpc.Error{Code: -32002, Message: "daemon backend is not ready", Data: "/private/token"})
+	for _, want := range []string{"MCP and backend readiness", "foreground `cifrarium daemon`", "systemctl --user stop cifrarium.service", "local snapshot"} {
+		if !strings.Contains(got.Error(), want) {
+			t.Fatalf("readiness advice %q does not include %q", got, want)
+		}
+	}
+	if strings.Contains(got.Error(), "/private") || strings.Contains(got.Error(), "token") || strings.Contains(got.Error(), "backend is not ready") {
+		t.Fatalf("readiness advice leaked raw RPC details: %q", got)
+	}
+
+	original := errors.New("other RPC failure")
+	if got := daemonBackendNotReadyAdvice(original); got != original {
+		t.Fatalf("unrelated RPC error changed: %v", got)
+	}
 }
 
 func TestRenderDoctorHumanIncludesOperationalSections(t *testing.T) {
@@ -348,6 +458,7 @@ func TestRenderDoctorHumanIncludesOperationalSections(t *testing.T) {
 		Vault:    componentReport{Name: "Vault", State: "ready", Detail: "/vault"},
 		Daemon:   componentReport{Name: "Daemon", State: "disabled", Detail: "systemd user service"},
 		MCP:      componentReport{Name: "MCP", State: "not-running", Detail: "/vault/cifrarium.sock"},
+		Backend:  componentReport{Name: "Backend", State: "not-running", Detail: "daemon is not active"},
 		Adapters: []adapterReport{{Name: "codex", State: "configured", Paths: []string{"~/.codex/config.toml"}}},
 		Provider: componentReport{Name: "Provider", State: "not-configured", Detail: "optional"},
 	}
@@ -356,7 +467,7 @@ func TestRenderDoctorHumanIncludesOperationalSections(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := out.String()
-	for _, want := range []string{"Vault", "Daemon", "MCP", "Adapters", "Provider", "codex", "disabled", "not-running"} {
+	for _, want := range []string{"Vault", "Daemon", "MCP", "Backend", "Adapters", "Provider", "codex", "disabled", "not-running"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("doctor output missing %q in %q", want, text)
 		}
@@ -491,6 +602,18 @@ func TestWriteDaemonServiceErrorSuppressesAlreadyRenderedCaptureDetails(t *testi
 
 	if out.Len() != 0 {
 		t.Fatalf("raw capture error was printed after sanitized renderer: %q", out.String())
+	}
+}
+
+func TestWriteDaemonServiceErrorSuppressesCompoundRecoveryDetails(t *testing.T) {
+	var out bytes.Buffer
+	err := &daemon.RecoverySnapshotError{
+		Primary:  errors.New("provider URL contains private-token"),
+		Recovery: errors.New("write failed at /private/home"),
+	}
+	writeDaemonServiceError(&out, err)
+	if out.Len() != 0 {
+		t.Fatalf("raw compound recovery error was printed after sanitized diagnostics: %q", out.String())
 	}
 }
 
