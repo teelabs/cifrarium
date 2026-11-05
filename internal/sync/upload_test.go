@@ -20,6 +20,19 @@ type fakeProvider struct {
 	privateErr        error
 }
 
+func testUploadGate(t *testing.T, operational []byte) (UploadGate, []recovery.Share) {
+	t.Helper()
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := store.RecoveryShares(operational, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return UploadGate{OperationalKey: operational, SigningKey: signing}, shares
+}
+
 func (f *fakeProvider) Upload(context.Context, string, []byte) error        { f.uploads++; return nil }
 func (f *fakeProvider) UploadCatalog(context.Context, string, []byte) error { f.catalogs++; return nil }
 func (f *fakeProvider) Download(context.Context, string) ([]byte, error)    { return f.download, nil }
@@ -35,40 +48,34 @@ func (f *fakeProvider) VerifyPrivate(context.Context) error {
 
 func TestUploadRequiresPrivateProviderBeforeCiphertext(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
-	shares, err := recovery.Split(key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	gate, shares := testUploadGate(t, key)
+	var err error
 	manifest, err := store.SealManifest(store.Manifest{Snapshot: "id"}, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := &fakeProvider{privateErr: errors.New("repository is public")}
-	g := UploadGate{OperationalKey: key}
-	if err := g.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, []recovery.Share{shares[0], shares[1]}); err == nil {
+	if err := gate.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, shares[:2]); err == nil {
 		t.Fatal("public provider accepted")
 	}
 	if p.privateCalls != 1 || p.uploads != 0 || p.catalogs != 0 {
 		t.Fatalf("privacy gate calls=%d uploads=%d catalogs=%d", p.privateCalls, p.uploads, p.catalogs)
 	}
 	p.privateErr = nil
-	if err := g.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, []recovery.Share{shares[0], shares[1]}); err != nil {
+	if err := gate.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, shares[:2]); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestUploadRequiresRecovery(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
-	shares, err := recovery.Split(key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	gate, shares := testUploadGate(t, key)
+	var err error
 	p := &fakeProvider{}
-	g := UploadGate{OperationalKey: key}
-	if err = g.Upload(context.Background(), p, "id", []byte("cipher"), []recovery.Share{shares[0]}); err == nil || p.uploads != 0 {
+	if err = gate.Upload(context.Background(), p, "id", []byte("cipher"), shares[:1]); err == nil || p.uploads != 0 {
 		t.Fatal("uploaded without recovery")
 	}
-	if err = g.Upload(context.Background(), p, "id", []byte("cipher"), []recovery.Share{shares[0], shares[1]}); err != nil || p.uploads != 1 {
+	if err = gate.Upload(context.Background(), p, "id", []byte("cipher"), shares[:2]); err != nil || p.uploads != 1 {
 		t.Fatalf("verified upload: %v %d", err, p.uploads)
 	}
 }
@@ -131,17 +138,72 @@ func TestRestoreRemoteAtAllowsVerifiedHistoricalSelection(t *testing.T) {
 
 func TestUploadSnapshotRequiresValidManifestAndUploadsCatalog(t *testing.T) {
 	key := []byte("01234567890123456789012345678901")
-	shares, _ := recovery.Split(key)
+	gate, shares := testUploadGate(t, key)
 	p := &fakeProvider{}
-	g := UploadGate{OperationalKey: key}
 	manifest, err := store.SealManifest(store.Manifest{Snapshot: "id"}, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := g.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, []recovery.Share{shares[0], shares[1]}); err != nil || p.uploads != 1 || p.catalogs != 1 {
+	if err := gate.UploadSnapshot(context.Background(), p, "id", []byte("cipher"), manifest, shares[:2]); err != nil || p.uploads != 1 || p.catalogs != 1 {
 		t.Fatalf("snapshot upload: %v uploads=%d catalogs=%d", err, p.uploads, p.catalogs)
 	}
-	if err := g.UploadSnapshot(context.Background(), p, "other", []byte("cipher"), manifest, []recovery.Share{shares[0], shares[1]}); err == nil {
+	if err := gate.UploadSnapshot(context.Background(), p, "other", []byte("cipher"), manifest, shares[:2]); err == nil {
 		t.Fatal("manifest mismatch accepted")
+	}
+}
+
+func TestUploadSnapshotValidatesV1RecoveryBundleBeforeProvider(t *testing.T) {
+	operational, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := store.RecoveryShares(operational, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := store.SealManifest(store.Manifest{Snapshot: "id"}, operational)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &fakeProvider{}
+	gate := UploadGate{OperationalKey: operational, SigningKey: signing}
+	if err := gate.UploadSnapshot(context.Background(), provider, "id", []byte("cipher"), manifest, shares[:2]); err != nil {
+		t.Fatalf("normal v1 recovery shares rejected: %v", err)
+	}
+	if provider.uploads != 1 || provider.catalogs != 1 || provider.privateCalls != 1 {
+		t.Fatalf("provider calls after valid shares: private=%d uploads=%d catalogs=%d", provider.privateCalls, provider.uploads, provider.catalogs)
+	}
+
+	otherOperational, otherSigning, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherShares, err := store.RecoveryShares(otherOperational, otherSigning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider = &fakeProvider{}
+	gate = UploadGate{OperationalKey: operational, SigningKey: signing}
+	if err := gate.UploadSnapshot(context.Background(), provider, "id", []byte("cipher"), manifest, otherShares[:2]); err == nil {
+		t.Fatal("shares from another vault accepted")
+	}
+	if provider.privateCalls != 0 || provider.uploads != 0 || provider.catalogs != 0 {
+		t.Fatalf("provider reached before rejecting other-vault shares: private=%d uploads=%d catalogs=%d", provider.privateCalls, provider.uploads, provider.catalogs)
+	}
+
+	_, wrongSigning, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameVaultOperationalShares, err := store.RecoveryShares(operational, wrongSigning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider = &fakeProvider{}
+	if err := gate.UploadSnapshot(context.Background(), provider, "id", []byte("cipher"), manifest, sameVaultOperationalShares[:2]); err == nil {
+		t.Fatal("shares with the active operational key but another signing key accepted")
+	}
+	if provider.privateCalls != 0 || provider.uploads != 0 || provider.catalogs != 0 {
+		t.Fatalf("provider reached before rejecting wrong signing key: private=%d uploads=%d catalogs=%d", provider.privateCalls, provider.uploads, provider.catalogs)
 	}
 }

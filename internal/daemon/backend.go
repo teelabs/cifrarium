@@ -151,7 +151,7 @@ func (b *Backend) UploadSnapshot(ctx context.Context, item Item) error {
 	if len(b.RecoveryShares) == 0 {
 		return fmt.Errorf("recovery verification required before upload")
 	}
-	return (syncvault.UploadGate{OperationalKey: b.Vault.Operational}).UploadSnapshot(
+	return (syncvault.UploadGate{OperationalKey: b.Vault.Operational, SigningKey: b.Vault.Signing}).UploadSnapshot(
 		ctx, b.Provider, item.ID, item.Ciphertext, item.Manifest, b.RecoveryShares,
 	)
 }

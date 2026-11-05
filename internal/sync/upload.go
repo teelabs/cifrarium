@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/subtle"
 	"fmt"
 
 	"github.com/teelabs/cifrarium/internal/provider"
@@ -10,10 +11,13 @@ import (
 	"github.com/teelabs/cifrarium/internal/store"
 )
 
-type UploadGate struct{ OperationalKey []byte }
+type UploadGate struct {
+	OperationalKey []byte
+	SigningKey     ed25519.PrivateKey
+}
 
-// Upload refuses to call a provider until two distinct recovery shares
-// reconstruct the exact operational key currently used by the vault.
+// Upload refuses to call a provider until recovery shares reconstruct the v1
+// keyring bundle currently used by the vault.
 func (g UploadGate) Upload(ctx context.Context, p provider.Provider, id string, ciphertext []byte, shares []recovery.Share) error {
 	if err := g.verify(ctx, shares); err != nil {
 		return err
@@ -59,8 +63,8 @@ func verifyPrivate(ctx context.Context, p provider.Provider) error {
 }
 
 func (g UploadGate) verify(_ context.Context, shares []recovery.Share) error {
-	key, err := recovery.Combine(shares)
-	if err != nil || string(key) != string(g.OperationalKey) {
+	operational, signing, err := store.RecoverKeys(shares)
+	if err != nil || subtle.ConstantTimeCompare(operational, g.OperationalKey) != 1 || subtle.ConstantTimeCompare(signing, g.SigningKey) != 1 {
 		return fmt.Errorf("recovery verification required before upload")
 	}
 	return nil

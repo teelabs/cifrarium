@@ -4,6 +4,29 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-11-05
+
+### Added
+
+- Added an isolated lifecycle audit harness that runs the real installer
+  against the same temporary vault, recovery configuration, encrypted queue,
+  and in-memory keyring used by the real daemon service/backend. It checks
+  byte-for-byte state preservation across preflight, migration, and rollback
+  failures, then verifies queued items drain before the post-upgrade capture.
+
+### Fixed
+
+- Validate generated v1 recovery shares against both active keyring keys before
+  allowing provider uploads.
+- Report MCP and backend readiness separately after daemon refresh, including
+  a safe next step while the backend is waiting for recovery/provider setup.
+- Resolve systemd's Cifrarium configuration and provider paths from the same
+  XDG configuration root used by the CLI and installer.
+- Detect a Cifrarium systemd service exit during readiness polling and report
+  sanitized state, result, exit status, and a safe recovery step.
+- Retry readiness when systemd state cannot be observed, and report an
+  unconfirmed state separately from a confirmed service exit.
+
 ## [0.10.2] - 2026-11-04
 
 ### Fixed

@@ -314,8 +314,8 @@ func TestSystemdUsesConfiguredRootResolver(t *testing.T) {
 	if !strings.Contains(text, "ExecStart=%h/.local/bin/cifrarium daemon") {
 		t.Fatalf("systemd unit does not use the configured-root daemon command: %s", text)
 	}
-	if !strings.Contains(text, "Environment=XDG_CONFIG_HOME=%h/.config") {
-		t.Fatalf("systemd unit has no explicit XDG configuration default: %s", text)
+	if !strings.Contains(text, "Environment=XDG_CONFIG_HOME=%E") || !strings.Contains(text, "EnvironmentFile=-%E/cifrarium/daemon.env") {
+		t.Fatalf("systemd unit does not resolve XDG config and provider files from the same user config root: %s", text)
 	}
 }
 
@@ -390,6 +390,15 @@ func TestInspectAdaptersDoesNotReadConfigurationContents(t *testing.T) {
 
 func TestRunDoctorDoesNotCreateVaultOrKeyringState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "vault")
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	systemctl := filepath.Join(bin, "systemctl")
+	if err := os.WriteFile(systemctl, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var output bytes.Buffer
 	originalLoadDoctorKeys := loadDoctorKeys
 	originalLoadDoctorKeysForRoot := loadDoctorKeysForRoot
