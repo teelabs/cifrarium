@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,9 +21,10 @@ import (
 )
 
 type lifecycleAuditProvider struct {
-	mu       sync.Mutex
-	uploaded []string
-	err      error
+	mu        sync.Mutex
+	attempted []daemon.Item
+	uploaded  []daemon.Item
+	err       error
 }
 
 func (p *lifecycleAuditProvider) Upload(context.Context, string, []byte) error { return nil }
@@ -37,13 +40,15 @@ func (p *lifecycleAuditProvider) DownloadCatalog(context.Context, string) ([]byt
 func (p *lifecycleAuditProvider) List(context.Context) ([]string, error) { return nil, nil }
 func (p *lifecycleAuditProvider) Health(context.Context) error           { return nil }
 func (p *lifecycleAuditProvider) VerifyPrivate(context.Context) error    { return nil }
-func (p *lifecycleAuditProvider) UploadSnapshot(_ context.Context, id string, _, _ []byte) error {
+func (p *lifecycleAuditProvider) UploadSnapshot(_ context.Context, id string, ciphertext, manifest []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	item := daemon.Item{ID: id, Ciphertext: append([]byte(nil), ciphertext...), Manifest: append([]byte(nil), manifest...)}
+	p.attempted = append(p.attempted, item)
 	if p.err != nil {
 		return p.err
 	}
-	p.uploaded = append(p.uploaded, id)
+	p.uploaded = append(p.uploaded, item)
 	return nil
 }
 
@@ -112,8 +117,9 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 		// upload must stay queued until the protected recovery material is restored.
 	}
 	backend.RecoveryShares = []recovery.Share{shares[0], shares[1]}
-	if err := backend.UploadSnapshot(context.Background(), first); err == nil || err.Error() != "recovery verification required before upload" {
-		t.Fatalf("generated setup shares unexpectedly passed the upload gate: %v", err)
+	provider.err = errors.New("temporary provider failure")
+	if err := backend.UploadSnapshot(context.Background(), first); err == nil || err.Error() != "temporary provider failure" {
+		t.Fatalf("generated setup shares did not reach the provider gate: %v", err)
 	}
 	var captures int
 	capture := func(ctx context.Context) (daemon.Item, error) {
@@ -146,6 +152,21 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 	if _, err := os.Stat(queuePath); err != nil {
 		t.Fatalf("encrypted pending queue was not persisted: %v", err)
 	}
+	beforeRestart, err := daemon.Load(queuePath, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queuedBeforeRestart []daemon.Item
+	for {
+		item, ok := beforeRestart.Pop()
+		if !ok {
+			break
+		}
+		queuedBeforeRestart = append(queuedBeforeRestart, item)
+	}
+	if len(queuedBeforeRestart) != 2 {
+		t.Fatalf("persisted queue items=%d, want 2", len(queuedBeforeRestart))
+	}
 
 	// Restart with valid recovery verification and the provider restored. Draining
 	// must upload the old queue before the normal immediate post-restart capture.
@@ -154,11 +175,8 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend.Pending = restartedQueue
-	gateShares, err := recovery.Split(op)
-	if err != nil {
-		t.Fatal(err)
-	}
-	backend.RecoveryShares = []recovery.Share{gateShares[0], gateShares[1]}
+	provider.err = nil
+	backend.RecoveryShares = []recovery.Share{shares[0], shares[1]}
 	restarted := daemon.NewScheduler(capture, backend.UploadSnapshot, restartedQueue)
 	restarted.Retry.MaxAttempts = 1
 	restarted.Interval = time.Hour
@@ -190,6 +208,12 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 	defer provider.mu.Unlock()
 	if len(provider.uploaded) != 3 {
 		t.Fatalf("provider uploads=%d, want two queued snapshots and one restart snapshot", len(provider.uploaded))
+	}
+	for i, queued := range queuedBeforeRestart {
+		got := provider.uploaded[i]
+		if got.ID != queued.ID || !bytes.Equal(got.Ciphertext, queued.Ciphertext) {
+			t.Fatalf("restart upload %d = (%q, %d ciphertext bytes), want original queued item (%q, %d ciphertext bytes)", i, got.ID, len(got.Ciphertext), queued.ID, len(queued.Ciphertext))
+		}
 	}
 }
 
