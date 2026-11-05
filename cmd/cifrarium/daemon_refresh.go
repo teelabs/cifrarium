@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -30,10 +31,11 @@ type daemonRefreshServiceState struct {
 	SubState    string
 	Result      string
 	ExitStatus  string
+	MainPID     string
 }
 
 var daemonRefreshSystemdStateProbe = func() (daemonRefreshServiceState, error) {
-	output, err := exec.Command("systemctl", "--user", "show", "--property=ActiveState,SubState,Result,ExecMainStatus", "--value", "cifrarium.service").Output()
+	output, err := exec.Command("systemctl", "--user", "show", "--property=ActiveState,SubState,Result,ExecMainStatus,MainPID", "cifrarium.service").Output()
 	if err != nil {
 		return daemonRefreshServiceState{}, err
 	}
@@ -69,19 +71,36 @@ func safeReadinessState(state string) string {
 }
 
 func parseDaemonRefreshServiceState(output string) (daemonRefreshServiceState, error) {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) != 4 {
-		return daemonRefreshServiceState{}, fmt.Errorf("unexpected systemd state output")
+	properties := make(map[string]string, 5)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		name, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || (name != "ActiveState" && name != "SubState" && name != "Result" && name != "ExecMainStatus" && name != "MainPID") {
+			return daemonRefreshServiceState{}, fmt.Errorf("unexpected systemd state output")
+		}
+		if _, exists := properties[name]; exists {
+			return daemonRefreshServiceState{}, fmt.Errorf("unexpected systemd state output")
+		}
+		properties[name] = strings.TrimSpace(value)
+	}
+	for _, name := range []string{"ActiveState", "SubState", "Result", "ExecMainStatus", "MainPID"} {
+		if _, ok := properties[name]; !ok {
+			return daemonRefreshServiceState{}, fmt.Errorf("unexpected systemd state output")
+		}
 	}
 	status := "unknown"
-	if parsed, err := strconv.Atoi(strings.TrimSpace(lines[3])); err == nil && parsed >= 0 && parsed <= 255 {
+	if parsed, err := strconv.Atoi(properties["ExecMainStatus"]); err == nil && parsed >= 0 && parsed <= 255 {
 		status = strconv.Itoa(parsed)
 	}
+	mainPID := "unknown"
+	if parsed, err := strconv.ParseUint(properties["MainPID"], 10, 32); err == nil {
+		mainPID = strconv.FormatUint(parsed, 10)
+	}
 	return daemonRefreshServiceState{
-		ActiveState: safeSystemdValue(strings.TrimSpace(lines[0]), "active", "activating", "deactivating", "failed", "inactive", "reloading", "maintenance", "refreshing"),
-		SubState:    safeSystemdValue(strings.TrimSpace(lines[1]), "running", "start", "start-pre", "start-post", "dead", "failed", "exited", "auto-restart", "stop", "stop-sigterm", "stop-post", "condition", "assert", "reload", "maintenance"),
-		Result:      safeSystemdValue(strings.TrimSpace(lines[2]), "success", "resources", "timeout", "exit-code", "signal", "core-dump", "watchdog", "start-limit-hit", "oom-kill", "protocol", "condition", "assert", "clean"),
+		ActiveState: safeSystemdValue(properties["ActiveState"], "active", "activating", "deactivating", "failed", "inactive", "reloading", "maintenance", "refreshing"),
+		SubState:    safeSystemdValue(properties["SubState"], "running", "start", "start-pre", "start-post", "dead", "failed", "exited", "auto-restart", "stop", "stop-sigterm", "stop-post", "condition", "assert", "reload", "maintenance"),
+		Result:      safeSystemdValue(properties["Result"], "success", "resources", "timeout", "exit-code", "signal", "core-dump", "watchdog", "start-limit-hit", "oom-kill", "protocol", "condition", "assert", "clean"),
 		ExitStatus:  status,
+		MainPID:     mainPID,
 	}, nil
 }
 
@@ -118,7 +137,11 @@ func daemonManagedServiceActive() bool {
 
 func daemonAlreadyRunning(root string) bool {
 	if daemonManagedServiceActive() {
-		return true
+		if state, err := daemonRefreshSystemdStateProbe(); err == nil {
+			if mainPID, parseErr := strconv.Atoi(state.MainPID); parseErr == nil && mainPID > 0 {
+				return mainPID != os.Getpid()
+			}
+		}
 	}
 	if root == "" {
 		return false

@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/teelabs/cifrarium/internal/daemon"
 )
 
 func TestTerminalUIPlainDecisionUsesSeparateBlocks(t *testing.T) {
@@ -116,8 +120,19 @@ func TestRenderSetupFailureUsesActionableSections(t *testing.T) {
 			t.Fatalf("setup error missing %q: %q", want, text)
 		}
 	}
-	if !strings.Contains(text, filepath.Join(home, ".zshrc")) {
+	if !strings.Contains(text, "Adapter path: .zshrc") || strings.Contains(text, home) {
 		t.Fatalf("setup error did not identify the path: %q", text)
+	}
+}
+
+func TestRenderSetupFailureIdentifiesRelativeAllowlistedPath(t *testing.T) {
+	var out bytes.Buffer
+	home := t.TempDir()
+	err := &os.PathError{Op: "open", Path: filepath.Join(home, ".codex", "config.toml"), Err: syscall.EACCES}
+	renderSetupFailure(&out, home, err)
+	text := out.String()
+	if !strings.Contains(text, "Adapter path: .codex/config.toml") || !strings.Contains(text, "permission") || strings.Contains(text, home) {
+		t.Fatalf("setup capture diagnostic is missing a safe path/cause or leaked home: %q", text)
 	}
 }
 
@@ -130,10 +145,8 @@ func TestRenderDaemonFailureUsesSafeSymlinkRecoveryInstructions(t *testing.T) {
 		"What happened",
 		"Why it matters",
 		"How to fix it",
-		"systemctl --user stop cifrarium.service",
-		"cp --dereference --preserve=mode",
-		"test ! -L",
-		"mv",
+		"Adapter path: .zshrc",
+		"materialize a regular file through its managing tool",
 		"cifrarium snapshot",
 		"systemctl --user start cifrarium.service",
 	} {
@@ -145,6 +158,35 @@ func TestRenderDaemonFailureUsesSafeSymlinkRecoveryInstructions(t *testing.T) {
 		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
 			t.Fatalf("daemon error leaked or encouraged %q: %q", forbidden, text)
 		}
+	}
+}
+
+func TestRenderDaemonFailureIdentifiesOnlyRelativeAllowlistedCapturePath(t *testing.T) {
+	var out bytes.Buffer
+	home := t.TempDir()
+	path := filepath.Join(home, ".codex", "config.toml")
+	err := &os.PathError{Op: "open", Path: path, Err: syscall.EACCES}
+	renderDaemonFailure(&out, home, err)
+	text := out.String()
+	if !strings.Contains(text, "Adapter path: .codex/config.toml") || !strings.Contains(text, "permission") {
+		t.Fatalf("capture diagnostic did not identify the safe relative path and cause: %q", text)
+	}
+	if strings.Contains(text, home) || strings.Contains(text, "EACCES") {
+		t.Fatalf("capture diagnostic leaked an absolute path or raw error: %q", text)
+	}
+}
+
+func TestRenderDaemonFailureDoesNotClassifyCustomCapturePathAsProviderFailure(t *testing.T) {
+	var out bytes.Buffer
+	home := t.TempDir()
+	err := &daemon.CaptureError{Err: &os.PathError{Op: "capture", Path: ".oh-my-zsh/custom/provider.zsh", Err: syscall.EACCES}}
+	renderDaemonFailure(&out, home, err)
+	text := out.String()
+	if !strings.Contains(text, "Adapter path: .oh-my-zsh/custom/provider.zsh") || !strings.Contains(text, "permissions") {
+		t.Fatalf("custom capture path was not diagnosed as local capture failure: %q", text)
+	}
+	if strings.Contains(text, "pending encrypted work") || strings.Contains(text, "cifrarium provider setup") {
+		t.Fatalf("custom capture path was misclassified as provider upload failure: %q", text)
 	}
 }
 
@@ -194,7 +236,7 @@ func TestRenderDaemonFailureExplainsMissingProviderAction(t *testing.T) {
 func TestRejectedSymlinkPathStopsBeforeRecoverySnapshotSuffix(t *testing.T) {
 	home := t.TempDir()
 	got, ok := rejectedSymlinkPath(home, errors.New("symlink rejected: .zshrc; recovery snapshot failed: symlink rejected: .zshrc"))
-	want := filepath.Join(home, ".zshrc")
+	want := ".zshrc"
 	if !ok || got != want {
 		t.Fatalf("rejectedSymlinkPath() = %q, %t; want %s, true", got, ok, want)
 	}
@@ -222,8 +264,22 @@ func TestRenderDaemonFailureDoesNotEchoRawErrorOrSensitiveSymlinkTarget(t *testi
 			t.Fatalf("daemon error leaked %q: %q", forbidden, text)
 		}
 	}
-	if !strings.Contains(text, filepath.Join(home, ".zshrc")) {
+	if !strings.Contains(text, "Adapter path: .zshrc") || strings.Contains(text, home) {
 		t.Fatalf("daemon error did not show the valid path: %q", text)
+	}
+}
+
+func TestRenderDaemonFailureKeepsTypedSymlinkPathRelative(t *testing.T) {
+	var out bytes.Buffer
+	home := t.TempDir()
+	err := &os.PathError{Op: "capture", Path: filepath.Join(home, ".zshrc"), Err: syscall.ELOOP}
+	renderDaemonFailure(&out, home, err)
+	text := out.String()
+	if !strings.Contains(text, "Adapter path: .zshrc") || strings.Contains(text, home) {
+		t.Fatalf("symlink diagnostic did not keep its path relative: %q", text)
+	}
+	if strings.Contains(text, "readlink") || strings.Contains(text, "ELOOP") {
+		t.Fatalf("symlink diagnostic disclosed its target or raw error: %q", text)
 	}
 }
 

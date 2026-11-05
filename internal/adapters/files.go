@@ -75,14 +75,14 @@ func collect(home string, paths, excluded []string) ([]File, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, &os.PathError{Op: "capture", Path: p, Err: err}
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("symlink rejected: %s", p)
+			return nil, &os.PathError{Op: "capture", Path: p, Err: fmt.Errorf("symlink rejected")}
 		}
 		data, err := readStable(full)
 		if err != nil {
-			return nil, err
+			return nil, &os.PathError{Op: "capture", Path: p, Err: err}
 		}
 		out = append(out, File{Relative: p, Data: data, Mode: info.Mode().Perm()})
 	}
@@ -96,19 +96,23 @@ func collectCustomPaths(root string) ([]string, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "capture", Path: ".oh-my-zsh/custom", Err: err}
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("symlink rejected: %s", root)
+		return nil, &os.PathError{Op: "capture", Path: ".oh-my-zsh/custom", Err: fmt.Errorf("symlink rejected")}
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("custom path is not a directory: %s", root)
+		return nil, &os.PathError{Op: "capture", Path: ".oh-my-zsh/custom", Err: fmt.Errorf("custom path is not a directory")}
 	}
 
 	var paths []string
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil || rel == "." {
+				return &os.PathError{Op: "capture", Path: ".oh-my-zsh/custom", Err: walkErr}
+			}
+			return &os.PathError{Op: "capture", Path: filepath.Join(".oh-my-zsh", "custom", rel), Err: walkErr}
 		}
 		if path == root {
 			return nil
@@ -126,13 +130,13 @@ func collectCustomPaths(root string) ([]string, error) {
 			}
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink rejected: %s", path)
+			return &os.PathError{Op: "capture", Path: filepath.Join(".oh-my-zsh", "custom", rel), Err: fmt.Errorf("symlink rejected")}
 		}
 		if entry.IsDir() {
 			return nil
 		}
 		if !entry.Type().IsRegular() {
-			return fmt.Errorf("unsupported custom entry: %s", path)
+			return &os.PathError{Op: "capture", Path: filepath.Join(".oh-my-zsh", "custom", rel), Err: fmt.Errorf("unsupported custom entry")}
 		}
 		if len(paths) >= limits.MaxCapturedFiles {
 			return fmt.Errorf("capture contains too many files")

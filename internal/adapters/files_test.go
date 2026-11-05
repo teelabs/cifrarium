@@ -116,6 +116,11 @@ func TestConfigRejectsSymlinkedIntermediateDirectory(t *testing.T) {
 	}
 	if _, err := (Config{}).Collect(h); err == nil {
 		t.Fatal("intermediate symlink accepted during capture")
+	} else {
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) || pathErr.Path != ".codex/config.toml" {
+			t.Fatalf("capture error = %#v; want relative allowlisted path", err)
+		}
 	}
 }
 
