@@ -776,6 +776,11 @@ func writeDaemonServiceError(w io.Writer, err error) {
 	if errors.As(err, &recoverySnapshotErr) {
 		return
 	}
+	var persistenceErr *daemon.PersistenceError
+	if errors.As(err, &persistenceErr) {
+		renderDaemonFailure(w, "", err)
+		return
+	}
 	var captureErr interface{ CaptureFailure() }
 	if errors.As(err, &captureErr) {
 		return

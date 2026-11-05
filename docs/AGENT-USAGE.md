@@ -217,6 +217,13 @@ suggests `cifrarium provider setup`, provider privacy suggests
 providers receive distinct next steps. Agents must not add paths, remotes,
 usernames, shares, tokens, or file contents to those messages.
 
+Initial daemon work distinguishes draining an existing pending upload from
+uploading a new capture. If a failed new upload cannot be added because the
+queue is full, the message says that the local capture completed, the upload
+was not confirmed, and the new item was not queued. Keep the service stopped,
+preserve `pending.queue`, and inspect `cifrarium status -format=json` and
+`cifrarium provider health --verify-private` before retrying.
+
 ### 5.3 Check a GitHub provider
 
 ~~~sh

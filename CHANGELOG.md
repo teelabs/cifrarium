@@ -4,6 +4,14 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-11-05
+
+### Fixed
+
+- Distinguish failures while draining pending uploads, uploading a new snapshot,
+  retaining a failed upload in a full pending queue, and persisting queue
+  changes, without exposing raw provider or filesystem errors.
+
 ## [0.10.6] - 2026-11-05
 
 ### Fixed

@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -363,6 +365,122 @@ func TestRenderDaemonFailureReportsUploadAndRecoveryCaptureFailures(t *testing.T
 	for _, forbidden := range []string{"/private/home", "token-value", "provider offline", "stopped before remote upload", "No provider upload was attempted"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("combined failure diagnostic leaked or misstated %q: %q", forbidden, text)
+		}
+	}
+}
+
+func TestRenderDaemonFailureExplainsUploadAndFullPendingQueue(t *testing.T) {
+	queue := &daemon.Queue{}
+	for i := 0; i < daemon.MaxPending; i++ {
+		if err := queue.Push(daemon.Item{ID: fmt.Sprintf("queued-%d", i), Ciphertext: []byte("ciphertext")}); err != nil {
+			t.Fatalf("seed pending queue: %v", err)
+		}
+	}
+	scheduler := daemon.NewScheduler(
+		func(context.Context) (daemon.Item, error) {
+			return daemon.Item{ID: "new-snapshot", Ciphertext: []byte("ciphertext")}, nil
+		},
+		func(context.Context, daemon.Item) error { return errors.New("remote rejected token=do-not-print") },
+		queue,
+	)
+	scheduler.Retry.MaxAttempts = 1
+	err := scheduler.Cycle(context.Background())
+	if err == nil {
+		t.Fatal("Cycle() succeeded with failed upload and full queue")
+	}
+	var out bytes.Buffer
+	renderDaemonFailure(&out, t.TempDir(), err)
+	text := out.String()
+	for _, want := range []string{"upload", "pending queue is full", "pending.queue"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Fatalf("full-queue diagnostic missing %q: %q", want, text)
+		}
+	}
+	for _, forbidden := range []string{"remote rejected", "do-not-print", "No validated adapter path", "underlying error is not safe to display"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("full-queue diagnostic leaked or misclassified %q: %q", forbidden, text)
+		}
+	}
+}
+
+func TestRenderDaemonFailureClassifiesUnmarkedPendingDrainError(t *testing.T) {
+	queue := &daemon.Queue{}
+	if err := queue.Push(daemon.Item{ID: "pending", Ciphertext: []byte("ciphertext")}); err != nil {
+		t.Fatal(err)
+	}
+	scheduler := daemon.NewScheduler(
+		func(context.Context) (daemon.Item, error) { return daemon.Item{}, nil },
+		func(context.Context, daemon.Item) error { return errors.New("process exited with status 128") },
+		queue,
+	)
+	scheduler.Retry.MaxAttempts = 1
+	err := scheduler.DrainPending(context.Background())
+	if err == nil {
+		t.Fatal("DrainPending() succeeded after upload failure")
+	}
+	var out bytes.Buffer
+	renderDaemonFailure(&out, t.TempDir(), err)
+	text := out.String()
+	for _, want := range []string{"pending encrypted work", "provider", "pending.queue"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Fatalf("pending-drain diagnostic missing %q: %q", want, text)
+		}
+	}
+	for _, forbidden := range []string{"process exited", "status 128", "underlying error is not safe to display", "No validated adapter path"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("pending-drain diagnostic leaked or misclassified %q: %q", forbidden, text)
+		}
+	}
+}
+
+func TestRenderDaemonFailureClassifiesUnmarkedFreshSnapshotUpload(t *testing.T) {
+	queue := &daemon.Queue{}
+	scheduler := daemon.NewScheduler(
+		func(context.Context) (daemon.Item, error) {
+			return daemon.Item{ID: "fresh-snapshot", Ciphertext: []byte("ciphertext")}, nil
+		},
+		func(context.Context, daemon.Item) error { return errors.New("process exited with status 128") },
+		queue,
+	)
+	scheduler.Retry.MaxAttempts = 1
+	err := scheduler.Cycle(context.Background())
+	if err == nil {
+		t.Fatal("Cycle() succeeded after upload failure")
+	}
+	var out bytes.Buffer
+	renderDaemonFailure(&out, t.TempDir(), err)
+	text := out.String()
+	for _, want := range []string{"newly captured snapshot", "upload was not confirmed", "pending.queue"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Fatalf("fresh-snapshot upload diagnostic missing %q: %q", want, text)
+		}
+	}
+	for _, forbidden := range []string{"process exited", "status 128", "No validated adapter path", "underlying error is not safe to display"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("fresh-snapshot diagnostic leaked or misclassified %q: %q", forbidden, text)
+		}
+	}
+	if queue.Len() != 1 {
+		t.Fatalf("pending queue length = %d, want failed upload retained", queue.Len())
+	}
+}
+
+func TestRenderDaemonFailureExplainsRecoverySnapshotQueueFailure(t *testing.T) {
+	err := &daemon.RecoveryQueueFailure{
+		Primary: &daemon.CaptureError{Stage: daemon.CaptureStageAdapters, Err: errors.New("path failure at /private/home")},
+		Enqueue: daemon.ErrQueueFull,
+	}
+	var out bytes.Buffer
+	renderDaemonFailure(&out, t.TempDir(), err)
+	text := out.String()
+	for _, want := range []string{"recovery snapshot", "pending queue is full", "pending.queue"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Fatalf("recovery-queue diagnostic missing %q: %q", want, text)
+		}
+	}
+	for _, forbidden := range []string{"path failure", "/private/home", "No validated adapter path"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("recovery-queue diagnostic leaked or misclassified %q: %q", forbidden, text)
 		}
 	}
 }

@@ -628,6 +628,33 @@ func TestWriteDaemonServiceErrorSuppressesAlreadyRenderedRetryDetails(t *testing
 	}
 }
 
+func TestWriteDaemonServiceErrorSanitizesInitialQueuePersistenceFailure(t *testing.T) {
+	queue := &daemon.Queue{}
+	scheduler := daemon.NewScheduler(
+		func(context.Context) (daemon.Item, error) {
+			return daemon.Item{ID: "fresh", Ciphertext: []byte("cipher")}, nil
+		},
+		func(context.Context, daemon.Item) error { return errors.New("remote failed token=private") },
+		queue,
+	)
+	scheduler.Retry.MaxAttempts = 1
+	scheduler.Persist = func() error { return errors.New("permission denied: /private/home") }
+	err := (daemon.Service{Scheduler: scheduler}).Run(context.Background())
+	var out bytes.Buffer
+	writeDaemonServiceError(&out, err)
+	text := out.String()
+	for _, want := range []string{"pending queue", "could not be persisted"} {
+		if !strings.Contains(strings.ToLower(text), strings.ToLower(want)) {
+			t.Fatalf("queue-persistence diagnostic missing %q: %q", want, text)
+		}
+	}
+	for _, forbidden := range []string{"remote failed", "/private/home", "permission denied", "token=private"} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("queue-persistence diagnostic leaked %q: %q", forbidden, text)
+		}
+	}
+}
+
 func TestDaemonRecoverySharesReloadsProtectedConfiguration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))

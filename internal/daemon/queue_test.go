@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,8 +19,8 @@ func TestQueueLimit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := q.Push(Item{ID: "overflow", Ciphertext: []byte("x")}); err == nil {
-		t.Fatal("overflow accepted")
+	if err := q.Push(Item{ID: "overflow", Ciphertext: []byte("x")}); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("overflow error = %v, want ErrQueueFull", err)
 	}
 	if q.Len() != MaxPending {
 		t.Fatal(q.Len())

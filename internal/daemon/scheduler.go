@@ -45,10 +45,78 @@ func (e *ReportedFailure) Error() string    { return e.Err.Error() }
 func (e *ReportedFailure) Unwrap() error    { return e.Err }
 func (e *ReportedFailure) ReportedFailure() {}
 
-type PersistenceError struct{ Err error }
+type PersistenceStage string
 
-func (e *PersistenceError) Error() string { return fmt.Sprintf("queue persistence failed: %v", e.Err) }
-func (e *PersistenceError) Unwrap() error { return e.Err }
+const (
+	PersistenceStagePendingDrain PersistenceStage = "pending-drain"
+	PersistenceStageSnapshot     PersistenceStage = "snapshot-upload"
+	PersistenceStageRecovery     PersistenceStage = "recovery-snapshot"
+)
+
+type PersistenceError struct {
+	Stage  PersistenceStage
+	Err    error
+	Upload error
+}
+
+func (e *PersistenceError) Error() string { return "pending queue state could not be persisted" }
+func (e *PersistenceError) Unwrap() []error {
+	if e.Upload != nil {
+		return []error{e.Err, e.Upload}
+	}
+	return []error{e.Err}
+}
+
+type UploadStage string
+
+const (
+	UploadStagePendingDrain UploadStage = "pending-drain"
+	UploadStageSnapshot     UploadStage = "snapshot-upload"
+)
+
+// UploadFailure marks an upload attempt failure without requiring the CLI to
+// inspect or print underlying error text.
+type UploadFailure struct {
+	Stage UploadStage
+	Err   error
+}
+
+func (e *UploadFailure) Error() string {
+	if e.Stage == UploadStagePendingDrain {
+		return "pending upload failed"
+	}
+	return "snapshot upload failed"
+}
+func (e *UploadFailure) Unwrap() error { return e.Err }
+
+// QueueEnqueueFailure reports that a captured snapshot could not be retained
+// for retry after its upload failed. It preserves both failures for typed
+// inspection while keeping raw provider and filesystem messages out of Error.
+type QueueEnqueueFailure struct {
+	Upload  error
+	Enqueue error
+}
+
+func (e *QueueEnqueueFailure) Error() string {
+	if errors.Is(e.Enqueue, ErrQueueFull) {
+		return "snapshot upload was not confirmed and pending queue is full"
+	}
+	return "snapshot upload was not confirmed and could not be added to pending queue"
+}
+func (e *QueueEnqueueFailure) Unwrap() []error { return []error{e.Upload, e.Enqueue} }
+
+type RecoveryQueueFailure struct {
+	Primary error
+	Enqueue error
+}
+
+func (e *RecoveryQueueFailure) Error() string {
+	if errors.Is(e.Enqueue, ErrQueueFull) {
+		return "recovery snapshot could not be queued because pending queue is full"
+	}
+	return "recovery snapshot could not be added to pending queue"
+}
+func (e *RecoveryQueueFailure) Unwrap() []error { return []error{e.Primary, e.Enqueue} }
 
 // CaptureError marks a failure while reading local configuration files. These
 // failures are not retryable by the daemon because retrying would repeat the
@@ -97,15 +165,16 @@ func (s *Scheduler) Cycle(ctx context.Context) error {
 		return s.missed(ctx, err)
 	}
 	if err := s.uploadWithRetry(ctx, item); err != nil {
+		uploadFailure := &UploadFailure{Stage: UploadStageSnapshot, Err: err}
 		if qerr := s.Pending.Push(item); qerr != nil {
-			return fmt.Errorf("upload failed: %v; queue failed: %w", err, qerr)
+			return &QueueEnqueueFailure{Upload: uploadFailure, Enqueue: qerr}
 		}
 		if s.Persist != nil {
 			if qerr := s.Persist(); qerr != nil {
-				return &PersistenceError{Err: qerr}
+				return &PersistenceError{Stage: PersistenceStageSnapshot, Err: qerr, Upload: uploadFailure}
 			}
 		}
-		return s.missed(ctx, err)
+		return s.missed(ctx, uploadFailure)
 	}
 	s.MissedCycles = 0
 	return nil
@@ -117,13 +186,13 @@ func (s *Scheduler) DrainPending(ctx context.Context) error {
 			return nil
 		}
 		if err := s.uploadWithRetry(ctx, item); err != nil {
-			return err
+			return &UploadFailure{Stage: UploadStagePendingDrain, Err: err}
 		}
 		_, _ = s.Pending.Pop()
 		if s.Persist != nil {
 			if err := s.Persist(); err != nil {
 				_ = s.Pending.Prepend(item)
-				return &PersistenceError{Err: err}
+				return &PersistenceError{Stage: PersistenceStagePendingDrain, Err: err}
 			}
 		}
 	}
@@ -187,11 +256,11 @@ func (s *Scheduler) missed(ctx context.Context, err error) error {
 			return &RecoverySnapshotError{Primary: err, Recovery: recoveryErr}
 		}
 		if queueErr := s.Pending.Push(recovery); queueErr != nil {
-			return fmt.Errorf("%w; recovery snapshot queue failed: %v", err, queueErr)
+			return &RecoveryQueueFailure{Primary: err, Enqueue: queueErr}
 		}
 		if s.Persist != nil {
 			if persistErr := s.Persist(); persistErr != nil {
-				return &PersistenceError{Err: fmt.Errorf("%w; recovery snapshot persistence failed: %v", err, persistErr)}
+				return &PersistenceError{Stage: PersistenceStageRecovery, Err: persistErr, Upload: err}
 			}
 		}
 	}

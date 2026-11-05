@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -11,6 +12,8 @@ import (
 )
 
 const MaxPending = 16
+
+var ErrQueueFull = errors.New("pending queue is full")
 
 type Item struct {
 	ID         string
@@ -29,7 +32,7 @@ func (q *Queue) Push(item Item) error {
 		return err
 	}
 	if len(q.items) >= MaxPending {
-		return fmt.Errorf("pending queue is full")
+		return ErrQueueFull
 	}
 	q.items = append(q.items, item)
 	return nil
@@ -66,7 +69,7 @@ func (q *Queue) Prepend(item Item) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.items) >= MaxPending {
-		return fmt.Errorf("pending queue is full")
+		return ErrQueueFull
 	}
 	q.items = append([]Item{item}, q.items...)
 	return nil

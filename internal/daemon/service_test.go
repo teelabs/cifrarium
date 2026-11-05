@@ -59,6 +59,39 @@ func TestServiceKeepsRetryingAfterInitialUploadFailure(t *testing.T) {
 	}
 }
 
+func TestServiceKeepsPendingItemAndClassifiesInitialDrainUploadFailure(t *testing.T) {
+	q := &Queue{}
+	if err := q.Push(Item{ID: "pending", Ciphertext: []byte("cipher")}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewScheduler(
+		func(context.Context) (Item, error) { return Item{}, nil },
+		func(context.Context, Item) error { return errors.New("process exited with status 128") },
+		q,
+	)
+	s.Retry.MaxAttempts = 1
+	var retryErr error
+	s.RetryHandler = func(_ context.Context, err error) RetryDecision {
+		retryErr = err
+		return StopRetry
+	}
+	ready := false
+	err := (Service{Scheduler: s, Ready: func() { ready = true }}).Run(context.Background())
+	var uploadFailure *UploadFailure
+	if !errors.As(retryErr, &uploadFailure) || uploadFailure.Stage != UploadStagePendingDrain {
+		t.Fatalf("retry error = %v, want typed pending-drain upload failure", retryErr)
+	}
+	if !errors.As(err, &uploadFailure) {
+		t.Fatalf("service error lost pending-drain upload classification: %v", err)
+	}
+	if ready {
+		t.Fatal("backend reported ready despite initial pending-drain failure")
+	}
+	if q.Len() != 1 {
+		t.Fatalf("pending queue length = %d, want original item preserved", q.Len())
+	}
+}
+
 func TestServiceRunsInitialCycle(t *testing.T) {
 	q := Queue{}
 	calls := 0

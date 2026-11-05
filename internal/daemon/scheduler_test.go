@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -73,6 +75,30 @@ func TestSchedulerPreservesRecoveryCaptureFailureType(t *testing.T) {
 	var captureErr *CaptureError
 	if !errors.As(err, &captureErr) || captureErr.Stage != CaptureStageAdapters {
 		t.Fatalf("combined cycle error lost typed recovery failure: %#v (%v)", captureErr, err)
+	}
+}
+
+func TestSchedulerPreservesRecoveryQueueFailureType(t *testing.T) {
+	q := Queue{}
+	for i := 0; i < MaxPending; i++ {
+		if err := q.Push(Item{ID: fmt.Sprintf("queued-%d", i), Ciphertext: []byte("cipher")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := NewScheduler(nil, nil, &q)
+	s.RecoverySnapshot = func(context.Context) (Item, error) {
+		return Item{ID: "recovery", Ciphertext: []byte("cipher")}, nil
+	}
+	err := s.missed(context.Background(), errors.New("private primary cause"))
+	var recoveryQueueFailure *RecoveryQueueFailure
+	if !errors.As(err, &recoveryQueueFailure) {
+		t.Fatalf("missed error = %T, want RecoveryQueueFailure: %v", err, err)
+	}
+	if !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("missed error = %v, want ErrQueueFull", err)
+	}
+	if strings.Contains(err.Error(), "private primary cause") {
+		t.Fatalf("recovery queue failure exposed primary error: %v", err)
 	}
 }
 
