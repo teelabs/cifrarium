@@ -256,6 +256,8 @@ active_link="$prefix/bin/$PRODUCT"
 previous_link="$prefix/bin/$PRODUCT.previous"
 lock_dir="$state_dir/.install.lock"
 upgrade=0
+validated_active_target=""
+validated_active_binary=""
 provider_dir_configured=""
 provider_remote_configured=""
 provider_configured=0
@@ -342,6 +344,21 @@ PY
 
 validate_existing_state() {
   ((upgrade)) || return 0
+  local active_target active_version active_major active_minor active_patch active_binary
+  active_target=$(readlink "$active_link") || die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because the active executable is not a recognized managed release. Keep it in place and consult its documented upgrade guidance."
+  if [[ ! "$active_target" =~ ^\.\./lib/cifrarium/versions/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)/cifrarium$ ]]; then
+    die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because the active executable is not a recognized managed release. Keep it in place and consult its documented upgrade guidance."
+  fi
+  active_major=${BASH_REMATCH[1]}
+  active_minor=${BASH_REMATCH[2]}
+  active_patch=${BASH_REMATCH[3]}
+  active_version="$active_major.$active_minor.$active_patch"
+  active_binary="$prefix/lib/$PRODUCT/versions/$active_version/$PRODUCT"
+  reject_symlinked_path_components "$active_binary"
+  [[ -f "$active_binary" && -x "$active_binary" ]] || die "The installer cannot safely inspect this active version.\n\nThe managed executable is missing or is not a regular executable file. Keep it in place and consult its documented upgrade guidance."
+  validated_active_target="$active_target"
+  validated_active_binary="$active_binary"
+
   local config_file="${XDG_CONFIG_HOME:-$HOME/.config}/cifrarium/config.json"
   if [[ ! -e "$config_file" ]]; then
     printf 'Vault: not configured (upgrade will preserve the local installation)\n' >&2
@@ -360,30 +377,24 @@ if os.path.realpath(root) != root or not os.path.isdir(root):
     raise SystemExit("configured vault root is missing or not canonical")
 PY
   local doctor_report doctor_command
-  local active_target active_version active_major active_minor active_patch
   local -a doctor_args
-  active_target=$(readlink "$active_link") || die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because the active executable is not a recognized managed release. Keep it in place and consult its documented upgrade guidance."
-  if [[ ! "$active_target" =~ ^\.\./lib/cifrarium/versions/([0-9]+\.[0-9]+\.[0-9]+)/cifrarium$ ]]; then
-    die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because the active executable is not a recognized managed release. Keep it in place and consult its documented upgrade guidance."
-  fi
-  active_version=${BASH_REMATCH[1]}
-  active_binary="$prefix/lib/$PRODUCT/versions/$active_version/$PRODUCT"
-  reject_symlinked_path_components "$active_binary"
-  [[ -f "$active_binary" && -x "$active_binary" ]] || die "The installer cannot safely inspect this active version.\n\nThe managed executable is missing or is not a regular executable file. Keep it in place and consult its documented upgrade guidance."
-  IFS=. read -r active_major active_minor active_patch <<<"$active_version"
-  if ((10#$active_major == 0 && 10#$active_minor == 8 && 10#$active_patch <= 2)); then
-    # v0.8.0-v0.8.2 parse doctor through the legacy flag. A modern positional
-    # argument is treated as the default status command and can update keyring
-    # catalog metadata before returning non-JSON output.
-    doctor_args=(-command=doctor -format=json)
-    doctor_command="$active_link -command=doctor -format=json"
-  elif ((10#$active_major > 0 || 10#$active_minor >= 9 || (10#$active_minor == 8 && 10#$active_patch >= 3))); then
-    doctor_args=(doctor -format=json)
-    doctor_command="$active_link doctor -format=json"
-  else
-    die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because its doctor interface is not known to be safe for upgrade preflight. Keep it in place and consult its documented upgrade guidance."
-  fi
-  doctor_report=$("$active_link" "${doctor_args[@]}" 2>/dev/null) || true
+  case "$active_version" in
+    0.8.0|0.8.1|0.8.2)
+      # v0.8.0-v0.8.2 parse doctor through the legacy flag. A modern positional
+      # argument is treated as the default status command and can update keyring
+      # catalog metadata before returning non-JSON output.
+      doctor_args=(-command=doctor -format=json)
+      doctor_command="$active_binary -command=doctor -format=json"
+      ;;
+    0.9.*|0.10.*)
+      doctor_args=(doctor -format=json)
+      doctor_command="$active_binary doctor -format=json"
+      ;;
+    *)
+      die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because its doctor interface is not known to be safe for upgrade preflight. Keep it in place and consult its documented upgrade guidance."
+      ;;
+  esac
+  doctor_report=$("$active_binary" "${doctor_args[@]}" 2>/dev/null) || true
   if ! printf '%s' "$doctor_report" | python3 -c '
 import json
 import sys
@@ -613,8 +624,7 @@ PY
 ) || die "archive provider compatibility metadata is invalid"
 IFS=$'\t' read -r candidate_provider_format candidate_compatible candidate_migration_required candidate_migration_command <<<"$release_info"
 if ((upgrade)); then
-  active_binary=$(readlink -f "$active_link" 2>/dev/null || true)
-  active_release="$(dirname "$active_binary")/release.json"
+  active_release="$(dirname "$validated_active_binary")/release.json"
   if [[ -f "$active_release" ]]; then
     active_provider_format=$(python3 - "$active_release" <<'PY'
 import json, sys
@@ -631,6 +641,12 @@ step_done 'Validating archive contents'
 
 step 'Installing verified files'
 acquire_lock
+current_active_target=$(readlink "$active_link" 2>/dev/null || true)
+if ((upgrade)); then
+  [[ "$current_active_target" == "$validated_active_target" ]] || die "The active version changed during upgrade preflight. Keep the current version in place and retry the upgrade."
+else
+  [[ ! -e "$active_link" && ! -L "$active_link" ]] || die "An active version appeared during installation. Keep it in place and retry."
+fi
 mkdir -p "$versions_dir"
 version_dir="$versions_dir/$version"
 [[ ! -e "$version_dir" ]] || die "version is already installed: $version"
