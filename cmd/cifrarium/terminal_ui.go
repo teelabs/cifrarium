@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -240,14 +242,13 @@ func renderSetupFailure(w io.Writer, home string, err error) {
 	ui.Text(colorSecondary, "Cifrarium stopped before any remote upload. Correct the input and retry the local setup.")
 	ui.Section("How to fix it")
 	if path, ok := rejectedSymlinkPath(home, err); ok {
-		regular := path + ".cifrarium-regular"
-		copyCommand := "cp --dereference --preserve=mode"
-		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-			copyCommand = "cp -aL"
-		}
 		ui.Text(colorSecondary, "Cifrarium does not follow symlinks during capture.")
-		ui.Value("Path", path)
-		ui.CommandBlock(fmt.Sprintf("%s %s %s\nmv %s %s", copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(path)))
+		ui.Value("Adapter path", path)
+		ui.Text(colorSecondary, "If this link is managed intentionally, materialize a regular file through its managing tool.")
+	} else if path, cause, ok := capturePathDiagnostic(home, err); ok {
+		ui.Value("Adapter path", path)
+		ui.Text(colorSecondary, cause)
+		ui.Text(colorSecondary, "Correct this path without disabling capture safety, then run setup again.")
 	} else {
 		ui.Text(colorSecondary, "Review the reported adapter path and correct it without disabling capture safety.")
 	}
@@ -273,18 +274,16 @@ func renderDaemonFailure(w io.Writer, home string, err error) {
 	}
 	ui.Section("How to fix it")
 	if path, ok := rejectedSymlinkPath(home, err); ok {
-		regular := path + ".cifrarium-regular"
-		copyCommand := "cp --dereference --preserve=mode"
-		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-			copyCommand = "cp -aL"
-		}
 		ui.Text(colorSecondary, "Cifrarium does not follow symlinks during capture.")
-		ui.Value("Path", path)
-		ui.Text(colorSecondary, "If the link is managed intentionally, leave the daemon stopped and materialize a regular file through that manager.")
-		ui.CommandBlock(fmt.Sprintf("systemctl --user stop cifrarium.service\ntest -L %s && readlink %s\n%s %s %s\ntest ! -L %s\nmv %s %s", shellQuote(path), shellQuote(path), copyCommand, shellQuote(path), shellQuote(regular), shellQuote(regular), shellQuote(regular), shellQuote(path)))
+		ui.Value("Adapter path", path)
+		ui.Text(colorSecondary, "Leave the daemon stopped. If this link is managed intentionally, materialize a regular file through its managing tool.")
 		ui.CommandBlock("cifrarium snapshot\nsystemctl --user start cifrarium.service")
 	} else if reason != daemonUploadNone {
 		renderDaemonUploadGuidance(ui, reason)
+	} else if path, cause, ok := capturePathDiagnostic(home, err); ok {
+		ui.Value("Adapter path", path)
+		ui.Text(colorSecondary, cause)
+		ui.Text(colorSecondary, "Correct this path without disabling capture safety, then run `cifrarium snapshot` before starting the daemon again.")
 	} else {
 		ui.Text(colorSecondary, "Review the reported adapter path and correct it without disabling capture safety.")
 		ui.Command("cifrarium doctor")
@@ -312,6 +311,10 @@ const (
 )
 
 func daemonUploadFailureReasonFor(err error) daemonUploadFailureReason {
+	var captureFailure interface{ CaptureFailure() }
+	if errors.As(err, &captureFailure) {
+		return daemonUploadNone
+	}
 	value := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(value, "recovery verification required before upload"):
@@ -349,6 +352,9 @@ func renderDaemonUploadGuidance(ui terminalUI, reason daemonUploadFailureReason)
 }
 
 func rejectedSymlinkPath(home string, err error) (string, bool) {
+	if path, cause, ok := capturePathDiagnostic(home, err); ok && cause == "Cifrarium rejected a symbolic link during capture." {
+		return path, true
+	}
 	const marker = "symlink rejected: "
 	const recoverySuffix = "; recovery snapshot failed"
 	value := err.Error()
@@ -369,7 +375,7 @@ func rejectedSymlinkPath(home string, err error) (string, bool) {
 		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return "", false
 		}
-		return clean, true
+		path = relative
 	}
 	if filepath.Clean(path) != path {
 		return "", false
@@ -377,5 +383,55 @@ func rejectedSymlinkPath(home string, err error) (string, bool) {
 	if path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	return filepath.Join(home, path), true
+	path = filepath.ToSlash(path)
+	if !allowedCaptureRelativePath(path) {
+		return "", false
+	}
+	return path, true
+}
+
+func capturePathDiagnostic(home string, err error) (string, string, bool) {
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) || pathErr == nil || pathErr.Err == nil {
+		return "", "", false
+	}
+	path := pathErr.Path
+	if filepath.IsAbs(path) {
+		relative, relErr := filepath.Rel(home, filepath.Clean(path))
+		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", "", false
+		}
+		path = relative
+	}
+	path = filepath.ToSlash(path)
+	if filepath.IsAbs(path) || filepath.ToSlash(filepath.Clean(filepath.FromSlash(path))) != path || !allowedCaptureRelativePath(path) {
+		return "", "", false
+	}
+	message := strings.ToLower(pathErr.Err.Error())
+	switch {
+	case strings.Contains(message, "symlink rejected") || errors.Is(pathErr.Err, syscall.ELOOP):
+		return path, "Cifrarium rejected a symbolic link during capture.", true
+	case os.IsPermission(pathErr.Err):
+		return path, "Cifrarium could not read this path because of file permissions.", true
+	case strings.Contains(message, "unsupported custom entry"):
+		return path, "This adapter path contains an unsupported file type.", true
+	default:
+		return path, "Cifrarium could not safely read this allowlisted path.", true
+	}
+}
+
+func allowedCaptureRelativePath(path string) bool {
+	switch path {
+	case ".codex/AGENTS.md", ".codex/config.toml", ".zshrc", ".zprofile", ".config/starship.toml", ".oh-my-zsh/custom":
+		return true
+	}
+	if !strings.HasPrefix(path, ".oh-my-zsh/custom/") {
+		return false
+	}
+	for _, component := range strings.Split(path, "/") {
+		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, ".") && component != ".oh-my-zsh" {
+			return false
+		}
+	}
+	return !strings.Contains(path, "\\")
 }

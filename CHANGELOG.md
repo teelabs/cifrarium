@@ -4,6 +4,17 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-11-05
+
+### Fixed
+
+- Allow the daemon process started by its own systemd unit to initialize while
+  continuing to detect other managed instances. Parse named systemd properties
+  to report service exits accurately during readiness checks.
+- Show the relative allowlisted adapter path and a safe failure category when
+  local capture cannot read a configuration file, without printing absolute
+  paths or underlying errors.
+
 ## [0.10.4] - 2026-11-05
 
 ### Fixed

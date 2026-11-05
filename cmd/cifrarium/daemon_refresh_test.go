@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -106,11 +107,11 @@ func TestDaemonRefreshReadinessRequiresBothEndpointsReady(t *testing.T) {
 }
 
 func TestDaemonRefreshServiceStateSanitizesSystemdOutput(t *testing.T) {
-	state, err := parseDaemonRefreshServiceState("failed\n/home/secret\nprivate-remote\n17\n")
+	state, err := parseDaemonRefreshServiceState("Result=exit-code\nExecMainStatus=17\nSubState=failed\nActiveState=failed\nMainPID=0\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.ActiveState != "failed" || state.SubState != "unknown" || state.Result != "unknown" || state.ExitStatus != "17" {
+	if state.ActiveState != "failed" || state.SubState != "failed" || state.Result != "exit-code" || state.ExitStatus != "17" {
 		t.Fatalf("parsed service state = %#v", state)
 	}
 	message := daemonRefreshServiceExitedError(state).Error()
@@ -119,17 +120,65 @@ func TestDaemonRefreshServiceStateSanitizesSystemdOutput(t *testing.T) {
 	}
 }
 
+func TestDaemonRefreshServiceStateParsesPropertiesByNameInAnyOrder(t *testing.T) {
+	state, err := parseDaemonRefreshServiceState("ExecMainStatus=0\nMainPID=12345\nActiveState=inactive\nResult=success\nSubState=dead\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ActiveState != "inactive" || state.SubState != "dead" || state.Result != "success" || state.ExitStatus != "0" || state.MainPID != "12345" {
+		t.Fatalf("parsed service state = %#v", state)
+	}
+}
+
+func TestDaemonRefreshServiceStateRejectsDuplicateProperties(t *testing.T) {
+	_, err := parseDaemonRefreshServiceState("ActiveState=failed\nActiveState=active\nSubState=dead\nResult=success\nExecMainStatus=0\nMainPID=0\n")
+	if err == nil {
+		t.Fatal("duplicate systemd properties were accepted")
+	}
+}
+
 func TestDaemonAlreadyRunningUsesManagedEndpoints(t *testing.T) {
+	oldSystemctl := runDaemonRefreshSystemctl
+	oldStateProbe := daemonRefreshSystemdStateProbe
+	oldMCPProbe := daemonRefreshProbe
 	runDaemonRefreshSystemctl = func(args ...string) error {
 		if len(args) > 0 && args[0] == "is-active" {
 			return nil
 		}
 		return errors.New("unexpected systemctl call")
 	}
-	defer func() { runDaemonRefreshSystemctl = func(args ...string) error { return nil } }()
+	defer func() {
+		runDaemonRefreshSystemctl = oldSystemctl
+		daemonRefreshSystemdStateProbe = oldStateProbe
+		daemonRefreshProbe = oldMCPProbe
+	}()
+	daemonRefreshSystemdStateProbe = func() (daemonRefreshServiceState, error) {
+		return daemonRefreshServiceState{MainPID: fmt.Sprint(os.Getpid())}, nil
+	}
+	daemonRefreshProbe = func(string) error { return errors.New("not listening yet") }
+	if daemonAlreadyRunning(t.TempDir()) {
+		t.Fatal("daemonAlreadyRunning() = true for the process started by its own systemd unit")
+	}
+}
 
-	if !daemonManagedServiceActive() {
-		t.Fatal("daemonManagedServiceActive() = false; want active managed service")
+func TestDaemonAlreadyRunningRecognizesDifferentManagedProcess(t *testing.T) {
+	oldSystemctl := runDaemonRefreshSystemctl
+	oldStateProbe := daemonRefreshSystemdStateProbe
+	runDaemonRefreshSystemctl = func(args ...string) error {
+		if len(args) > 0 && args[0] == "is-active" {
+			return nil
+		}
+		return errors.New("unexpected systemctl call")
+	}
+	defer func() {
+		runDaemonRefreshSystemctl = oldSystemctl
+		daemonRefreshSystemdStateProbe = oldStateProbe
+	}()
+	daemonRefreshSystemdStateProbe = func() (daemonRefreshServiceState, error) {
+		return daemonRefreshServiceState{MainPID: "1"}, nil
+	}
+	if !daemonAlreadyRunning("") {
+		t.Fatal("daemonAlreadyRunning() = false for a different active managed process")
 	}
 }
 
