@@ -386,7 +386,7 @@ PY
       doctor_args=(-command=doctor -format=json)
       doctor_command="$active_binary -command=doctor -format=json"
       ;;
-    0.9.*|0.10.*)
+    0.9.*|0.10.*|0.11.*)
       doctor_args=(doctor -format=json)
       doctor_command="$active_binary doctor -format=json"
       ;;

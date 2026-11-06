@@ -163,9 +163,13 @@ Do not treat an `overall` report as proof that a remote upload completed.
 go run ./cmd/cifrarium snapshot
 ~~~
 
-Check that a snapshot identifier was returned. Do not read or print the
-snapshot plaintext. With an active daemon, the CLI sends this request through
-the daemon control socket and does not bypass a backend that is still starting.
+Check that a snapshot identifier was returned. If the captured configuration
+matches the current vault head, output says `(unchanged; reused current)`; no
+new encrypted snapshot is written. The vault keeps a keyed fingerprint in the
+encrypted manifest, so it does not expose configuration paths or content to the
+provider. Do not read or print the snapshot plaintext. With an active daemon,
+the CLI sends this request through the daemon control socket and does not
+bypass a backend that is still starting.
 To test local capture without daemon mediation, exit a foreground daemon by
 answering `n` at `Retry?`, or stop a systemd-managed daemon with
 `systemctl --user stop cifrarium.service`. If a failure has no validated

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ type Item struct {
 	ID         string
 	Ciphertext []byte
 	Manifest   []byte
+	Unchanged  bool `json:"unchanged,omitempty"`
 }
 type Queue struct {
 	mu    sync.Mutex
@@ -30,6 +32,15 @@ func (q *Queue) Push(item Item) error {
 	defer q.mu.Unlock()
 	if err := validateItem(item); err != nil {
 		return err
+	}
+	for _, existing := range q.items {
+		if existing.ID != item.ID {
+			continue
+		}
+		if sameQueueContent(existing, item) {
+			return nil
+		}
+		return fmt.Errorf("pending queue item conflicts with existing snapshot")
 	}
 	if len(q.items) >= MaxPending {
 		return ErrQueueFull
@@ -68,11 +79,24 @@ func (q *Queue) Prepend(item Item) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	for _, existing := range q.items {
+		if existing.ID != item.ID {
+			continue
+		}
+		if sameQueueContent(existing, item) {
+			return nil
+		}
+		return fmt.Errorf("pending queue item conflicts with existing snapshot")
+	}
 	if len(q.items) >= MaxPending {
 		return ErrQueueFull
 	}
 	q.items = append([]Item{item}, q.items...)
 	return nil
+}
+
+func sameQueueContent(a, b Item) bool {
+	return a.ID == b.ID && bytes.Equal(a.Ciphertext, b.Ciphertext) && bytes.Equal(a.Manifest, b.Manifest)
 }
 
 func (q *Queue) Save(path string, operationalKey []byte) error {

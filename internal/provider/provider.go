@@ -18,6 +18,14 @@ type AtomicSnapshotProvider interface {
 	UploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte) error
 }
 
+// EquivalentManifestSnapshotProvider may treat an existing encrypted catalog
+// object as the same upload only after the caller verifies its plaintext
+// manifest. Providers must also prove that the existing snapshot object is
+// byte-identical before accepting this equivalence.
+type EquivalentManifestSnapshotProvider interface {
+	UploadSnapshotWithEquivalentManifest(ctx context.Context, id string, ciphertext, manifest []byte, equivalent func([]byte) bool) error
+}
+
 // PrivateVerifier is implemented by providers whose remote visibility is a
 // confidentiality boundary. Upload orchestration must verify it before any
 // ciphertext is written remotely.

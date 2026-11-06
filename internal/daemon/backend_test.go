@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -73,6 +74,68 @@ func TestBackendCaptureClassifiesVaultWriteFailure(t *testing.T) {
 	var marker interface{ CaptureFailure() }
 	if !errors.As(err, &marker) {
 		t.Fatal("vault write failure was not classified as a local capture failure")
+	}
+}
+
+func TestBackendCaptureReusesIdenticalSnapshotAndStoredManifestBytes(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("model = \"same\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	backend := &Backend{Home: home, Vault: store.New(root, make([]byte, 32), signing)}
+
+	first, err := backend.CaptureSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Unchanged {
+		t.Fatal("initial capture was reported unchanged")
+	}
+	storedManifest, err := os.ReadFile(filepath.Join(root, "catalog", first.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(storedManifest, first.Manifest) {
+		t.Fatal("capture returned manifest bytes different from the stored catalog")
+	}
+
+	second, err := backend.CaptureSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Unchanged || second.ID != first.ID {
+		t.Fatalf("second capture = (unchanged=%t, id=%q), want same head %q", second.Unchanged, second.ID, first.ID)
+	}
+	if !bytes.Equal(first.Ciphertext, second.Ciphertext) || !bytes.Equal(first.Manifest, second.Manifest) {
+		t.Fatal("unchanged capture did not return exact stored encrypted bytes")
+	}
+	if _, err := os.Stat(filepath.Join(root, "snapshots", second.ID)); err != nil {
+		t.Fatalf("current snapshot missing: %v", err)
+	}
+	status, err := backend.Status()
+	if err != nil || status.Snapshots != 1 {
+		t.Fatalf("snapshot count=%d err=%v, want exactly one", status.Snapshots, err)
+	}
+
+	if err := os.WriteFile(configPath, []byte("model = \"changed\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	third, err := backend.CaptureSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Unchanged || third.ID == second.ID {
+		t.Fatalf("changed capture = (unchanged=%t, id=%q), want a new snapshot", third.Unchanged, third.ID)
 	}
 }
 

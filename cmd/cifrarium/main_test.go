@@ -58,6 +58,45 @@ func TestRenderStatusHumanUsesUsefulLabels(t *testing.T) {
 	}
 }
 
+func TestRenderSnapshotResultDistinguishesUnchangedHead(t *testing.T) {
+	var out bytes.Buffer
+	writeSnapshotResult(&out, "head-id", true)
+	if got, want := out.String(), "snapshot head-id (unchanged; reused current)\n"; got != want {
+		t.Fatalf("unchanged snapshot output = %q, want %q", got, want)
+	}
+	out.Reset()
+	writeSnapshotResult(&out, "new-id", false)
+	if got, want := out.String(), "snapshot new-id\n"; got != want {
+		t.Fatalf("new snapshot output = %q, want %q", got, want)
+	}
+}
+
+func TestDaemonSnapshotRPCReportsUnchangedHead(t *testing.T) {
+	ready := &atomic.Bool{}
+	ready.Store(true)
+	handler := newDaemonControlHandler(nil, func(context.Context) (daemon.Item, error) {
+		return daemon.Item{ID: "head-id", Unchanged: true}, nil
+	}, ready, &atomic.Bool{})
+	result, rpcErr := handler(context.Background(), rpc.Request{Method: "snapshot.create"})
+	if rpcErr != nil {
+		t.Fatal(rpcErr)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Snapshot  string `json:"snapshot"`
+		Unchanged bool   `json:"unchanged"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Snapshot != "head-id" || !got.Unchanged {
+		t.Fatalf("snapshot RPC result = %#v, want unchanged head-id", got)
+	}
+}
+
 func TestRenderSetupDiagnosticsUsesStructuredSections(t *testing.T) {
 	var out bytes.Buffer
 	renderSetupDiagnostics(&out, "/home/test/.local/share/cifrarium", t.TempDir(), true)
@@ -582,15 +621,15 @@ func TestDaemonWiresRecoverySnapshotAndQueuesIt(t *testing.T) {
 	if err := scheduler.Cycle(context.Background()); err == nil {
 		t.Fatal("offline cycle succeeded")
 	}
-	if scheduler.Pending.Len() != 2 {
-		t.Fatalf("pending=%d, want normal and recovery snapshots", scheduler.Pending.Len())
+	if scheduler.Pending.Len() != 1 {
+		t.Fatalf("pending=%d, want one reused normal/recovery snapshot", scheduler.Pending.Len())
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "snapshots"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("snapshots=%d, want 2", len(entries))
+	if len(entries) != 1 {
+		t.Fatalf("snapshots=%d, want 1 reused snapshot", len(entries))
 	}
 }
 

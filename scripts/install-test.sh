@@ -286,7 +286,7 @@ printf '{"schema":1,"root":"%s"}\n' "$CONFIGURED_ROOT" >"$CONFIG_FILE"
 chmod 0600 "$CONFIG_FILE"
 cp "$CONFIG_FILE" "$TEST_ROOT/config.before"
 cp "$DAEMON_ENV" "$TEST_ROOT/daemon-env.before"
-ACTIVE_BINARY="$PREFIX/lib/cifrarium/versions/0.10.2/cifrarium"
+ACTIVE_BINARY="$PREFIX/lib/cifrarium/versions/0.11.0/cifrarium"
 mkdir -p "$(dirname "$ACTIVE_BINARY")"
 DOCTOR_REPORT="$TEST_ROOT/doctor-report.json"
 cat >"$ACTIVE_BINARY" <<'EOF'
@@ -298,7 +298,7 @@ case "${1:-}" in
     exit "${CIFRARIUM_TEST_DOCTOR_EXIT:?}"
     ;;
   -version)
-    printf '0.10.2\n'
+    printf '0.11.0\n'
     ;;
   *)
     exit 2
@@ -306,7 +306,7 @@ case "${1:-}" in
 esac
 EOF
 chmod 0755 "$ACTIVE_BINARY"
-ln -sfn ../lib/cifrarium/versions/0.10.2/cifrarium "$PREFIX/bin/cifrarium"
+ln -sfn ../lib/cifrarium/versions/0.11.0/cifrarium "$PREFIX/bin/cifrarium"
 export CIFRARIUM_TEST_DOCTOR_REPORT="$DOCTOR_REPORT"
 export CIFRARIUM_TEST_DOCTOR_EXIT=1
 cat >"$DOCTOR_REPORT" <<'EOF'
@@ -351,8 +351,8 @@ for scenario in vault-problem vault-not-ready configuration-problem malformed-js
     cat "$TEST_ROOT/doctor-$scenario.txt" >&2
     exit 1
   }
-  grep -Fq "$PREFIX/lib/cifrarium/versions/0.10.2/cifrarium doctor -format=json and resolve" "$TEST_ROOT/doctor-$scenario.txt"
-  [[ "$($PREFIX/bin/cifrarium -version)" == 0.10.2 ]]
+  grep -Fq "$PREFIX/lib/cifrarium/versions/0.11.0/cifrarium doctor -format=json and resolve" "$TEST_ROOT/doctor-$scenario.txt"
+  [[ "$($PREFIX/bin/cifrarium -version)" == 0.11.0 ]]
   cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
   cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
   cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
@@ -417,7 +417,7 @@ cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
 cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
 cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
 cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
-ln -sfn ../lib/cifrarium/versions/0.10.2/cifrarium "$PREFIX/bin/cifrarium"
+ln -sfn ../lib/cifrarium/versions/0.11.0/cifrarium "$PREFIX/bin/cifrarium"
 unset CIFRARIUM_TEST_REAL_READLINK CIFRARIUM_TEST_ACTIVE_LINK CIFRARIUM_TEST_RACE_MARKER
 unset CIFRARIUM_TEST_RACE_TARGET CIFRARIUM_TEST_RACE_SIDE_EFFECT
 
@@ -629,7 +629,7 @@ unset CIFRARIUM_TEST_OVERFLOW_SIDE_EFFECT
 
 # Future releases outside the known doctor interface families also fail
 # before execution.
-FUTURE_BINARY="$PREFIX/lib/cifrarium/versions/0.11.0/cifrarium"
+FUTURE_BINARY="$PREFIX/lib/cifrarium/versions/0.12.0/cifrarium"
 FUTURE_SIDE_EFFECT="$TEST_ROOT/future-binary-executed"
 mkdir -p "$(dirname "$FUTURE_BINARY")"
 cat >"$FUTURE_BINARY" <<'EOF'
@@ -639,7 +639,7 @@ printf 'status\n'
 EOF
 chmod 0755 "$FUTURE_BINARY"
 export CIFRARIUM_TEST_UNSUPPORTED_SIDE_EFFECT="$FUTURE_SIDE_EFFECT"
-ln -sfn ../lib/cifrarium/versions/0.11.0/cifrarium "$PREFIX/bin/cifrarium"
+ln -sfn ../lib/cifrarium/versions/0.12.0/cifrarium "$PREFIX/bin/cifrarium"
 future_output="$TEST_ROOT/future-version.txt"
 if "$ROOT_DIR/scripts/install.sh" --version 0.8.38 --prefix "$PREFIX" \
   --base-url "https://127.0.0.1:$PORT" >"$future_output" 2>&1; then

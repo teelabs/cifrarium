@@ -84,6 +84,8 @@ go run ./cmd/cifrarium status
 Success criteria:
 
 - snapshot prints a hexadecimal snapshot identifier;
+- repeated captures with identical paths, modes, and bytes report
+  `(unchanged; reused current)` and do not add another local snapshot;
 - status exits with code zero;
 - the vault does not contain plaintext application configuration;
 - the user's keyring remains available.

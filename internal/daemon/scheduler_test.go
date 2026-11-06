@@ -28,6 +28,28 @@ func TestSchedulerRetriesAndResetsMissedCycle(t *testing.T) {
 		t.Fatalf("attempts=%d missed=%d queue=%d", attempts, s.MissedCycles, q.Len())
 	}
 }
+
+func TestSchedulerDoesNotDuplicateUnchangedHeadAfterRepeatedUploadFailure(t *testing.T) {
+	q := &Queue{}
+	item := Item{ID: "current-head", Ciphertext: []byte("ciphertext"), Manifest: []byte("manifest"), Unchanged: true}
+	s := NewScheduler(func(context.Context) (Item, error) { return item, nil }, func(context.Context, Item) error {
+		return errors.New("offline")
+	}, q)
+	s.Retry.MaxAttempts = 1
+	for range 3 {
+		if err := s.Cycle(context.Background()); err == nil {
+			t.Fatal("offline cycle succeeded")
+		}
+	}
+	if q.Len() != 1 {
+		t.Fatalf("repeated unchanged upload failure queued %d copies, want 1", q.Len())
+	}
+	queued, ok := q.Peek()
+	if !ok || queued.ID != item.ID || string(queued.Ciphertext) != string(item.Ciphertext) || string(queued.Manifest) != string(item.Manifest) {
+		t.Fatalf("queued item = %#v, want exact current head", queued)
+	}
+}
+
 func TestSchedulerQueuesAndCreatesRecoveryAfterFailure(t *testing.T) {
 	q := Queue{}
 	recovery := 0

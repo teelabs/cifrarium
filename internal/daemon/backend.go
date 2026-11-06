@@ -121,19 +121,16 @@ func (b *Backend) CaptureSnapshot(ctx context.Context) (Item, error) {
 	if err := ctx.Err(); err != nil {
 		return Item{}, err
 	}
-	manifest, err := b.Vault.Save(records)
+	snapshot, err := b.Vault.SaveIfChanged(records)
 	if err != nil {
 		return Item{}, &CaptureError{Stage: CaptureStageVaultWrite, Err: err}
 	}
-	ciphertext, err := b.Vault.SnapshotCiphertext(manifest.Snapshot)
-	if err != nil {
-		return Item{}, &CaptureError{Stage: CaptureStageSnapshotRead, Err: err}
-	}
-	sealed, err := store.SealManifest(manifest, b.Vault.Operational)
-	if err != nil {
-		return Item{}, &CaptureError{Stage: CaptureStageManifestPreparation, Err: err}
-	}
-	return Item{ID: manifest.Snapshot, Ciphertext: ciphertext, Manifest: sealed}, nil
+	return Item{
+		ID:         snapshot.Manifest.Snapshot,
+		Ciphertext: snapshot.Ciphertext,
+		Manifest:   snapshot.ManifestBytes,
+		Unchanged:  snapshot.Unchanged,
+	}, nil
 }
 
 // UploadSnapshot applies the daemon-owned recovery and provider gates before

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -163,6 +164,50 @@ func TestGitRemoteUploadExcludesLocalCommitHistory(t *testing.T) {
 	}
 	if got := runProviderGitTest(t, local, "show", "HEAD:plaintext.txt"); got != "must not publish" {
 		t.Fatalf("local-only history changed: %q", got)
+	}
+}
+
+func TestRemoteSnapshotEquivalenceRejectsSymlinkTreeEntries(t *testing.T) {
+	bare, local := t.TempDir(), t.TempDir()
+	runProviderGitTest(t, bare, "init", "--bare", "--initial-branch=main")
+	runProviderGitTest(t, local, "init", "--initial-branch=main")
+	ciphertext, manifest := []byte("encrypted snapshot"), []byte("encrypted manifest")
+	if err := os.MkdirAll(filepath.Join(local, "objects"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(local, "catalog"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "objects", "id"), ciphertext, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "catalog", "id.json"), manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	runProviderGitTest(t, local, "add", "objects/id", "catalog/id.json")
+	runProviderGitTest(t, local, "commit", "-m", "seed regular snapshot")
+	runProviderGitTest(t, local, "push", bare, "HEAD:refs/heads/main")
+	g := Git{Dir: local, Remote: bare}
+	validate := func(candidate []byte) bool { return bytes.Equal(candidate, manifest) }
+	if raw, equivalent, exists, matches, err := g.remoteSnapshotEquivalent(context.Background(), "id", ciphertext, validate); err != nil || !equivalent || !exists || !matches || !bytes.Equal(raw, manifest) {
+		t.Fatalf("regular remote entries were not recognized: equivalent=%t exists=%t matches=%t err=%v", equivalent, exists, matches, err)
+	}
+
+	for _, path := range []string{"objects/id", "catalog/id.json"} {
+		parent := strings.TrimSpace(runProviderGitTest(t, bare, "rev-parse", "refs/heads/main"))
+		blob := strings.TrimSpace(runProviderGitTest(t, local, "rev-parse", parent+":"+path))
+		runProviderGitTest(t, local, "read-tree", parent)
+		runProviderGitTest(t, local, "update-index", "--cacheinfo", "120000,"+blob+","+path)
+		tree := strings.TrimSpace(runProviderGitTest(t, local, "write-tree"))
+		commit := strings.TrimSpace(runProviderGitTest(t, local, "commit-tree", tree, "-p", parent, "-m", "symlink fixture"))
+		runProviderGitTest(t, local, "push", bare, commit+":refs/heads/main")
+		_, equivalent, exists, matches, err := g.remoteSnapshotEquivalent(context.Background(), "id", ciphertext, validate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if equivalent && exists && matches {
+			t.Fatalf("remote symlink tree entry %q was accepted as a complete snapshot", path)
+		}
 	}
 }
 
