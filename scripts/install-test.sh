@@ -150,7 +150,8 @@ export CURL_CA_BUNDLE="$CERT"
 export CIFRARIUM_SYSTEMCTL_LOG="$SYSTEMCTL_LOG"
 
 "$ROOT_DIR/scripts/build-release.sh" --version "$VERSION" --out-dir "$PUBLIC_DIR"
-cp "$ROOT_DIR/scripts/install.sh" "$PUBLIC_DIR/install.sh"
+INSTALLER_SCRIPT="$TEST_ROOT/install-$VERSION.sh"
+cp "$PUBLIC_DIR/install.sh" "$INSTALLER_SCRIPT"
 printf 'test bundle\n' >"$PUBLIC_DIR/install.sh.bundle"
 for archive in "$PUBLIC_DIR"/*.tar.gz; do
   printf 'test bundle\n' >"$archive.bundle"
@@ -210,9 +211,17 @@ if "$ROOT_DIR/scripts/install.sh" --version "$VERSION" --prefix "$TEST_ROOT/deri
 fi
 
 install_output="$TEST_ROOT/install-output.txt"
-"$ROOT_DIR/scripts/install.sh" --version "$VERSION" --prefix "$PREFIX" \
-  --base-url "https://127.0.0.1:$PORT" >"$install_output" 2>&1
-[[ "$("$PREFIX/bin/cifrarium" -version)" == "$VERSION" ]]
+if ! "$INSTALLER_SCRIPT" --version "$VERSION" --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$install_output" 2>&1; then
+  cat "$install_output" >&2
+  exit 1
+fi
+if ! installed_version=$("$PREFIX/bin/cifrarium" -version 2>&1); then
+  cat "$install_output" >&2
+  printf 'active binary version probe failed: %s\n' "$installed_version" >&2
+  exit 1
+fi
+[[ "$installed_version" == "$VERSION" ]]
 [[ -L "$PREFIX/bin/cifrarium" ]]
 [[ -f "$XDG_CONFIG_HOME/systemd/user/cifrarium.service" ]]
 grep -Fq 'Environment=XDG_CONFIG_HOME=%E' "$XDG_CONFIG_HOME/systemd/user/cifrarium.service"
@@ -359,6 +368,56 @@ for scenario in vault-problem vault-not-ready configuration-problem malformed-js
   cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
   cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 done
+
+# The release installer may inspect a configured 0.12.0 binary using the
+# positional, read-only doctor interface because 0.12.0 is its embedded cap.
+SUPPORTED_012_BINARY="$PREFIX/lib/cifrarium/versions/0.12.0/cifrarium"
+SUPPORTED_012_DOCTOR="$TEST_ROOT/0.12-doctor-invoked"
+mkdir -p "$(dirname "$SUPPORTED_012_BINARY")"
+cat >"$SUPPORTED_012_BINARY" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  doctor)
+    [[ "${2:-}" == -format=json ]] || exit 64
+    printf 'positional-json\n' >"${CIFRARIUM_TEST_012_DOCTOR:?}"
+    cat "${CIFRARIUM_TEST_DOCTOR_REPORT:?}"
+    exit "${CIFRARIUM_TEST_DOCTOR_EXIT:?}"
+    ;;
+  -version)
+    printf '0.12.0\n'
+    ;;
+  *)
+    exit 64
+    ;;
+esac
+EOF
+chmod 0755 "$SUPPORTED_012_BINARY"
+ln -sfn ../lib/cifrarium/versions/0.12.0/cifrarium "$PREFIX/bin/cifrarium"
+export CIFRARIUM_TEST_012_DOCTOR="$SUPPORTED_012_DOCTOR"
+cat >"$DOCTOR_REPORT" <<'EOF'
+{"configuration":{"state":"configured","severity":"healthy"},"overall":"problem","vault":{"state":"ready","severity":"healthy"},"daemon":{"state":"enabled-but-inactive","severity":"problem"}}
+EOF
+export CIFRARIUM_TEST_DOCTOR_EXIT=1
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.39 --out-dir "$TEST_ROOT/release-0.8.39"
+cp "$TEST_ROOT/release-0.8.39"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.39-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+supported_012_output="$TEST_ROOT/supported-0.12.0-upgrade.txt"
+if ! "$INSTALLER_SCRIPT" --version 0.8.39 --prefix "$PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" >"$supported_012_output" 2>&1; then
+  cat "$supported_012_output" >&2
+  exit 1
+fi
+[[ "$(cat "$SUPPORTED_012_DOCTOR")" == positional-json ]]
+[[ "$($PREFIX/bin/cifrarium -version)" == 0.8.39 ]]
+grep -Fq 'installation mode: upgrade' "$supported_012_output"
+cmp -s "$TEST_ROOT/config.before" "$CONFIG_FILE"
+cmp -s "$TEST_ROOT/daemon-env.before" "$DAEMON_ENV"
+cmp -s "$TEST_ROOT/history.before" "$HOME_DIR/.local/share/cifrarium/snapshots/history"
+cmp -s "$TEST_ROOT/keyring.before" "$HOME_DIR/.local/share/cifrarium/keyring-sentinel"
+cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
+unset CIFRARIUM_TEST_012_DOCTOR
+ln -sfn ../lib/cifrarium/versions/0.11.0/cifrarium "$PREFIX/bin/cifrarium"
 
 # Simulate rollback swapping the active link immediately after preflight reads
 # it. The validated executable path must be invoked, and activation must
@@ -629,7 +688,7 @@ unset CIFRARIUM_TEST_OVERFLOW_SIDE_EFFECT
 
 # Future releases outside the known doctor interface families also fail
 # before execution.
-FUTURE_BINARY="$PREFIX/lib/cifrarium/versions/0.12.0/cifrarium"
+FUTURE_BINARY="$PREFIX/lib/cifrarium/versions/0.13.0/cifrarium"
 FUTURE_SIDE_EFFECT="$TEST_ROOT/future-binary-executed"
 mkdir -p "$(dirname "$FUTURE_BINARY")"
 cat >"$FUTURE_BINARY" <<'EOF'
@@ -639,7 +698,7 @@ printf 'status\n'
 EOF
 chmod 0755 "$FUTURE_BINARY"
 export CIFRARIUM_TEST_UNSUPPORTED_SIDE_EFFECT="$FUTURE_SIDE_EFFECT"
-ln -sfn ../lib/cifrarium/versions/0.12.0/cifrarium "$PREFIX/bin/cifrarium"
+ln -sfn ../lib/cifrarium/versions/0.13.0/cifrarium "$PREFIX/bin/cifrarium"
 future_output="$TEST_ROOT/future-version.txt"
 if "$ROOT_DIR/scripts/install.sh" --version 0.8.38 --prefix "$PREFIX" \
   --base-url "https://127.0.0.1:$PORT" >"$future_output" 2>&1; then

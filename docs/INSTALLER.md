@@ -158,7 +158,11 @@ or retry a failed release with a different version.
 ## Local release validation
 
 Maintainers can build and inspect both supported archives without signing
-credentials:
+credentials. The built release also contains a standalone installer with its
+release version embedded; during upgrades it only probes active doctor
+interfaces from 0.9.0 through that version. Older known 0.8.0–0.8.2 releases
+use their legacy read-only doctor syntax, and unknown future versions fail
+closed.
 
 ```sh
 scripts/build-release.sh --out-dir /tmp/cifrarium-release

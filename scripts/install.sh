@@ -45,6 +45,8 @@ step_done() {
 	fi
 }
 
+INSTALLER_RELEASE_VERSION="__CIFRARIUM_INSTALLER_RELEASE_VERSION__"
+
 dependency_suggestions() {
   local manager=""
   if command -v apt-get >/dev/null 2>&1; then
@@ -207,6 +209,36 @@ done
 
 valid_version() {
   [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+modern_doctor_interface_supported() {
+  local installer_version="$INSTALLER_RELEASE_VERSION"
+  if [[ ! "$installer_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    local script_dir="${BASH_SOURCE[0]%/*}"
+    local source_version_file="$script_dir/../VERSION"
+    if [[ -f "$source_version_file" ]]; then
+      IFS= read -r installer_version <"$source_version_file"
+    else
+      installer_version=""
+    fi
+  fi
+  python3 - "$1" "$installer_version" <<'PY'
+import re
+import sys
+
+def semver(value):
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value):
+        raise ValueError("invalid semantic version")
+    return tuple(int(part) for part in value.split("."))
+
+try:
+    active = semver(sys.argv[1])
+    installer = semver(sys.argv[2])
+except ValueError:
+    raise SystemExit(1)
+
+raise SystemExit(0 if (0, 9, 0) <= active <= installer else 1)
+PY
 }
 
 if [[ "$action" == rollback ]]; then
@@ -378,22 +410,21 @@ if os.path.realpath(root) != root or not os.path.isdir(root):
 PY
   local doctor_report doctor_command
   local -a doctor_args
-  case "$active_version" in
-    0.8.0|0.8.1|0.8.2)
-      # v0.8.0-v0.8.2 parse doctor through the legacy flag. A modern positional
-      # argument is treated as the default status command and can update keyring
-      # catalog metadata before returning non-JSON output.
-      doctor_args=(-command=doctor -format=json)
-      doctor_command="$active_binary -command=doctor -format=json"
-      ;;
-    0.9.*|0.10.*|0.11.*)
-      doctor_args=(doctor -format=json)
-      doctor_command="$active_binary doctor -format=json"
-      ;;
-    *)
-      die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because its doctor interface is not known to be safe for upgrade preflight. Keep it in place and consult its documented upgrade guidance."
-      ;;
-  esac
+  if [[ "$active_version" == 0.8.0 || "$active_version" == 0.8.1 || "$active_version" == 0.8.2 ]]; then
+    # v0.8.0-v0.8.2 parse doctor through the legacy flag. A modern positional
+    # argument is treated as the default status command and can update keyring
+    # catalog metadata before returning non-JSON output.
+    doctor_args=(-command=doctor -format=json)
+    doctor_command="$active_binary -command=doctor -format=json"
+  elif modern_doctor_interface_supported "$active_version"; then
+    # Cifrarium releases from 0.9.0 onward keep the positional, read-only doctor
+    # contract. Bound this range to the release version embedded in this
+    # installer so future, unrecognized interfaces still fail closed.
+    doctor_args=(doctor -format=json)
+    doctor_command="$active_binary doctor -format=json"
+  else
+    die "The installer cannot safely inspect this active version.\n\nNo diagnostic command was run because its doctor interface is not known to be safe for upgrade preflight. Keep it in place and consult its documented upgrade guidance."
+  fi
   doctor_report=$("$active_binary" "${doctor_args[@]}" 2>/dev/null) || true
   if ! printf '%s' "$doctor_report" | python3 -c '
 import json
