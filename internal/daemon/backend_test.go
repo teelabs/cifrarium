@@ -8,10 +8,50 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/teelabs/cifrarium/internal/store"
 )
+
+type auditTestGuard struct {
+	head   string
+	writes int
+}
+
+func (g *auditTestGuard) CatalogHead() (string, error) { return g.head, nil }
+func (g *auditTestGuard) SetCatalogHead(head string) error {
+	g.writes++
+	g.head = head
+	return nil
+}
+
+type auditTestProvider struct{ calls int }
+
+func (p *auditTestProvider) Upload(context.Context, string, []byte) error {
+	p.calls++
+	return nil
+}
+func (p *auditTestProvider) UploadCatalog(context.Context, string, []byte) error {
+	p.calls++
+	return nil
+}
+func (p *auditTestProvider) Download(context.Context, string) ([]byte, error) {
+	p.calls++
+	return nil, nil
+}
+func (p *auditTestProvider) DownloadCatalog(context.Context, string) ([]byte, error) {
+	p.calls++
+	return nil, nil
+}
+func (p *auditTestProvider) List(context.Context) ([]string, error) {
+	p.calls++
+	return nil, nil
+}
+func (p *auditTestProvider) Health(context.Context) error {
+	p.calls++
+	return nil
+}
 
 func TestBackendPlansAreReadOnlyAndUseTheSharedAdapterContract(t *testing.T) {
 	backend := Backend{}
@@ -136,6 +176,96 @@ func TestBackendCaptureReusesIdenticalSnapshotAndStoredManifestBytes(t *testing.
 	}
 	if third.Unchanged || third.ID == second.ID {
 		t.Fatalf("changed capture = (unchanged=%t, id=%q), want a new snapshot", third.Unchanged, third.ID)
+	}
+}
+
+func TestBackendAuditSnapshotUsesAdaptersAndDoesNotMutateVaultQueueGuardOrProvider(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("model = \"before\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := &auditTestGuard{}
+	provider := &auditTestProvider{}
+	queue := &Queue{}
+	if err := queue.Push(Item{ID: "pending-id", Ciphertext: []byte("opaque pending bytes")}); err != nil {
+		t.Fatal(err)
+	}
+	queuePath := filepath.Join(root, "pending.queue")
+	if err := queue.Save(queuePath, key); err != nil {
+		t.Fatal(err)
+	}
+	backend := &Backend{
+		Home:               home,
+		Vault:              store.NewWithGuard(root, key, signing, guard),
+		Operational:        key,
+		Signing:            signing,
+		Pending:            queue,
+		QueuePath:          queuePath,
+		Provider:           provider,
+		ProviderConfigured: true,
+	}
+	snapshot, err := backend.CaptureSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	headBefore, err := os.ReadFile(filepath.Join(root, "head.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	queueBefore, err := os.ReadFile(queuePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entriesBefore, err := os.ReadDir(filepath.Join(root, "snapshots"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardHeadBefore, guardWritesBefore := guard.head, guard.writes
+	if err := os.WriteFile(configPath, []byte("model = \"after\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := backend.AuditSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != store.AuditDiffers || result.Snapshot != snapshot.ID || !reflect.DeepEqual(result.ContentChanged, []string{".codex/config.toml"}) {
+		t.Fatalf("audit result = %#v", result)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("audit called provider %d times", provider.calls)
+	}
+	if queue.Len() != 1 {
+		t.Fatalf("audit changed in-memory pending queue length to %d", queue.Len())
+	}
+	queueAfter, err := os.ReadFile(queuePath)
+	if err != nil || !bytes.Equal(queueBefore, queueAfter) {
+		t.Fatalf("audit changed pending queue file: %v", err)
+	}
+	headAfter, err := os.ReadFile(filepath.Join(root, "head.json"))
+	if err != nil || !bytes.Equal(headBefore, headAfter) {
+		t.Fatalf("audit changed head: %v", err)
+	}
+	entriesAfter, err := os.ReadDir(filepath.Join(root, "snapshots"))
+	if err != nil || len(entriesAfter) != len(entriesBefore) {
+		t.Fatalf("audit changed snapshot count: before=%d after=%d err=%v", len(entriesBefore), len(entriesAfter), err)
+	}
+	if guard.head != guardHeadBefore || guard.writes != guardWritesBefore {
+		t.Fatalf("audit changed guard: before=(%q,%d) after=(%q,%d)", guardHeadBefore, guardWritesBefore, guard.head, guard.writes)
 	}
 }
 

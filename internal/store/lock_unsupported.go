@@ -11,3 +11,7 @@ func ValidateRoot(string) error {
 func withVaultLock(string, func() error) error {
 	return fmt.Errorf("vault locking requires Linux")
 }
+
+func withVaultAuditLock(string, func() error) error {
+	return fmt.Errorf("read-only vault locking requires Linux")
+}

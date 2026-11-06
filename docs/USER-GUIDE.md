@@ -43,10 +43,17 @@ Check the current interface before copying examples:
 go run ./cmd/cifrarium -h
 ~~~
 
-The main commands are `status`, `doctor`, `snapshot`, `daemon`, `daemon refresh`,
-`migrate-catalog`, `provider setup`, `provider health`, `recovery shares`, and
-`recovery import`. Options follow the subcommand, for example
+The main commands are `status`, `doctor`, `snapshot`, `snapshot audit`, `daemon`,
+`daemon refresh`, `migrate-catalog`, `provider setup`, `provider health`,
+`recovery shares`, and `recovery import`. Options follow the subcommand, for example
 `cifrarium provider health --verify-private`.
+
+`cifrarium snapshot audit` compares current allowlisted adapter files with the
+latest verified local snapshot. `-format=json` returns `matches`, `differs`, or
+`noSnapshot`, with sorted relative-path difference lists when a baseline exists.
+Differences and no baseline are successful audit results; read or integrity
+errors fail without returning partial results. The audit does not create a
+snapshot or update vault, keyring, queue, or provider state.
 
 Run `cifrarium --help` to see this command list and the global options. Help
 uses blank provider defaults intentionally: configured paths, remotes,
@@ -374,10 +381,12 @@ input scope; do not raise production limits without reviewing the threat model.
 
 ## 8. Local MCP
 
-The MCP is local-only and offers status, snapshot.plan, and restore.plan as
-protocol tools. Plans are not mutations: they require explicit confirmation
-and a separate flow. Do not expose the socket over a network, copy it to
-another host, or treat a plan response as proof that a restore was applied.
+The MCP is local-only and offers status, snapshot.plan, restore.plan, and
+snapshot.audit as protocol tools. `snapshot.audit` is read-only and compares
+the current allowlisted adapter files with the latest verified local snapshot.
+Plans are not mutations: they require explicit confirmation and a separate
+flow. Do not expose the socket over a network, copy it to another host, or
+treat a plan response as proof that a restore was applied.
 
 The current CLI does not expose a public restore-activation command;
 restore.plan is planning only. Agents must state this clearly.

@@ -105,21 +105,12 @@ func (b *Backend) CaptureSnapshot(ctx context.Context) (Item, error) {
 	if b.Vault == nil {
 		return Item{}, &CaptureError{Stage: CaptureStageVaultWrite, Err: context.Canceled}
 	}
-	var records []store.Record
-	for _, adapter := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
-		if err := ctx.Err(); err != nil {
+	records, err := b.collectAdapterRecords(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
 			return Item{}, err
 		}
-		files, err := adapter.Collect(b.Home)
-		if err != nil {
-			return Item{}, &CaptureError{Stage: CaptureStageAdapters, Err: err}
-		}
-		for _, file := range files {
-			records = append(records, store.Record{Path: file.Relative, Mode: uint32(file.Mode), Data: file.Data})
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return Item{}, err
+		return Item{}, &CaptureError{Stage: CaptureStageAdapters, Err: err}
 	}
 	snapshot, err := b.Vault.SaveIfChanged(records)
 	if err != nil {
@@ -131,6 +122,45 @@ func (b *Backend) CaptureSnapshot(ctx context.Context) (Item, error) {
 		Manifest:   snapshot.ManifestBytes,
 		Unchanged:  snapshot.Unchanged,
 	}, nil
+}
+
+// AuditSnapshot compares the current adapter files with the verified active
+// snapshot without creating or persisting any vault state.
+func (b *Backend) AuditSnapshot(ctx context.Context) (store.AuditResult, error) {
+	b.operationMu.Lock()
+	defer b.operationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return store.AuditResult{}, err
+	}
+	if b.Vault == nil {
+		return store.AuditResult{}, fmt.Errorf("daemon backend vault is unavailable")
+	}
+	return b.Vault.AuditCurrent(func() ([]store.Record, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return b.collectAdapterRecords(ctx)
+	})
+}
+
+func (b *Backend) collectAdapterRecords(ctx context.Context) ([]store.Record, error) {
+	var records []store.Record
+	for _, adapter := range []adapters.Adapter{adapters.Config{}, adapters.Zsh{}, adapters.Starship{}} {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		files, err := adapter.Collect(b.Home)
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range files {
+			records = append(records, store.Record{Path: file.Relative, Mode: uint32(file.Mode), Data: file.Data})
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 // UploadSnapshot applies the daemon-owned recovery and provider gates before

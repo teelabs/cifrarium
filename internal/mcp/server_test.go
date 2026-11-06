@@ -140,6 +140,37 @@ func TestAllowedMethodsUseDaemonHandler(t *testing.T) {
 	}
 }
 
+func TestSnapshotAuditIsAllowedAndMutationMethodsRemainRejected(t *testing.T) {
+	for _, method := range []string{"snapshot.audit", "snapshot.create"} {
+		socket := filepath.Join(t.TempDir(), "cifrarium.sock")
+		calls := make(chan string, 1)
+		handler := HandlerFunc(func(_ context.Context, request Request) (any, error) {
+			calls <- request.Method
+			return map[string]any{"status": "matches"}, nil
+		})
+		go func() { _ = (Server{Socket: socket, Handler: handler}).Listen() }()
+		c := dialSocket(t, socket)
+		if _, err := c.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":%q}`, method) + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		var response Response
+		if err := json.NewDecoder(bufio.NewReader(c)).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		_ = c.Close()
+		if method == "snapshot.audit" {
+			if response.Error != nil || response.Result == nil {
+				t.Fatalf("audit response = %#v", response)
+			}
+			if called := <-calls; called != method {
+				t.Fatalf("handler method = %q", called)
+			}
+		} else if response.Error == nil || response.Error.Code != -32601 {
+			t.Fatalf("mutating method was not rejected: %#v", response)
+		}
+	}
+}
+
 func TestOversizedRequestLineReturnsAnError(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close()

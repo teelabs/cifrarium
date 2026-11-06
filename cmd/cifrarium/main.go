@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -70,7 +71,7 @@ func main() {
 	verifyPrivate := flag.Bool("verify-private", false, "verify GitHub repository privacy with gh (provider-health only)")
 	showVersion := flag.Bool("version", false, "print the Cifrarium version")
 	nonInteractive := flag.Bool("non-interactive", false, "never prompt, capture, upload, or enable services")
-	formatValue := flag.String("format", "human", "output format: human or json (status and doctor)")
+	formatValue := flag.String("format", "human", "output format: human or json (status, doctor, and snapshot audit)")
 	var recoveryValues stringList
 	flag.Var(&recoveryValues, "recovery-share", "recovery share label:value (repeat twice before remote upload)")
 	for _, name := range []string{"CIFRARIUM_RECOVERY_SHARE_1", "CIFRARIUM_RECOVERY_SHARE_2"} {
@@ -188,6 +189,18 @@ func main() {
 		os.Exit(1)
 	}
 	root = &resolvedRoot
+	if cmd == "snapshot-audit" {
+		result, err := runSnapshotAudit(*root, home)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: snapshot audit failed: %v\n", daemonBackendNotReadyAdvice(err))
+			os.Exit(1)
+		}
+		if err := renderSnapshotAudit(os.Stdout, result, format); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(2)
+		}
+		return
+	}
 	keyringStore := store.NewKeyring()
 	if cmd == "recover" {
 		shares, err := parseRecoveryShares(recoveryValues)
@@ -425,6 +438,14 @@ func canonicalCommand(args []string) (string, []string, error) {
 		return "status", args, nil
 	}
 	switch args[0] {
+	case "snapshot":
+		if len(args) >= 2 && args[1] == "audit" {
+			return "snapshot-audit", append([]string{}, args[2:]...), nil
+		}
+		if len(args) > 1 {
+			return "", nil, fmt.Errorf("unknown snapshot command %q", args[1])
+		}
+		return "snapshot", append([]string{}, args[1:]...), nil
 	case "provider":
 		if len(args) < 2 {
 			return "", nil, fmt.Errorf("provider requires setup or health")
@@ -457,7 +478,7 @@ func canonicalCommand(args []string) (string, []string, error) {
 			return "", nil, fmt.Errorf("unknown daemon command %q", args[1])
 		}
 		return "daemon", append([]string{}, args[1:]...), nil
-	case "status", "doctor", "setup", "snapshot", "migrate-catalog":
+	case "status", "doctor", "setup", "migrate-catalog":
 		return args[0], append([]string{}, args[1:]...), nil
 	case "help":
 		return "help", append([]string{}, args[1:]...), nil
@@ -473,6 +494,7 @@ func writeCifrariumUsage(w io.Writer, fs *flag.FlagSet, program string) {
 	fmt.Fprintln(w, "  doctor                  Run a read-only installation diagnostic")
 	fmt.Fprintln(w, "  setup                   Configure the local vault")
 	fmt.Fprintln(w, "  snapshot                Capture a local encrypted snapshot")
+	fmt.Fprintln(w, "  snapshot audit          Compare adapter files with the latest verified snapshot")
 	fmt.Fprintln(w, "  daemon                  Run the user daemon")
 	fmt.Fprintln(w, "  daemon refresh          Reload configuration and restart the user daemon")
 	fmt.Fprintln(w, "  migrate-catalog         Encrypt legacy catalog metadata")
@@ -503,6 +525,60 @@ func commandMutatesOrHandlesSecrets(command string) bool {
 	default:
 		return false
 	}
+}
+
+func runSnapshotAudit(root, home string) (store.AuditResult, error) {
+	if result, ok, err := callDaemonAudit(root); err != nil {
+		return store.AuditResult{}, safeSnapshotAuditError(err)
+	} else if ok {
+		return result, nil
+	}
+	keyringStore := store.NewKeyring()
+	op, signing, err := keyringStore.LoadExistingForRoot(root)
+	if err != nil {
+		return store.AuditResult{}, safeSnapshotAuditError(err)
+	}
+	vault := store.NewWithGuard(root, op, signing, keyringStore)
+	backend := daemon.Backend{Home: home, Vault: vault}
+	result, err := backend.AuditSnapshot(context.Background())
+	if err != nil {
+		return store.AuditResult{}, safeSnapshotAuditError(err)
+	}
+	return result, nil
+}
+
+func safeSnapshotAuditError(err error) error {
+	var rpcErr *rpc.Error
+	if errors.As(err, &rpcErr) && rpcErr.Code == -32002 && rpcErr.Message == "daemon backend is not ready" {
+		return daemonBackendNotReadyAdvice(err)
+	}
+	return errors.New("audit could not be completed; check vault integrity, file access, and daemon logs")
+}
+
+func renderSnapshotAudit(out io.Writer, result store.AuditResult, format outputFormat) error {
+	if format == outputJSON {
+		return json.NewEncoder(out).Encode(result)
+	}
+	fmt.Fprintln(out, "Cifrarium snapshot audit")
+	fmt.Fprintf(out, "Status: %s\n", result.Status)
+	if result.Snapshot != "" {
+		fmt.Fprintf(out, "Snapshot: %s\n", result.Snapshot)
+	}
+	writePaths := func(label string, paths []string) {
+		fmt.Fprintf(out, "%s:\n", label)
+		if len(paths) == 0 {
+			fmt.Fprintln(out, "  (none)")
+			return
+		}
+		for _, path := range paths {
+			fmt.Fprintf(out, "  %s\n", strconv.QuoteToGraphic(path))
+		}
+	}
+	writePaths("Added", result.Added)
+	writePaths("Missing", result.Missing)
+	writePaths("Content changed", result.ContentChanged)
+	writePaths("Mode changed", result.ModeChanged)
+	return nil
 }
 
 func runSetup(root, home string, nonInteractive bool, output io.Writer) error {
@@ -803,7 +879,7 @@ func newMCPHandler(root, providerDir string) mcp.Handler {
 }
 
 func newMCPHandlerWithReadiness(root, providerDir string, backend *daemon.Backend, backendReady *atomic.Bool) mcp.Handler {
-	return mcp.HandlerFunc(func(_ context.Context, request mcp.Request) (any, error) {
+	return mcp.HandlerFunc(func(ctx context.Context, request mcp.Request) (any, error) {
 		result := map[string]any{
 			"method":   request.Method,
 			"readOnly": true,
@@ -844,6 +920,15 @@ func newMCPHandlerWithReadiness(root, providerDir string, backend *daemon.Backen
 				result["action"] = "capture"
 				result["adapters"] = []string{"codex", "oh-my-zsh", "starship"}
 				result["requiresCliConfirmation"] = true
+			}
+			return result, nil
+		case "snapshot.audit":
+			if backend == nil || (backendReady != nil && !backendReady.Load()) {
+				return nil, errors.New("daemon backend is not ready")
+			}
+			result, err := backend.AuditSnapshot(ctx)
+			if err != nil {
+				return nil, errors.New("snapshot audit failed")
 			}
 			return result, nil
 		case "restore.plan":
@@ -936,6 +1021,43 @@ func callDaemonSnapshot(root string) (daemonSnapshotResult, bool, error) {
 	return result, true, nil
 }
 
+func callDaemonAudit(root string) (store.AuditResult, bool, error) {
+	socket := filepath.Join(root, "control.sock")
+	if _, err := os.Stat(socket); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return store.AuditResult{}, false, nil
+		}
+		return store.AuditResult{}, false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var result store.AuditResult
+	if err := rpc.Call(ctx, socket, "snapshot.audit", nil, &result); err != nil {
+		return store.AuditResult{}, true, err
+	}
+	if result.Status != store.AuditMatches && result.Status != store.AuditDiffers && result.Status != store.AuditNoSnapshot {
+		return store.AuditResult{}, true, errors.New("daemon returned an invalid snapshot audit result")
+	}
+	if result.Status != store.AuditNoSnapshot && result.Snapshot == "" {
+		return store.AuditResult{}, true, errors.New("daemon returned an incomplete snapshot audit result")
+	}
+	if err := validateAuditResultPaths(result); err != nil {
+		return store.AuditResult{}, true, errors.New("daemon returned an invalid snapshot audit result")
+	}
+	return result, true, nil
+}
+
+func validateAuditResultPaths(result store.AuditResult) error {
+	for _, paths := range [][]string{result.Added, result.Missing, result.ContentChanged, result.ModeChanged} {
+		for _, path := range paths {
+			if path == "" || filepath.IsAbs(path) || filepath.Clean(path) != path || path == "." || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+				return errors.New("invalid audit result path")
+			}
+		}
+	}
+	return nil
+}
+
 func newDaemonControlHandler(backend *daemon.Backend, snapshot func(context.Context) (daemon.Item, error), backendReady, mcpReady *atomic.Bool) rpc.Handler {
 	return func(ctx context.Context, request rpc.Request) (any, *rpc.Error) {
 		switch request.Method {
@@ -967,6 +1089,18 @@ func newDaemonControlHandler(backend *daemon.Backend, snapshot func(context.Cont
 				return nil, &rpc.Error{Code: -32010, Message: "snapshot failed"}
 			}
 			return map[string]any{"snapshot": item.ID, "unchanged": item.Unchanged}, nil
+		case "snapshot.audit":
+			if !backendReady.Load() {
+				return nil, &rpc.Error{Code: -32002, Message: "daemon backend is not ready"}
+			}
+			if backend == nil {
+				return nil, &rpc.Error{Code: -32011, Message: "snapshot audit failed"}
+			}
+			result, err := backend.AuditSnapshot(ctx)
+			if err != nil {
+				return nil, &rpc.Error{Code: -32011, Message: "snapshot audit failed"}
+			}
+			return result, nil
 		default:
 			return nil, &rpc.Error{Code: -32601, Message: "method not found"}
 		}
