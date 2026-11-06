@@ -1,9 +1,11 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 
 	"github.com/teelabs/cifrarium/internal/provider"
@@ -41,6 +43,25 @@ func (g UploadGate) UploadSnapshot(ctx context.Context, p provider.Provider, id 
 	}
 	if err := verifyPrivate(ctx, p); err != nil {
 		return err
+	}
+	if equivalent, ok := p.(provider.EquivalentManifestSnapshotProvider); ok {
+		return equivalent.UploadSnapshotWithEquivalentManifest(ctx, id, ciphertext, manifestBytes, func(existingBytes []byte) bool {
+			existing, err := store.OpenManifest(existingBytes, g.OperationalKey)
+			if err != nil {
+				return false
+			}
+			vault := store.New("", g.OperationalKey, g.SigningKey)
+			pub := g.SigningKey.Public().(ed25519.PublicKey)
+			if vault.VerifySnapshot(manifest, ciphertext, pub) != nil || vault.VerifySnapshot(existing, ciphertext, pub) != nil {
+				return false
+			}
+			candidatePlain, err := json.Marshal(manifest)
+			if err != nil {
+				return false
+			}
+			existingPlain, err := json.Marshal(existing)
+			return err == nil && bytes.Equal(candidatePlain, existingPlain)
+		})
 	}
 	if atomic, ok := p.(provider.AtomicSnapshotProvider); ok {
 		return atomic.UploadSnapshot(ctx, id, ciphertext, manifestBytes)

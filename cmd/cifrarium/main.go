@@ -258,11 +258,11 @@ func main() {
 			fmt.Printf("%s:%s\n", share.Label, share.Value)
 		}
 	case "snapshot":
-		if snapshotID, ok, err := callDaemonSnapshot(*root); err != nil {
+		if result, ok, err := callDaemonSnapshot(*root); err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: daemon snapshot failed: %v\n", daemonBackendNotReadyAdvice(err))
 			os.Exit(1)
 		} else if ok {
-			fmt.Printf("snapshot %s\n", snapshotID)
+			writeSnapshotResult(os.Stdout, result.Snapshot, result.Unchanged)
 			return
 		}
 		localBackend := daemon.Backend{Home: home, Vault: v}
@@ -271,7 +271,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		fmt.Printf("snapshot %s\n", item.ID)
+		writeSnapshotResult(os.Stdout, item.ID, item.Unchanged)
 	case "daemon":
 		if daemonAlreadyRunning(*root) {
 			fmt.Fprintln(os.Stdout, "cifrarium daemon is already running")
@@ -903,26 +903,37 @@ func callDaemonStatus(root string) (statusReport, bool, error) {
 	return report, true, nil
 }
 
-func callDaemonSnapshot(root string) (string, bool, error) {
+type daemonSnapshotResult struct {
+	Snapshot  string `json:"snapshot"`
+	Unchanged bool   `json:"unchanged"`
+}
+
+func writeSnapshotResult(out io.Writer, id string, unchanged bool) {
+	if unchanged {
+		fmt.Fprintf(out, "snapshot %s (unchanged; reused current)\n", id)
+		return
+	}
+	fmt.Fprintf(out, "snapshot %s\n", id)
+}
+
+func callDaemonSnapshot(root string) (daemonSnapshotResult, bool, error) {
 	socket := filepath.Join(root, "control.sock")
 	if _, err := os.Stat(socket); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", false, nil
+			return daemonSnapshotResult{}, false, nil
 		}
-		return "", false, err
+		return daemonSnapshotResult{}, false, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	var result struct {
-		Snapshot string `json:"snapshot"`
-	}
+	var result daemonSnapshotResult
 	if err := rpc.Call(ctx, socket, "snapshot.create", nil, &result); err != nil {
-		return "", true, err
+		return daemonSnapshotResult{}, true, err
 	}
 	if result.Snapshot == "" {
-		return "", true, errors.New("daemon returned an empty snapshot identifier")
+		return daemonSnapshotResult{}, true, errors.New("daemon returned an empty snapshot identifier")
 	}
-	return result.Snapshot, true, nil
+	return result, true, nil
 }
 
 func newDaemonControlHandler(backend *daemon.Backend, snapshot func(context.Context) (daemon.Item, error), backendReady, mcpReady *atomic.Bool) rpc.Handler {
@@ -955,7 +966,7 @@ func newDaemonControlHandler(backend *daemon.Backend, snapshot func(context.Cont
 			if err != nil {
 				return nil, &rpc.Error{Code: -32010, Message: "snapshot failed"}
 			}
-			return map[string]string{"snapshot": item.ID}, nil
+			return map[string]any{"snapshot": item.ID, "unchanged": item.Unchanged}, nil
 		default:
 			return nil, &rpc.Error{Code: -32601, Message: "method not found"}
 		}

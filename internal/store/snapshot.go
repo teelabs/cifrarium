@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -21,12 +23,24 @@ type Record struct {
 	Data []byte `json:"data"`
 }
 type Manifest struct {
-	Version   int       `json:"version"`
-	CreatedAt time.Time `json:"created_at"`
-	Previous  string    `json:"previous"`
-	Snapshot  string    `json:"snapshot"`
-	Signer    string    `json:"signer"`
-	Signature string    `json:"signature"`
+	Version   int               `json:"version"`
+	CreatedAt time.Time         `json:"created_at"`
+	Previous  string            `json:"previous"`
+	Snapshot  string            `json:"snapshot"`
+	Signer    string            `json:"signer"`
+	Signature string            `json:"signature"`
+	Metadata  *SnapshotMetadata `json:"metadata,omitempty"`
+}
+type SnapshotMetadata struct {
+	Version            int    `json:"version"`
+	ContentFingerprint string `json:"content_fingerprint"`
+	Signature          string `json:"signature"`
+}
+type SnapshotResult struct {
+	Manifest      Manifest
+	Ciphertext    []byte
+	ManifestBytes []byte
+	Unchanged     bool
 }
 type Vault struct {
 	Root        string
@@ -93,65 +107,142 @@ func OpenWithGuard(root string, op []byte, signing ed25519.PrivateKey, guard Hea
 	return v, nil
 }
 func (v *Vault) Save(records []Record) (Manifest, error) {
-	var manifest Manifest
-	err := withVaultLock(v.Root, func() error {
-		var err error
-		manifest, err = v.saveUnlocked(records)
-		return err
-	})
-	return manifest, err
-}
-
-func (v *Vault) saveUnlocked(records []Record) (Manifest, error) {
-	if err := validateRecords(records); err != nil {
+	plain, fingerprint, err := prepareRecords(records, v.Operational)
+	if err != nil {
 		return Manifest{}, err
 	}
-	if err := os.MkdirAll(v.Root, 0700); err != nil {
-		return Manifest{}, err
+	var result SnapshotResult
+	err = withVaultLock(v.Root, func() error {
+		if err := v.reloadHeadLocked(); err != nil {
+			return err
+		}
+		var saveErr error
+		result, saveErr = v.saveUnlocked(plain, fingerprint)
+		return saveErr
+	})
+	return result.Manifest, err
+}
+
+// SaveIfChanged atomically compares canonical captured records with the current
+// verified head and saves only when their authenticated fingerprints differ.
+// The unchanged result contains the exact persisted ciphertext and encrypted
+// catalog bytes so an uploader can safely repair a missing remote copy.
+func (v *Vault) SaveIfChanged(records []Record) (SnapshotResult, error) {
+	plain, fingerprint, err := prepareRecords(records, v.Operational)
+	if err != nil {
+		return SnapshotResult{}, err
+	}
+	var result SnapshotResult
+	err = withVaultLock(v.Root, func() error {
+		if err := v.reloadHeadLocked(); err != nil {
+			return err
+		}
+		if v.Head != "" {
+			current, ciphertext, manifestBytes, err := v.currentSnapshotLocked()
+			if err != nil {
+				return err
+			}
+			currentFingerprint := ""
+			if current.Metadata != nil {
+				currentFingerprint = current.Metadata.ContentFingerprint
+			} else {
+				previousRecords, err := v.RecordsFromCiphertext(ciphertext)
+				if err != nil {
+					return fmt.Errorf("read legacy snapshot for comparison: %w", err)
+				}
+				previousPlain, _, err := prepareRecords(previousRecords, v.Operational)
+				if err != nil {
+					return fmt.Errorf("prepare legacy snapshot for comparison: %w", err)
+				}
+				currentFingerprint, err = contentFingerprint(previousPlain, v.Operational)
+				if err != nil {
+					return err
+				}
+			}
+			if hmac.Equal([]byte(currentFingerprint), []byte(fingerprint)) {
+				result = SnapshotResult{Manifest: current, Ciphertext: ciphertext, ManifestBytes: manifestBytes, Unchanged: true}
+				return nil
+			}
+		}
+		var saveErr error
+		result, saveErr = v.saveUnlocked(plain, fingerprint)
+		return saveErr
+	})
+	return result, err
+}
+
+func prepareRecords(records []Record, operationalKey []byte) ([]byte, string, error) {
+	if err := validateRecords(records); err != nil {
+		return nil, "", err
 	}
 	sortRecords(records)
 	plain, err := json.Marshal(records)
 	if err != nil {
-		return Manifest{}, err
+		return nil, "", err
 	}
 	if err := limits.CheckBytes(len(plain), limits.MaxSnapshotPlainBytes); err != nil {
-		return Manifest{}, err
+		return nil, "", err
+	}
+	fingerprint, err := contentFingerprint(plain, operationalKey)
+	if err != nil {
+		return nil, "", err
+	}
+	return plain, fingerprint, nil
+}
+
+func contentFingerprint(plain, operationalKey []byte) (string, error) {
+	if len(operationalKey) != 32 {
+		return "", fmt.Errorf("operational key must be 32 bytes")
+	}
+	keyMAC := hmac.New(sha256.New, operationalKey)
+	_, _ = keyMAC.Write([]byte("cifrarium/snapshot-content-fingerprint/v1"))
+	derivedKey := keyMAC.Sum(nil)
+	contentMAC := hmac.New(sha256.New, derivedKey)
+	_, _ = contentMAC.Write(plain)
+	return hex.EncodeToString(contentMAC.Sum(nil)), nil
+}
+
+func (v *Vault) saveUnlocked(plain []byte, fingerprint string) (SnapshotResult, error) {
+	if err := os.MkdirAll(v.Root, 0700); err != nil {
+		return SnapshotResult{}, err
 	}
 	ciphertext, err := crypt.Seal(plain, v.Operational)
 	if err != nil {
-		return Manifest{}, err
+		return SnapshotResult{}, err
 	}
 	if err := limits.CheckBytes(len(ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
-		return Manifest{}, err
+		return SnapshotResult{}, err
 	}
 	h := sha256.Sum256(ciphertext)
 	sum := hex.EncodeToString(h[:])
 	m := Manifest{Version: 1, CreatedAt: time.Now().UTC(), Previous: v.Head, Snapshot: sum, Signer: crypt.Fingerprint(v.Signing.Public().(ed25519.PublicKey))}
+	m.Metadata = &SnapshotMetadata{Version: 1, ContentFingerprint: fingerprint}
 	m.Signature = hex.EncodeToString(ed25519.Sign(v.Signing, manifestBytes(m)))
+	m.Metadata.Signature = hex.EncodeToString(ed25519.Sign(v.Signing, metadataBytes(m)))
 	dir := filepath.Join(v.Root, "snapshots")
 	if err = os.MkdirAll(dir, 0700); err != nil {
-		return Manifest{}, err
+		return SnapshotResult{}, err
 	}
 	b, err := SealManifest(m, v.Operational)
 	if err != nil {
-		return Manifest{}, err
+		return SnapshotResult{}, err
 	}
 	snapshotPath := filepath.Join(v.Root, "snapshots", sum)
 	catalogPath := filepath.Join(v.Root, "catalog", sum+".json")
 	headPath := filepath.Join(v.Root, "head.json")
 	previousFiles, err := captureFileStates(snapshotPath, catalogPath, headPath)
 	if err != nil {
-		return Manifest{}, err
+		return SnapshotResult{}, err
 	}
 	previousGuardHead := ""
 	if v.Guard != nil {
 		previousGuardHead, err = v.Guard.CatalogHead()
 		if err != nil {
-			return Manifest{}, err
+			return SnapshotResult{}, err
 		}
 	}
 	guardUpdateAttempted := false
-	rollback := func(cause error) (Manifest, error) {
+	rollback := func(cause error) (SnapshotResult, error) {
 		rollbackErr := restoreFileStates(previousFiles)
 		if v.Guard != nil && guardUpdateAttempted {
 			if guardErr := v.Guard.SetCatalogHead(previousGuardHead); rollbackErr == nil {
@@ -159,9 +250,9 @@ func (v *Vault) saveUnlocked(records []Record) (Manifest, error) {
 			}
 		}
 		if rollbackErr != nil {
-			return Manifest{}, fmt.Errorf("%w; snapshot rollback failed: %v", cause, rollbackErr)
+			return SnapshotResult{}, fmt.Errorf("%w; snapshot rollback failed: %v", cause, rollbackErr)
 		}
-		return Manifest{}, cause
+		return SnapshotResult{}, cause
 	}
 	if err = writeAtomic(snapshotPath, ciphertext, 0600); err != nil {
 		return rollback(err)
@@ -179,7 +270,83 @@ func (v *Vault) saveUnlocked(records []Record) (Manifest, error) {
 		}
 	}
 	v.Head = sum
-	return m, nil
+	return SnapshotResult{Manifest: m, Ciphertext: ciphertext, ManifestBytes: b}, nil
+}
+
+func (v *Vault) reloadHeadLocked() error {
+	rawHead, err := readLimitedFile(filepath.Join(v.Root, "head.json"), limits.MaxManifestBytes)
+	if os.IsNotExist(err) {
+		if v.Guard != nil {
+			guardHead, guardErr := v.Guard.CatalogHead()
+			if guardErr != nil {
+				return guardErr
+			}
+			if guardHead != "" {
+				return fmt.Errorf("catalog head missing while keyring guard is set")
+			}
+		}
+		v.Head = ""
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	manifest, err := OpenManifest(rawHead, v.Operational)
+	if err != nil {
+		return err
+	}
+	if manifest.Snapshot == "" || filepath.Base(manifest.Snapshot) != manifest.Snapshot {
+		return fmt.Errorf("invalid catalog head")
+	}
+	rawCatalog, err := readLimitedFile(filepath.Join(v.Root, "catalog", manifest.Snapshot+".json"), limits.MaxManifestBytes)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(rawHead, rawCatalog) {
+		return fmt.Errorf("catalog head does not match current catalog entry")
+	}
+	if v.Guard != nil {
+		guardHead, guardErr := v.Guard.CatalogHead()
+		if guardErr != nil {
+			return guardErr
+		}
+		if guardHead != manifest.Snapshot {
+			return fmt.Errorf("catalog rollback detected")
+		}
+	}
+	if v.Head != manifest.Snapshot {
+		if err := v.VerifyChain(manifest.Snapshot, v.Signing.Public().(ed25519.PublicKey)); err != nil {
+			return err
+		}
+	}
+	ciphertext, err := readLimitedFile(filepath.Join(v.Root, "snapshots", manifest.Snapshot), limits.MaxSnapshotCipherBytes)
+	if err != nil {
+		return err
+	}
+	if err := v.VerifySnapshot(manifest, ciphertext, v.Signing.Public().(ed25519.PublicKey)); err != nil {
+		return err
+	}
+	v.Head = manifest.Snapshot
+	return nil
+}
+
+func (v *Vault) currentSnapshotLocked() (Manifest, []byte, []byte, error) {
+	rawManifest, err := readLimitedFile(filepath.Join(v.Root, "catalog", v.Head+".json"), limits.MaxManifestBytes)
+	if err != nil {
+		return Manifest{}, nil, nil, err
+	}
+	manifest, err := OpenManifest(rawManifest, v.Operational)
+	if err != nil {
+		return Manifest{}, nil, nil, err
+	}
+	if manifest.Snapshot != v.Head {
+		return Manifest{}, nil, nil, fmt.Errorf("catalog snapshot mismatch")
+	}
+	ciphertext, err := readLimitedFile(filepath.Join(v.Root, "snapshots", v.Head), limits.MaxSnapshotCipherBytes)
+	if err != nil {
+		return Manifest{}, nil, nil, err
+	}
+	return manifest, ciphertext, rawManifest, nil
 }
 func (v *Vault) Verify(m Manifest, pub ed25519.PublicKey) error {
 	if m.Version != 1 {
@@ -194,6 +361,19 @@ func (v *Vault) Verify(m Manifest, pub ed25519.PublicKey) error {
 	}
 	if m.Previous == m.Snapshot {
 		return fmt.Errorf("self-referential catalog")
+	}
+	if m.Metadata != nil {
+		if m.Metadata.Version != 1 {
+			return fmt.Errorf("unsupported snapshot metadata version")
+		}
+		fingerprint, err := hex.DecodeString(m.Metadata.ContentFingerprint)
+		if err != nil || len(fingerprint) != sha256.Size || hex.EncodeToString(fingerprint) != m.Metadata.ContentFingerprint {
+			return fmt.Errorf("invalid snapshot content fingerprint")
+		}
+		metadataSignature, err := hex.DecodeString(m.Metadata.Signature)
+		if err != nil || !ed25519.Verify(pub, metadataBytes(m), metadataSignature) {
+			return fmt.Errorf("invalid snapshot metadata signature")
+		}
 	}
 	return nil
 }
@@ -651,7 +831,32 @@ func rejectSymlinkPath(path string) error {
 	return nil
 }
 
-func manifestBytes(m Manifest) []byte { m.Signature = ""; b, _ := json.Marshal(m); return b }
+func manifestBytes(m Manifest) []byte {
+	m.Signature = ""
+	m.Metadata = nil
+	b, _ := json.Marshal(m)
+	return b
+}
+
+func metadataBytes(m Manifest) []byte {
+	payload := struct {
+		Domain             string `json:"domain"`
+		Version            int    `json:"version"`
+		ContentFingerprint string `json:"content_fingerprint"`
+		Snapshot           string `json:"snapshot"`
+		Previous           string `json:"previous"`
+		Signer             string `json:"signer"`
+	}{
+		Domain:             "cifrarium/snapshot-metadata/v1",
+		Version:            m.Metadata.Version,
+		ContentFingerprint: m.Metadata.ContentFingerprint,
+		Snapshot:           m.Snapshot,
+		Previous:           m.Previous,
+		Signer:             m.Signer,
+	}
+	b, _ := json.Marshal(payload)
+	return b
+}
 func sortRecords(r []Record) {
 	for i := range r {
 		for j := i + 1; j < len(r); j++ {

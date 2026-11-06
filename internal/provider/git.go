@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/teelabs/cifrarium/internal/limits"
@@ -140,11 +141,41 @@ func (g Git) UploadCatalog(ctx context.Context, id string, manifest []byte) erro
 	return g.commitAndPush(ctx, "catalog "+id, gitObject{path, manifest})
 }
 func (g Git) UploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte) error {
+	return g.uploadSnapshot(ctx, id, ciphertext, manifest, nil)
+}
+
+func (g Git) UploadSnapshotWithEquivalentManifest(ctx context.Context, id string, ciphertext, manifest []byte, equivalent func([]byte) bool) error {
+	return g.uploadSnapshot(ctx, id, ciphertext, manifest, equivalent)
+}
+
+func (g Git) uploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte, equivalent func([]byte) bool) error {
 	if err := g.Ensure(ctx); err != nil {
 		return err
 	}
 	if err := validateID(id); err != nil {
 		return err
+	}
+	if err := limits.CheckBytes(len(ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
+		return err
+	}
+	if err := limits.CheckBytes(len(manifest), limits.MaxManifestBytes); err != nil {
+		return err
+	}
+	var storedEquivalentManifest []byte
+	var equivalentManifest bool
+	var remoteObjectExists, remoteObjectMatches bool
+	var err error
+	if equivalent != nil && g.Remote != "" {
+		storedEquivalentManifest, equivalentManifest, remoteObjectExists, remoteObjectMatches, err = g.remoteSnapshotEquivalent(ctx, id, ciphertext, equivalent)
+		if err != nil {
+			return err
+		}
+		if equivalentManifest && remoteObjectExists && remoteObjectMatches {
+			return nil
+		}
+		if equivalentManifest && !remoteObjectExists {
+			manifest = storedEquivalentManifest
+		}
 	}
 	objectPath := filepath.Join("objects", id)
 	catalogPath := filepath.Join("catalog", id+".json")
@@ -156,6 +187,92 @@ func (g Git) UploadSnapshot(ctx context.Context, id string, ciphertext, manifest
 	}
 	return g.commitAndPush(ctx, "snapshot "+id,
 		gitObject{objectPath, ciphertext}, gitObject{catalogPath, manifest})
+}
+
+func (g Git) remoteSnapshotEquivalent(ctx context.Context, id string, ciphertext []byte, equivalent func([]byte) bool) ([]byte, bool, bool, bool, error) {
+	_, parent, err := g.remoteHead(ctx)
+	if err != nil || parent == "" {
+		return nil, false, false, false, err
+	}
+	objectPath := filepath.ToSlash(filepath.Join("objects", id))
+	objectMode, objectKind, remoteObjectHash, remoteObjectExists, err := g.remoteTreeEntry(ctx, parent, objectPath)
+	if err != nil {
+		return nil, false, false, false, err
+	}
+	remoteObjectMatches := false
+	if remoteObjectExists && objectMode == "100644" && objectKind == "blob" {
+		candidateObjectHash, err := g.hashObject(ctx, ciphertext)
+		if err != nil {
+			return nil, false, false, false, err
+		}
+		remoteObjectMatches = remoteObjectHash == candidateObjectHash
+	}
+	catalogPath := filepath.ToSlash(filepath.Join("catalog", id+".json"))
+	catalogMode, catalogKind, blobHash, catalogExists, err := g.remoteTreeEntry(ctx, parent, catalogPath)
+	if err != nil {
+		return nil, false, remoteObjectExists, remoteObjectMatches, err
+	}
+	if !catalogExists || catalogMode != "100644" || catalogKind != "blob" {
+		return nil, false, remoteObjectExists, remoteObjectMatches, nil
+	}
+	kind, err := g.output(ctx, "cat-file", "-t", blobHash)
+	if err != nil || strings.TrimSpace(string(kind)) != "blob" {
+		return nil, false, remoteObjectExists, remoteObjectMatches, nil
+	}
+	sizeBytes, err := g.output(ctx, "cat-file", "-s", blobHash)
+	if err != nil {
+		return nil, false, remoteObjectExists, remoteObjectMatches, nil
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(string(sizeBytes)), 10, 64)
+	if err != nil {
+		return nil, false, remoteObjectExists, remoteObjectMatches, fmt.Errorf("invalid provider catalog object size")
+	}
+	if size < 0 || size > limits.MaxManifestBytes {
+		return nil, false, remoteObjectExists, remoteObjectMatches, nil
+	}
+	remoteManifest, err := g.output(ctx, "cat-file", "blob", blobHash)
+	if err != nil || int64(len(remoteManifest)) != size {
+		return nil, false, remoteObjectExists, remoteObjectMatches, nil
+	}
+	return remoteManifest, equivalent(remoteManifest), remoteObjectExists, remoteObjectMatches, nil
+}
+
+func (g Git) remoteTreeEntry(ctx context.Context, commit, path string) (mode, kind, hash string, exists bool, err error) {
+	raw, err := g.output(ctx, "ls-tree", "-z", commit, "--", path)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	if len(raw) == 0 {
+		return "", "", "", false, nil
+	}
+	entry := bytes.TrimSuffix(raw, []byte{0})
+	metadata, entryPath, ok := bytes.Cut(entry, []byte{'\t'})
+	if !ok || string(entryPath) != path {
+		return "", "", "", false, fmt.Errorf("invalid remote provider tree entry")
+	}
+	fields := strings.Fields(string(metadata))
+	if len(fields) != 3 {
+		return "", "", "", false, fmt.Errorf("invalid remote provider tree metadata")
+	}
+	return fields[0], fields[1], fields[2], true, nil
+}
+
+func (g Git) hashObject(ctx context.Context, data []byte) (string, error) {
+	cmd, cleanup, err := g.commandAtDir(ctx, "git", "hash-object", "--stdin")
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	cmd.Stdin = bytes.NewReader(data)
+	hash, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("hash provider snapshot: %w", err)
+	}
+	text := strings.TrimSpace(string(hash))
+	if len(text) != 40 {
+		return "", fmt.Errorf("invalid Git object hash")
+	}
+	return text, nil
 }
 func (g Git) Download(ctx context.Context, id string) ([]byte, error) {
 	if err := validateID(id); err != nil {

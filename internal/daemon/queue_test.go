@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,7 @@ import (
 func TestQueueLimit(t *testing.T) {
 	q := Queue{}
 	for i := 0; i < MaxPending; i++ {
-		if err := q.Push(Item{ID: "x", Ciphertext: []byte("x")}); err != nil {
+		if err := q.Push(Item{ID: fmt.Sprintf("x-%d", i), Ciphertext: []byte("x")}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -24,6 +25,40 @@ func TestQueueLimit(t *testing.T) {
 	}
 	if q.Len() != MaxPending {
 		t.Fatal(q.Len())
+	}
+}
+
+func TestQueuePushIsIdempotentForIdenticalSnapshotAndRejectsConflict(t *testing.T) {
+	q := &Queue{}
+	item := Item{ID: "head", Ciphertext: []byte("ciphertext"), Manifest: []byte("manifest")}
+	if err := q.Push(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Push(item); err != nil {
+		t.Fatalf("identical item push failed: %v", err)
+	}
+	if q.Len() != 1 {
+		t.Fatalf("identical push created duplicate queue item: len=%d", q.Len())
+	}
+	conflict := Item{ID: item.ID, Ciphertext: []byte("different ciphertext"), Manifest: item.Manifest}
+	if err := q.Push(conflict); err == nil {
+		t.Fatal("same ID with conflicting ciphertext was accepted")
+	}
+	if q.Len() != 1 {
+		t.Fatalf("conflicting push changed queue length: %d", q.Len())
+	}
+
+	path := filepath.Join(t.TempDir(), "pending.queue")
+	key := make([]byte, 32)
+	if err := q.Save(path, key); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Len() != 1 {
+		t.Fatalf("loaded duplicate queue length=%d, want 1", loaded.Len())
 	}
 }
 func TestQueuePersistsEncrypted(t *testing.T) {

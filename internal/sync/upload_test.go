@@ -1,17 +1,184 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/teelabs/cifrarium/internal/provider"
 	"github.com/teelabs/cifrarium/internal/recovery"
 	"github.com/teelabs/cifrarium/internal/store"
 )
+
+func TestUploadSnapshotAcceptsEquivalentLegacyRemoteManifestOnUpgrade(t *testing.T) {
+	root := t.TempDir()
+	operational := make([]byte, 32)
+	if _, err := rand.Read(operational); err != nil {
+		t.Fatal(err)
+	}
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []store.Record{{Path: "config", Mode: 0600, Data: []byte("same")}}
+	vault := store.New(filepath.Join(root, "vault"), operational, signing)
+	legacyManifest, err := vault.Save(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := os.ReadFile(filepath.Join(vault.Root, "snapshots", legacyManifest.Snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyUploadedManifest, err := store.SealManifest(legacyManifest, operational)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := filepath.Join(root, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "--initial-branch=main", bare).CombinedOutput(); err != nil {
+		t.Fatalf("initialize bare remote: %v (%s)", err, out)
+	}
+	gitBinary, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteURL := "https://github.com/teelabs/cifrarium-test.git"
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := fmt.Sprintf("#!/bin/bash\nargs=()\nrewrite=1\nif [[ \" $* \" == *' remote add origin '* ]]; then rewrite=0; fi\nfor arg in \"$@\"; do\n  if [[ $rewrite == 1 && \"$arg\" == %s ]]; then arg=%s; fi\n  args+=(\"$arg\")\ndone\nexec %s \"${args[@]}\"\n", strconv.Quote(remoteURL), strconv.Quote(bare), strconv.Quote(gitBinary))
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte("#!/bin/sh\nprintf 'true\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	git := provider.Git{Dir: filepath.Join(root, "provider"), Remote: remoteURL}
+	if err := git.UploadSnapshot(context.Background(), legacyManifest.Snapshot, ciphertext, legacyUploadedManifest); err != nil {
+		t.Fatalf("seed provider using legacy upload bytes: %v", err)
+	}
+	remoteCommitsBefore, err := exec.Command(gitBinary, "--git-dir", bare, "rev-list", "--count", "refs/heads/main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shares, err := store.RecoveryShares(operational, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := UploadGate{OperationalKey: operational, SigningKey: signing}
+	current, err := vault.SaveIfChanged(records)
+	if err != nil || !current.Unchanged {
+		t.Fatalf("upgrade capture unchanged=%t err=%v", current.Unchanged, err)
+	}
+	if bytes.Equal(legacyUploadedManifest, current.ManifestBytes) {
+		t.Fatal("fixture did not reproduce legacy double-sealing difference")
+	}
+	if err := gate.UploadSnapshot(context.Background(), git, current.Manifest.Snapshot, current.Ciphertext, current.ManifestBytes, shares[:2]); err != nil {
+		t.Fatalf("upgrade upload rejected equivalent current manifest: %v", err)
+	}
+	remoteManifest, err := exec.Command(gitBinary, "--git-dir", bare, "show", "refs/heads/main:catalog/"+legacyManifest.Snapshot+".json").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(remoteManifest, legacyUploadedManifest) {
+		t.Fatal("upgrade rewrote the existing remote manifest instead of accepting its verified equivalent")
+	}
+	remoteCommitsAfter, err := exec.Command(gitBinary, "--git-dir", bare, "rev-list", "--count", "refs/heads/main").Output()
+	if err != nil || !bytes.Equal(remoteCommitsBefore, remoteCommitsAfter) {
+		t.Fatalf("equivalent upload created a remote commit: before=%q after=%q err=%v", remoteCommitsBefore, remoteCommitsAfter, err)
+	}
+	clone := filepath.Join(root, "clone")
+	if out, err := exec.Command(gitBinary, "clone", bare, clone).CombinedOutput(); err != nil {
+		t.Fatalf("clone test remote: %v (%s)", err, out)
+	}
+	if err := os.Remove(filepath.Join(clone, "objects", legacyManifest.Snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", clone, "add", "-u"},
+		{"-C", clone, "-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "remove snapshot object"},
+		{"-C", clone, "push", "origin", "main"},
+	} {
+		if out, err := exec.Command(gitBinary, args...).CombinedOutput(); err != nil {
+			t.Fatalf("make partial remote snapshot: git %v: %v (%s)", args, err, out)
+		}
+	}
+	if err := gate.UploadSnapshot(context.Background(), git, current.Manifest.Snapshot, current.Ciphertext, current.ManifestBytes, shares[:2]); err != nil {
+		t.Fatalf("upload missing object beside equivalent remote manifest: %v", err)
+	}
+	remoteCiphertext, err := exec.Command(gitBinary, "--git-dir", bare, "show", "refs/heads/main:objects/"+legacyManifest.Snapshot).Output()
+	if err != nil || !bytes.Equal(remoteCiphertext, ciphertext) {
+		t.Fatalf("partial remote object was not repaired with exact ciphertext: err=%v", err)
+	}
+	remoteManifest, err = exec.Command(gitBinary, "--git-dir", bare, "show", "refs/heads/main:catalog/"+legacyManifest.Snapshot+".json").Output()
+	if err != nil || !bytes.Equal(remoteManifest, legacyUploadedManifest) {
+		t.Fatalf("partial repair changed the verified legacy catalog bytes: err=%v", err)
+	}
+	if out, err := exec.Command(gitBinary, "-C", clone, "pull", "--ff-only", "origin", "main").CombinedOutput(); err != nil {
+		t.Fatalf("synchronize test clone before catalog repair: %v (%s)", err, out)
+	}
+	if err := os.Remove(filepath.Join(clone, "catalog", legacyManifest.Snapshot+".json")); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", clone, "add", "-u"},
+		{"-C", clone, "-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "remove catalog object"},
+		{"-C", clone, "push", "origin", "main"},
+	} {
+		if out, err := exec.Command(gitBinary, args...).CombinedOutput(); err != nil {
+			t.Fatalf("make partial remote catalog: git %v: %v (%s)", args, err, out)
+		}
+	}
+	if err := gate.UploadSnapshot(context.Background(), git, current.Manifest.Snapshot, current.Ciphertext, current.ManifestBytes, shares[:2]); err != nil {
+		t.Fatalf("upload missing catalog beside existing snapshot: %v", err)
+	}
+	remoteManifest, err = exec.Command(gitBinary, "--git-dir", bare, "show", "refs/heads/main:catalog/"+legacyManifest.Snapshot+".json").Output()
+	if err != nil || !bytes.Equal(remoteManifest, current.ManifestBytes) {
+		t.Fatalf("catalog repair did not upload current stored manifest bytes: err=%v", err)
+	}
+
+	// A matching snapshot path is not enough: a catalog with an invalid
+	// metadata signature must still be rejected as a conflicting object.
+	if out, err := exec.Command(gitBinary, "-C", clone, "pull", "--ff-only", "origin", "main").CombinedOutput(); err != nil {
+		t.Fatalf("synchronize test clone before tampering: %v (%s)", err, out)
+	}
+	forged := legacyManifest
+	forged.Metadata = &store.SnapshotMetadata{
+		Version: 1, ContentFingerprint: strings.Repeat("0", 64),
+		Signature: strings.Repeat("0", ed25519.SignatureSize*2),
+	}
+	forgedBytes, err := store.SealManifest(forged, operational)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "catalog", legacyManifest.Snapshot+".json"), forgedBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", clone, "add", "catalog/" + legacyManifest.Snapshot + ".json"},
+		{"-C", clone, "-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "replace with invalid metadata"},
+		{"-C", clone, "push", "origin", "main"},
+	} {
+		if out, err := exec.Command(gitBinary, args...).CombinedOutput(); err != nil {
+			t.Fatalf("update test remote with invalid manifest: git %v: %v (%s)", args, err, out)
+		}
+	}
+	if err := gate.UploadSnapshot(context.Background(), git, current.Manifest.Snapshot, current.Ciphertext, current.ManifestBytes, shares[:2]); err == nil {
+		t.Fatal("invalid remote metadata was accepted based on its snapshot ID")
+	}
+}
 
 type fakeProvider struct {
 	uploads, catalogs int

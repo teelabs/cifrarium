@@ -172,8 +172,8 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 	if err := <-done; err == nil {
 		t.Fatal("daemon stopped without context cancellation")
 	}
-	if queue.Len() != 2 {
-		t.Fatalf("pending items=%d, want original and recovery snapshot", queue.Len())
+	if queue.Len() != 1 {
+		t.Fatalf("pending items=%d, want one reused snapshot for original and recovery capture", queue.Len())
 	}
 	if _, err := os.Stat(queuePath); err != nil {
 		t.Fatalf("encrypted pending queue was not persisted: %v", err)
@@ -190,8 +190,8 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 		}
 		queuedBeforeRestart = append(queuedBeforeRestart, item)
 	}
-	if len(queuedBeforeRestart) != 2 {
-		t.Fatalf("persisted queue items=%d, want 2", len(queuedBeforeRestart))
+	if len(queuedBeforeRestart) != 1 {
+		t.Fatalf("persisted queue items=%d, want one deduplicated snapshot", len(queuedBeforeRestart))
 	}
 	if sharedInstall {
 		if err := os.WriteFile(filepath.Join(bridge, "ready"), []byte("ready\n"), 0600); err != nil {
@@ -251,8 +251,8 @@ func TestLifecycleAuditFreshInstallQueueResume(t *testing.T) {
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if len(provider.uploaded) != 3 {
-		t.Fatalf("provider uploads=%d, want two queued snapshots and one restart snapshot", len(provider.uploaded))
+	if len(provider.uploaded) != 2 {
+		t.Fatalf("provider uploads=%d, want one queued snapshot and one restart verification upload", len(provider.uploaded))
 	}
 	for i, queued := range queuedBeforeRestart {
 		got := provider.uploaded[i]

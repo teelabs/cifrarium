@@ -4,6 +4,23 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-06
+
+### Added
+
+- Skip writing a new encrypted snapshot when canonical captured records match
+  the current head, using authenticated private metadata inside the encrypted
+  manifest; reuse exact stored artifacts for provider repair, preserve verified
+  legacy manifest bytes on Git remotes, and identify the no-op result in CLI
+  output.
+- Make retries for identical queued snapshot artifacts idempotent while
+  rejecting conflicting content for an existing snapshot ID.
+
+### Fixed
+
+- Recognize the 0.11 release line as using the safe JSON doctor interface so
+  subsequent upgrades retain their root and keyring preflight.
+
 ## [0.10.8] - 2026-11-05
 
 ### Fixed
