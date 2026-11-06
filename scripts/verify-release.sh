@@ -61,6 +61,20 @@ for architecture, entry in releases.items():
         raise SystemExit(f"manifest checksum mismatch for {architecture}")
 PY
 
+if [[ -s "$RELEASE_DIR/install.sh" ]]; then
+  grep -Fqx "INSTALLER_RELEASE_VERSION=\"$VERSION\"" "$RELEASE_DIR/install.sh" || {
+    echo "installer release version does not match VERSION: $VERSION" >&2
+    exit 1
+  }
+else
+  echo "installer entry point is missing" >&2
+  exit 1
+fi
+bash -n "$RELEASE_DIR/install.sh" || {
+  echo "installer entry point has invalid shell syntax" >&2
+  exit 1
+}
+
 for arch in amd64 arm64; do
   archive="$RELEASE_DIR/cifrarium-$VERSION-linux-$arch.tar.gz"
   checksum="$archive.sha256"

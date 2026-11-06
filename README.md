@@ -401,8 +401,10 @@ Go toolchain on the operator's machine.
 The daemon captures snapshots, queues encrypted upload work, retries provider
 failures, and persists the queue. A running process is not proof that an
 upload completed: inspect logs, queue state, and provider health. The local
-MCP socket is mode `0600` and exposes only read-only `status`,
-`snapshot.plan`, and `restore.plan` methods. Plans do not apply mutations.
+MCP socket is mode `0600` and exposes only read-only `status`, `snapshot.plan`,
+`restore.plan`, and `snapshot.audit` methods. Plans do not apply mutations;
+`snapshot.audit` compares the current allowlisted files with the verified local
+snapshot without changing vault or provider state.
 
 The daemon is the backend for normal CLI and MCP operations. The CLI keeps
 human commands such as `snapshot` and `restore`; MCP exposes tools through its
@@ -476,7 +478,8 @@ before using the CLI, daemon, recovery flow, provider, or MCP.
 
 For every operation, distinguish:
 
-- read-only diagnostics: `status`, `provider health`, and MCP plans;
+- read-only diagnostics: `status`, `provider health`, `snapshot audit`, and MCP
+  plans including `snapshot.audit`;
 - local mutations: `snapshot`, `migrate-catalog`, and recovery import;
 - persistent/remote effects: daemon activation and provider upload;
 - destructive effects: uninstalling, deleting queue/history, or replacing

@@ -65,6 +65,7 @@ credentials. It is sufficient to check whether required variables are present.
 | `provider health` | Read-only local/remote diagnostic | Requires an existing provider checkout; it never initializes Git or writes provider state |
 | `provider setup` | Local configuration and optional remote provisioning | Human-only; requires explicit confirmations and never runs in `--non-interactive` mode |
 | `snapshot` | Local mutation | Run only when explicitly requested |
+| `snapshot audit` | Read-only local comparison | May report matches, differences, or no snapshot; it does not create a snapshot or update local/remote state |
 | `recovery shares` | Secret creation/display | Human-only by default; never capture output |
 | `recovery import` | Keyring mutation and integrity-sensitive | Require explicit human confirmation and two supplied shares |
 | `migrate-catalog` | Local data migration | Require explicit confirmation and backup/rollback plan |
@@ -331,7 +332,15 @@ The local MCP server supports:
 
 - `status`;
 - `snapshot.plan`;
-- `restore.plan`.
+- `restore.plan`;
+- `snapshot.audit`.
+
+`snapshot.audit` compares current allowlisted adapter files against the latest
+verified local snapshot. It returns sorted relative paths for added, missing,
+content-changed, and mode-changed files. Differences and no baseline are
+successful audit results; integrity, read, and consistency errors fail without
+partial results. It does not call the provider or mutate vault, keyring, or
+queue state.
 
 Plans are observations and proposals. They are not proof that a snapshot was
 created, uploaded, or restored. The agent must not expose the socket remotely or

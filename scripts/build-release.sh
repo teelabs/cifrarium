@@ -40,6 +40,7 @@ command -v go >/dev/null || { echo "go is required" >&2; exit 1; }
 command -v tar >/dev/null || { echo "tar is required" >&2; exit 1; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 1; }
 command -v realpath >/dev/null || { echo "realpath is required" >&2; exit 1; }
+command -v sed >/dev/null || { echo "sed is required" >&2; exit 1; }
 
 resolved_out_dir=$(realpath -m "$OUT_DIR")
 safe_default_out_dir=$(realpath -m "$ROOT_DIR/dist/release")
@@ -69,6 +70,8 @@ OUT_DIR=$resolved_out_dir
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
+sed "s/__CIFRARIUM_INSTALLER_RELEASE_VERSION__/$VERSION/g" "$ROOT_DIR/scripts/install.sh" >"$OUT_DIR/install.sh"
+chmod 0755 "$OUT_DIR/install.sh"
 tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/cifrarium-release.XXXXXX")
 trap 'rm -rf "$tmp_root"' EXIT
 

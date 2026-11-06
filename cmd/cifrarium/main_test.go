@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -172,12 +173,131 @@ func TestCanonicalCommandUsesNestedSubcommands(t *testing.T) {
 		{[]string{"provider", "setup"}, "provider-setup", nil},
 		{[]string{"recovery", "shares"}, "recovery-shares", nil},
 		{[]string{"recovery", "import", "--recovery-share", "one"}, "recover", []string{"--recovery-share", "one"}},
+		{[]string{"snapshot", "audit", "--format=json"}, "snapshot-audit", []string{"--format=json"}},
 	}
 	for _, tc := range cases {
 		got, rest, err := canonicalCommand(tc.args)
 		if err != nil || got != tc.want || strings.Join(rest, "\x00") != strings.Join(tc.rest, "\x00") {
 			t.Fatalf("canonicalCommand(%v) = %q, %v, %v; want %q, %v", tc.args, got, rest, err, tc.want, tc.rest)
 		}
+	}
+}
+
+func TestRenderSnapshotAuditHumanAndJSON(t *testing.T) {
+	result := store.AuditResult{
+		Status:         store.AuditDiffers,
+		Snapshot:       "snapshot-id",
+		Added:          []string{".config/new.toml"},
+		Missing:        []string{".zshrc"},
+		ContentChanged: []string{".codex/config.toml"},
+		ModeChanged:    []string{".codex/config.toml"},
+	}
+	var human bytes.Buffer
+	if err := renderSnapshotAudit(&human, result, outputHuman); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Cifrarium snapshot audit", "Status: differs", "Snapshot: snapshot-id", "Added", ".config/new.toml", "Missing", ".zshrc", "Content changed", "Mode changed"} {
+		if !strings.Contains(human.String(), want) {
+			t.Fatalf("human audit output missing %q: %q", want, human.String())
+		}
+	}
+	if strings.Contains(human.String(), string([]byte{0x1b})) || strings.Contains(human.String(), "/home/") {
+		t.Fatalf("human audit output contains terminal controls or absolute paths: %q", human.String())
+	}
+
+	var machine bytes.Buffer
+	if err := renderSnapshotAudit(&machine, result, outputJSON); err != nil {
+		t.Fatal(err)
+	}
+	var decoded store.AuditResult
+	if err := json.Unmarshal(machine.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode JSON audit output: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, result) {
+		t.Fatalf("JSON audit output = %#v, want %#v", decoded, result)
+	}
+}
+
+func TestRenderSnapshotAuditEscapesTerminalControlsInPaths(t *testing.T) {
+	result := store.AuditResult{Status: store.AuditDiffers, Added: []string{".oh-my-zsh/custom/\x1b[2J\nforged"}}
+	var output bytes.Buffer
+	if err := renderSnapshotAudit(&output, result, outputHuman); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsRune(output.String(), '\x1b') || strings.Contains(output.String(), "forged\n") {
+		t.Fatalf("audit output contains an unescaped control or forged line: %q", output.String())
+	}
+	if !strings.Contains(output.String(), `\x1b[2J\nforged`) {
+		t.Fatalf("audit output does not visibly escape path controls: %q", output.String())
+	}
+}
+
+func TestRunSnapshotAuditUsesDaemonAndDoesNotFallBackWhenBackendIsStarting(t *testing.T) {
+	root := t.TempDir()
+	controlSocket := filepath.Join(root, "control.sock")
+	server, err := rpc.ListenUnix(controlSocket, func(_ context.Context, request rpc.Request) (any, *rpc.Error) {
+		if request.Method != "snapshot.audit" {
+			return nil, &rpc.Error{Code: -32601, Message: "method not found"}
+		}
+		return nil, &rpc.Error{Code: -32002, Message: "daemon backend is not ready"}
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	defer server.Close()
+
+	result, err := runSnapshotAudit(root, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "daemon backend is still starting") {
+		t.Fatalf("runSnapshotAudit result=%#v err=%v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "head.json")); !os.IsNotExist(err) {
+		t.Fatalf("CLI bypassed the starting daemon and created a local snapshot: %v", err)
+	}
+}
+
+func TestRunSnapshotAuditReturnsDaemonResult(t *testing.T) {
+	root := t.TempDir()
+	want := store.AuditResult{Status: store.AuditDiffers, Snapshot: "snapshot-id", Added: []string{".zshrc"}}
+	server, err := rpc.ListenUnix(filepath.Join(root, "control.sock"), func(_ context.Context, request rpc.Request) (any, *rpc.Error) {
+		if request.Method != "snapshot.audit" {
+			return nil, &rpc.Error{Code: -32601, Message: "method not found"}
+		}
+		return want, nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	defer server.Close()
+
+	got, err := runSnapshotAudit(root, t.TempDir())
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("runSnapshotAudit() = %#v, %v; want %#v", got, err, want)
+	}
+}
+
+func TestCallDaemonAuditRejectsAbsolutePaths(t *testing.T) {
+	root := t.TempDir()
+	server, err := rpc.ListenUnix(filepath.Join(root, "control.sock"), func(_ context.Context, request rpc.Request) (any, *rpc.Error) {
+		if request.Method != "snapshot.audit" {
+			return nil, &rpc.Error{Code: -32601, Message: "method not found"}
+		}
+		return store.AuditResult{Status: store.AuditDiffers, Snapshot: "snapshot-id", Added: []string{"/home/user/.config"}}, nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	defer server.Close()
+	if result, ok, err := callDaemonAudit(root); err == nil || !ok || result.Status != "" {
+		t.Fatalf("absolute path accepted: result=%#v ok=%v err=%v", result, ok, err)
 	}
 }
 
@@ -770,6 +890,32 @@ func TestMCPStatusUsesDaemonBackendView(t *testing.T) {
 	status, ok := result.(map[string]any)
 	if !ok || status["vault"] != root || status["vaultState"] != "ready" || status["backend"] != "ready" {
 		t.Fatalf("MCP status = %#v; want daemon backend view", result)
+	}
+}
+
+func TestSnapshotAuditMCPAndControlRequireReadyBackend(t *testing.T) {
+	root := t.TempDir()
+	backend := &daemon.Backend{Vault: store.New(root, make([]byte, 32), nil)}
+	ready := &atomic.Bool{}
+	mcpHandler := newMCPHandlerWithReadiness(root, "", backend, ready)
+	if _, err := mcpHandler.Handle(context.Background(), mcp.Request{Method: "snapshot.audit"}); err == nil || err.Error() != "daemon backend is not ready" {
+		t.Fatalf("MCP audit before readiness error = %v", err)
+	}
+	controlHandler := newDaemonControlHandler(backend, nil, ready, &atomic.Bool{})
+	if _, rpcErr := controlHandler(context.Background(), rpc.Request{Method: "snapshot.audit"}); rpcErr == nil || rpcErr.Code != -32002 {
+		t.Fatalf("control audit before readiness error = %#v", rpcErr)
+	}
+	ready.Store(true)
+	result, err := mcpHandler.Handle(context.Background(), mcp.Request{Method: "snapshot.audit"})
+	if err != nil || result.(store.AuditResult).Status != store.AuditNoSnapshot {
+		t.Fatalf("MCP audit result=%#v err=%v", result, err)
+	}
+	result, rpcErr := controlHandler(context.Background(), rpc.Request{Method: "snapshot.audit"})
+	if rpcErr != nil || result.(store.AuditResult).Status != store.AuditNoSnapshot {
+		t.Fatalf("control audit result=%#v err=%v", result, rpcErr)
+	}
+	if _, err := os.Lstat(filepath.Join(root, ".recovery.lock")); !os.IsNotExist(err) {
+		t.Fatalf("audit created recovery lock: %v", err)
 	}
 }
 

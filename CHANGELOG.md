@@ -4,6 +4,20 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-06
+
+### Added
+
+- Add a read-only snapshot audit command and MCP method that compare current
+  allowlisted adapter files with the latest verified snapshot without
+  persisting vault or provider state.
+
+### Fixed
+
+- Escape terminal control characters in audited paths.
+- Bound read-only installer doctor preflight by the release version embedded in
+  its signed installer instead of a manually growing version list.
+
 ## [0.11.0] - 2026-11-06
 
 ### Added

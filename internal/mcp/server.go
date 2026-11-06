@@ -119,7 +119,7 @@ func handle(c net.Conn, handler Handler) {
 			if !write(Response{"2.0", r.ID, map[string]any{"name": "cifrarium", "version": "0.3.1"}, nil}) {
 				return
 			}
-		case "status", "snapshot.plan", "restore.plan":
+		case "status", "snapshot.plan", "restore.plan", "snapshot.audit":
 			if handler == nil {
 				if !write(Response{"2.0", r.ID, nil, &Error{Code: -32603, Message: "daemon handler is unavailable"}}) {
 					return
