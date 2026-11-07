@@ -223,6 +223,9 @@ func enableUserDaemon() error {
 
 func readDaemonEnv(home string) (providerConfig, map[string]string, error) {
 	path := providerConfigPath(home)
+	if err := rejectPathSymlink(path); err != nil {
+		return providerConfig{}, nil, err
+	}
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return providerConfig{}, map[string]string{}, nil
@@ -323,11 +326,20 @@ func matchesKeyMaterial(op []byte, signing ed25519.PrivateKey, shares []recovery
 func writeDaemonEnv(home, dir, remote string, shares map[string]string) error {
 	path := providerConfigPath(home)
 	parent := filepath.Dir(path)
+	if err := rejectPathSymlink(parent); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return fmt.Errorf("create configuration directory: %w", err)
 	}
 	if info, err := os.Stat(parent); err == nil && info.Mode().Perm()&0077 != 0 {
 		return fmt.Errorf("configuration directory %s must be private (mode 0700)", parent)
+	}
+	if err := rejectPathSymlink(path); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("configuration file must be a regular file")
 	}
 	old, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -391,6 +403,31 @@ func writeDaemonEnv(home, dir, remote string, shares map[string]string) error {
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("activate configuration: %w", err)
+	}
+	return nil
+}
+
+func rejectPathSymlink(path string) error {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	current := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(filepath.Clean(absolute), current), string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if os.IsNotExist(statErr) {
+			return nil
+		}
+		if statErr != nil {
+			return fmt.Errorf("inspect protected configuration path: %w", statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("protected configuration path contains a symlink")
+		}
 	}
 	return nil
 }

@@ -11,8 +11,80 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/teelabs/cifrarium/internal/provider"
+	"github.com/teelabs/cifrarium/internal/restore"
 	"github.com/teelabs/cifrarium/internal/store"
 )
+
+type restoreFixtureProvider struct {
+	ids      []string
+	objects  map[string][]byte
+	catalogs map[string][]byte
+}
+
+func (p *restoreFixtureProvider) Upload(context.Context, string, []byte) error        { return nil }
+func (p *restoreFixtureProvider) UploadCatalog(context.Context, string, []byte) error { return nil }
+func (p *restoreFixtureProvider) Download(_ context.Context, id string) ([]byte, error) {
+	return p.objects[id], nil
+}
+func (p *restoreFixtureProvider) DownloadCatalog(_ context.Context, id string) ([]byte, error) {
+	return p.catalogs[id], nil
+}
+func (p *restoreFixtureProvider) List(context.Context) ([]string, error) { return p.ids, nil }
+func (p *restoreFixtureProvider) Health(context.Context) error           { return nil }
+
+var _ provider.Provider = (*restoreFixtureProvider)(nil)
+
+func TestBackendRestoreFilesAppliesVerifiedSelection(t *testing.T) {
+	home, root := t.TempDir(), filepath.Join(t.TempDir(), "vault")
+	op := bytes.Repeat([]byte{7}, 32)
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteVault := store.New(filepath.Join(t.TempDir(), "remote"), op, signing)
+	manifest, err := remoteVault.Save([]store.Record{{Path: ".zshrc", Mode: 0600, Data: []byte("restored")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := os.ReadFile(filepath.Join(remoteVault.Root, "snapshots", manifest.Snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := os.ReadFile(filepath.Join(remoteVault.Root, "catalog", manifest.Snapshot+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &Backend{Home: home, Vault: store.New(root, op, signing), Operational: op, Signing: signing, Guard: &auditTestGuard{}, Provider: &restoreFixtureProvider{
+		ids: []string{manifest.Snapshot}, objects: map[string][]byte{manifest.Snapshot: ciphertext}, catalogs: map[string][]byte{manifest.Snapshot: catalog},
+	}}
+	history, err := restore.VerifyRemoteHistory(context.Background(), backend.Provider, op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := restore.BuildFilePlan(home, history, manifest.Snapshot, history.Entries[0].Records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := restore.Fingerprint(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = backend.RestoreFiles(context.Background(), FileRestoreRequest{Snapshot: manifest.Snapshot, Paths: []string{".zshrc"}, Fingerprint: fingerprint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(home, ".zshrc"))
+	if err != nil || !bytes.Equal(got, []byte("restored")) {
+		t.Fatalf("restored file = %q, err = %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "head.json")); err != nil {
+		t.Fatalf("verified vault history not installed: %v", err)
+	}
+	if _, err := backend.CaptureSnapshot(context.Background()); err == nil {
+		t.Fatal("daemon accepted a new snapshot after restore completion")
+	}
+}
 
 type auditTestGuard struct {
 	head   string
