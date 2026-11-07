@@ -1,10 +1,35 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestVerifyRemoteHistoryReturnsTypedForkError(t *testing.T) {
+	op, signing, err := GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeSnapshot := func(content string) SnapshotResult {
+		t.Helper()
+		vault := New(t.TempDir(), op, signing)
+		result, err := vault.SaveIfChanged([]Record{{Path: ".zshrc", Data: []byte(content), Mode: 0600}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	left, right := makeSnapshot("left"), makeSnapshot("right")
+	_, err = VerifyRemoteHistory([]RemoteSnapshot{
+		{ID: left.Manifest.Snapshot, Ciphertext: left.Ciphertext, Catalog: left.ManifestBytes},
+		{ID: right.Manifest.Snapshot, Ciphertext: right.Ciphertext, Catalog: right.ManifestBytes},
+	}, op, signing)
+	if !errors.Is(err, ErrRemoteHistoryForked) {
+		t.Fatalf("forked history error = %v, want ErrRemoteHistoryForked", err)
+	}
+}
 
 type historyGuard struct {
 	head string

@@ -4,6 +4,16 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-06
+
+### Fixed
+
+- Enumerate staged provider directories through readable, descriptor-anchored
+  handles and verify entries without following symlinks, allowing restore to
+  validate remote snapshot history on Linux.
+- Explain when remote backup history has multiple branches or no unique head;
+  stop without writing local recovery state instead of choosing a history.
+
 ## [0.13.0] - 2026-11-06
 
 ### Added

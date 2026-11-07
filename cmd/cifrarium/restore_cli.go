@@ -133,7 +133,7 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	}
 	history, err := restore.VerifyRemoteHistory(context.Background(), gitProvider, op, signing)
 	if err != nil {
-		return fmt.Errorf("backup history verification failed; no local recovery state was written")
+		return restoreHistoryVerificationError(err)
 	}
 	if len(history.Entries) == 0 {
 		return fmt.Errorf("verified backup history is empty")
@@ -309,6 +309,13 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	}
 	fmt.Fprintf(tty, "Recovery completed. %d selected files applied; the user daemon remains disabled.\n", len(apply))
 	return nil
+}
+
+func restoreHistoryVerificationError(err error) error {
+	if errors.Is(err, store.ErrRemoteHistoryForked) {
+		return fmt.Errorf("backup history has multiple branches or no unique head; no local recovery state was written")
+	}
+	return fmt.Errorf("backup history verification failed; no local recovery state was written")
 }
 
 func validateDaemonRestoreRequestSize(request daemon.FileRestoreRequest) error {
