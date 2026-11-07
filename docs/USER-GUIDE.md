@@ -371,7 +371,9 @@ JSON output. It does not upload to GitHub. On a new machine, the provider branch
 is the freshness anchor: Cifrarium cannot detect a valid older signed history
 if the remote branch itself was rolled back. A valid signed chain is still
 required. If recovery fails, preserve local files and investigate; do not force
-an import.
+an import. If the remote history has multiple branches or no unique head,
+restore stops before writing local recovery state; do not choose or edit
+catalog entries manually.
 
 During initial interactive setup, answer yes to the recovery question to run
 the same flow before any new keys or recovery shares are created. Non-interactive

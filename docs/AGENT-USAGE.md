@@ -282,6 +282,9 @@ private control socket; the daemon independently stages and verifies history,
 rechecks destinations, applies the restore, and exits. MCP `restore.plan`
 remains planning only. The provider branch is the new machine's freshness
 anchor; a valid older signed history after branch rollback cannot be detected.
+If remote history has multiple branches or no unique head, restore stops
+without writing local recovery state; preserve the provider and do not choose
+or edit catalog entries manually.
 
 ### 5.7 Migrate a legacy catalog
 
