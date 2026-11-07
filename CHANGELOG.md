@@ -4,6 +4,20 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-06
+
+### Added
+
+- Restore selected adapter files interactively from a verified private GitHub
+  snapshot history on a new machine using two recovery shares, with safe
+  destination preflight, private backups, conflict choices, and the daemon left
+  disabled.
+
+### Changed
+
+- Document the new-machine restore flow, its freshness limit, and the read-only
+  MCP boundary.
+
 ## [0.12.0] - 2026-11-06
 
 ### Added
