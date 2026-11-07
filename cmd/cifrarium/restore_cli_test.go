@@ -55,6 +55,15 @@ func TestRestoreDaemonStateFailsClosedForRemainingSocket(t *testing.T) {
 	}
 }
 
+func TestRestoreHistoryVerificationErrorExplainsForkWithoutDetailLeak(t *testing.T) {
+	if got, want := restoreHistoryVerificationError(store.ErrRemoteHistoryForked).Error(), "backup history has multiple branches or no unique head; no local recovery state was written"; got != want {
+		t.Fatalf("fork diagnostic = %q, want %q", got, want)
+	}
+	if got, want := restoreHistoryVerificationError(errors.New("private object id and path detail")).Error(), "backup history verification failed; no local recovery state was written"; got != want {
+		t.Fatalf("generic diagnostic = %q, want %q", got, want)
+	}
+}
+
 func TestRestoreDaemonStateAcceptsInactiveServiceWithoutSockets(t *testing.T) {
 	old := runDaemonRefreshSystemctl
 	defer func() { runDaemonRefreshSystemctl = old }()

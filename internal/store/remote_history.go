@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/teelabs/cifrarium/internal/limits"
 )
+
+var ErrRemoteHistoryForked = errors.New("remote snapshot history is forked or has no unique head")
 
 const (
 	maxRemoteHistorySnapshots = 1024
@@ -84,7 +87,7 @@ func VerifyRemoteHistory(remote []RemoteSnapshot, operational []byte, signing ed
 		}
 	}
 	if len(heads) != 1 {
-		return VerifiedHistory{}, fmt.Errorf("remote snapshot history is forked or has no unique head")
+		return VerifiedHistory{}, ErrRemoteHistoryForked
 	}
 	head := heads[0]
 	chain := make([]string, 0, len(objects))

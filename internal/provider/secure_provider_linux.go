@@ -130,7 +130,7 @@ func listProviderFiles(root, relative string) ([]string, error) {
 		return nil, err
 	}
 	defer unix.Close(rootFD)
-	dirFD, err := openProviderRelativeDir(rootFD, relative, false)
+	dirFD, err := openProviderReadableRelativeDir(rootFD, relative)
 	if err != nil {
 		return nil, err
 	}
@@ -149,17 +149,18 @@ func listProviderFiles(root, relative string) ([]string, error) {
 	}
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
+		name := entry.Name()
+		if err := validateProviderRelative(filepath.Join(relative, name)); err != nil {
 			return nil, err
 		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("provider object is not a regular file: %s", entry.Name())
-		}
-		if err := validateProviderRelative(filepath.Join(relative, entry.Name())); err != nil {
+		var stat unix.Stat_t
+		if err := unix.Fstatat(dirFD, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 			return nil, err
 		}
-		out = append(out, entry.Name())
+		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+			return nil, fmt.Errorf("provider object is not a regular file: %s", name)
+		}
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out, nil
@@ -202,6 +203,21 @@ func openProviderRelativeDir(rootFD int, relative string, create bool) (int, err
 		current = next
 	}
 	return current, nil
+}
+
+// openProviderReadableRelativeDir keeps the path traversal anchored through
+// the existing O_PATH descriptors, then reopens the final directory itself
+// for reading so callers can enumerate it with ReadDir.
+func openProviderReadableRelativeDir(rootFD int, relative string) (int, error) {
+	pathFD, err := openProviderRelativeDir(rootFD, relative, false)
+	if err != nil {
+		return -1, err
+	}
+	defer unix.Close(pathFD)
+	return unix.Openat2(pathFD, ".", &unix.OpenHow{
+		Flags:   uint64(unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC),
+		Resolve: providerResolveFlags,
+	})
 }
 
 func validateProviderRelative(relative string) error {
