@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -106,6 +107,21 @@ func main() {
 	}
 	if cmd == "provider-setup" {
 		if err := runProviderSetup(home, *root, *nonInteractive, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if cmd == "restore" {
+		if format != outputHuman {
+			fmt.Fprintln(os.Stderr, "cifrarium: restore is interactive and supports human output only")
+			os.Exit(2)
+		}
+		if len(recoveryValues) != 0 {
+			fmt.Fprintln(os.Stderr, "cifrarium: restore reads shares only from the hidden terminal prompt")
+			os.Exit(2)
+		}
+		if err := runFileRestore(home, *root, *providerDir, *providerRemote, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 			os.Exit(1)
 		}
@@ -319,6 +335,7 @@ func main() {
 		backend := &daemon.Backend{
 			Home:               home,
 			Vault:              v,
+			Guard:              keyringStore,
 			Operational:        op,
 			Signing:            sign,
 			Pending:            queue,
@@ -344,7 +361,7 @@ func main() {
 		defer cancel()
 		mcpReadyState := &atomic.Bool{}
 		backendReadyState := &atomic.Bool{}
-		controlServer, err := rpc.ListenUnix(controlSocket, newDaemonControlHandler(backend, backend.CaptureSnapshot, backendReadyState, mcpReadyState), nil)
+		controlServer, err := rpc.ListenUnix(controlSocket, newDaemonControlHandler(backend, backend.CaptureSnapshot, backendReadyState, mcpReadyState, cancel), nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: control listener failed: %v\n", err)
 			os.Exit(1)
@@ -478,7 +495,7 @@ func canonicalCommand(args []string) (string, []string, error) {
 			return "", nil, fmt.Errorf("unknown daemon command %q", args[1])
 		}
 		return "daemon", append([]string{}, args[1:]...), nil
-	case "status", "doctor", "setup", "migrate-catalog":
+	case "status", "doctor", "setup", "restore", "migrate-catalog":
 		return args[0], append([]string{}, args[1:]...), nil
 	case "help":
 		return "help", append([]string{}, args[1:]...), nil
@@ -493,6 +510,7 @@ func writeCifrariumUsage(w io.Writer, fs *flag.FlagSet, program string) {
 	fmt.Fprintln(w, "  status                  Show vault, daemon, and provider status")
 	fmt.Fprintln(w, "  doctor                  Run a read-only installation diagnostic")
 	fmt.Fprintln(w, "  setup                   Configure the local vault")
+	fmt.Fprintln(w, "  restore                 Recover selected files from a private GitHub backup")
 	fmt.Fprintln(w, "  snapshot                Capture a local encrypted snapshot")
 	fmt.Fprintln(w, "  snapshot audit          Compare adapter files with the latest verified snapshot")
 	fmt.Fprintln(w, "  daemon                  Run the user daemon")
@@ -520,7 +538,7 @@ func parseOutputFormat(value string) (outputFormat, error) {
 
 func commandMutatesOrHandlesSecrets(command string) bool {
 	switch command {
-	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon", "daemon-refresh":
+	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "restore", "migrate-catalog", "daemon", "daemon-refresh":
 		return true
 	default:
 		return false
@@ -602,6 +620,22 @@ func runSetup(root, home string, nonInteractive bool, output io.Writer) error {
 	}
 	op, signing, err := keyringStore.LoadExisting()
 	if errors.Is(err, keyring.ErrNotFound) {
+		if !nonInteractive {
+			tty, ttyErr := openSetupTTY()
+			if ttyErr != nil {
+				return ttyErr
+			}
+			reader := bufio.NewReader(tty)
+			restoreExisting, askErr := promptYesNo(reader, tty, "Recover an existing private backup with two recovery shares?", false)
+			_ = tty.Close()
+			if askErr != nil {
+				return askErr
+			}
+			if restoreExisting {
+				providerConfig, _ := loadProviderConfig(home)
+				return runFileRestore(home, root, providerConfig.Dir, providerConfig.Remote, output)
+			}
+		}
 		op, signing, err = store.GenerateKeyMaterial()
 	}
 	if err != nil {
@@ -1058,7 +1092,7 @@ func validateAuditResultPaths(result store.AuditResult) error {
 	return nil
 }
 
-func newDaemonControlHandler(backend *daemon.Backend, snapshot func(context.Context) (daemon.Item, error), backendReady, mcpReady *atomic.Bool) rpc.Handler {
+func newDaemonControlHandler(backend *daemon.Backend, snapshot func(context.Context) (daemon.Item, error), backendReady, mcpReady *atomic.Bool, afterRestore ...func()) rpc.Handler {
 	return func(ctx context.Context, request rpc.Request) (any, *rpc.Error) {
 		switch request.Method {
 		case "daemon.status":
@@ -1101,6 +1135,24 @@ func newDaemonControlHandler(backend *daemon.Backend, snapshot func(context.Cont
 				return nil, &rpc.Error{Code: -32011, Message: "snapshot audit failed"}
 			}
 			return result, nil
+		case "restore.apply":
+			if !backendReady.Load() {
+				return nil, &rpc.Error{Code: -32002, Message: "daemon backend is not ready"}
+			}
+			if backend == nil {
+				return nil, &rpc.Error{Code: -32012, Message: "daemon restore failed"}
+			}
+			var restoreRequest daemon.FileRestoreRequest
+			if err := json.Unmarshal(request.Params, &restoreRequest); err != nil {
+				return nil, &rpc.Error{Code: -32602, Message: "invalid restore request"}
+			}
+			if err := backend.RestoreFiles(ctx, restoreRequest); err != nil {
+				return nil, &rpc.Error{Code: -32012, Message: "daemon restore failed; review the terminal and retry"}
+			}
+			if len(afterRestore) > 0 && afterRestore[0] != nil {
+				time.AfterFunc(300*time.Millisecond, afterRestore[0])
+			}
+			return map[string]any{"restored": true}, nil
 		default:
 			return nil, &rpc.Error{Code: -32601, Message: "method not found"}
 		}

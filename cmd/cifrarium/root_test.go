@@ -18,6 +18,9 @@ func TestResolveVaultRootFailsWithoutConfiguration(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".local", "share", "cifrarium")); !os.IsNotExist(err) {
 		t.Fatalf("status created vault root: %v", err)
 	}
+	if got, err := resolveVaultRoot("restore", "", home); err != nil || got != filepath.Join(home, ".local", "share", "cifrarium") {
+		t.Fatalf("restore root = %q, err %v", got, err)
+	}
 }
 
 func TestSetupEstablishesAndReusesConfiguredRoot(t *testing.T) {

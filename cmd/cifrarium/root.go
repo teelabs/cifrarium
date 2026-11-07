@@ -15,7 +15,7 @@ func resolveVaultRoot(command, explicit, home string) (string, error) {
 	path := config.ConfigPathForHome(home)
 	cfg, err := config.LoadFrom(path)
 	if errors.Is(err, os.ErrNotExist) {
-		if command == "setup" {
+		if command == "setup" || command == "restore" {
 			if explicit == "" {
 				explicit = filepath.Join(home, ".local", "share", "cifrarium")
 			}

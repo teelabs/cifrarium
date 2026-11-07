@@ -17,14 +17,44 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/teelabs/cifrarium/internal/daemon"
 	"github.com/teelabs/cifrarium/internal/mcp"
+	"github.com/teelabs/cifrarium/internal/provider"
 	"github.com/teelabs/cifrarium/internal/recovery"
+	"github.com/teelabs/cifrarium/internal/restore"
 	"github.com/teelabs/cifrarium/internal/rpc"
 	"github.com/teelabs/cifrarium/internal/store"
 	"github.com/zalando/go-keyring"
 )
+
+type controlRestoreTestProvider struct {
+	id         string
+	ciphertext []byte
+	catalog    []byte
+}
+
+func (p controlRestoreTestProvider) Upload(context.Context, string, []byte) error        { return nil }
+func (p controlRestoreTestProvider) UploadCatalog(context.Context, string, []byte) error { return nil }
+func (p controlRestoreTestProvider) Download(_ context.Context, id string) ([]byte, error) {
+	if id != p.id {
+		return nil, os.ErrNotExist
+	}
+	return p.ciphertext, nil
+}
+func (p controlRestoreTestProvider) DownloadCatalog(_ context.Context, id string) ([]byte, error) {
+	if id != p.id {
+		return nil, os.ErrNotExist
+	}
+	return p.catalog, nil
+}
+func (p controlRestoreTestProvider) List(context.Context) ([]string, error) {
+	return []string{p.id}, nil
+}
+func (p controlRestoreTestProvider) Health(context.Context) error { return nil }
+
+var _ provider.Provider = controlRestoreTestProvider{}
 
 func TestRenderStatusHumanUsesUsefulLabels(t *testing.T) {
 	report := statusReport{
@@ -169,6 +199,7 @@ func TestCanonicalCommandUsesNestedSubcommands(t *testing.T) {
 		rest []string
 	}{
 		{[]string{"doctor", "--format=json"}, "doctor", []string{"--format=json"}},
+		{[]string{"restore"}, "restore", nil},
 		{[]string{"provider", "health", "--verify-private"}, "provider-health", []string{"--verify-private"}},
 		{[]string{"provider", "setup"}, "provider-setup", nil},
 		{[]string{"recovery", "shares"}, "recovery-shares", nil},
@@ -480,7 +511,7 @@ func TestSystemdUsesConfiguredRootResolver(t *testing.T) {
 }
 
 func TestNonInteractiveRejectsStatefulCommands(t *testing.T) {
-	for _, command := range []string{"provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "migrate-catalog", "daemon"} {
+	for _, command := range []string{"provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "restore", "migrate-catalog", "daemon"} {
 		if !commandMutatesOrHandlesSecrets(command) {
 			t.Fatalf("%s was not classified as stateful", command)
 		}
@@ -916,6 +947,106 @@ func TestSnapshotAuditMCPAndControlRequireReadyBackend(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(root, ".recovery.lock")); !os.IsNotExist(err) {
 		t.Fatalf("audit created recovery lock: %v", err)
+	}
+	if _, err := mcpHandler.Handle(context.Background(), mcp.Request{Method: "restore.apply"}); err == nil {
+		t.Fatal("MCP exposed the mutating restore operation")
+	}
+	controlResult, controlErr := controlHandler(context.Background(), rpc.Request{Method: "restore.apply", Params: json.RawMessage(`{}`)})
+	if controlErr == nil || controlErr.Code != -32012 || controlResult != nil {
+		t.Fatalf("control restore route = (%#v, %#v), want backend restore failure", controlResult, controlErr)
+	}
+}
+
+func TestDaemonRestoreRequestSizeRespectsControlLineLimit(t *testing.T) {
+	if err := validateDaemonRestoreRequestSize(daemon.FileRestoreRequest{Snapshot: "snapshot", Remote: "https://github.com/owner/repo.git", Paths: []string{".zshrc"}, Fingerprint: strings.Repeat("a", 64)}); err != nil {
+		t.Fatalf("small restore request rejected: %v", err)
+	}
+	large := daemon.FileRestoreRequest{Snapshot: "snapshot", Remote: "https://github.com/owner/repo.git", Fingerprint: strings.Repeat("a", 64)}
+	for i := 0; i < 40; i++ {
+		large.Paths = append(large.Paths, strings.Repeat("x", 2000))
+	}
+	if err := validateDaemonRestoreRequestSize(large); err == nil || !strings.Contains(err.Error(), "reduce the selection") {
+		t.Fatalf("oversized restore request error = %v; want actionable size limit", err)
+	}
+}
+
+func TestDaemonControlRPCAppliesRestoreAndStopsService(t *testing.T) {
+	home, root := t.TempDir(), filepath.Join(t.TempDir(), "vault")
+	op := bytes.Repeat([]byte{9}, 32)
+	_, signing, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteVault := store.New(filepath.Join(t.TempDir(), "remote"), op, signing)
+	manifest, err := remoteVault.Save([]store.Record{{Path: ".zshrc", Mode: 0600, Data: []byte("restored through rpc")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := os.ReadFile(filepath.Join(remoteVault.Root, "snapshots", manifest.Snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := os.ReadFile(filepath.Join(remoteVault.Root, "catalog", manifest.Snapshot+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := controlRestoreTestProvider{id: manifest.Snapshot, ciphertext: ciphertext, catalog: catalog}
+	history, err := restore.VerifyRemoteHistory(context.Background(), source, op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := restore.BuildFilePlan(home, history, manifest.Snapshot, history.Entries[0].Records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := restore.Fingerprint(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := daemon.FileRestoreRequest{Snapshot: manifest.Snapshot, Paths: []string{".zshrc"}, Fingerprint: fingerprint}
+	backend := &daemon.Backend{Home: home, Vault: store.New(root, op, signing), Operational: op, Signing: signing, Provider: source}
+	ready, mcpReady := &atomic.Bool{}, &atomic.Bool{}
+	ready.Store(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	socket := filepath.Join(root, "control.sock")
+	server, err := rpc.ListenUnix(socket, newDaemonControlHandler(backend, nil, ready, mcpReady, cancel), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(ctx); _ = server.Close() }()
+	oldSystemctl := runDaemonRefreshSystemctl
+	disabled := false
+	runDaemonRefreshSystemctl = func(args ...string) error {
+		if len(args) > 0 && args[0] == "is-active" {
+			return nil
+		}
+		if len(args) > 0 && args[0] == "disable" {
+			disabled = true
+			return nil
+		}
+		return errors.New("inactive")
+	}
+	defer func() { runDaemonRefreshSystemctl = oldSystemctl; _ = server.Close() }()
+	active, err := callDaemonRestore(root, request)
+	if err != nil || !active {
+		t.Fatalf("daemon restore route active=%v err=%v", active, err)
+	}
+	if err := finishDaemonRestore(root); err != nil {
+		t.Fatal(err)
+	}
+	if !disabled {
+		t.Fatal("systemd service was not disabled after successful restore")
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".zshrc"))
+	if err != nil || !bytes.Equal(data, []byte("restored through rpc")) {
+		t.Fatalf("restored file = %q err=%v", data, err)
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("daemon did not stop after successful restore")
 	}
 }
 

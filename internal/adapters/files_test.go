@@ -24,6 +24,31 @@ func TestConfigAllowlist(t *testing.T) {
 	}
 }
 
+func TestRestoreAdapterForPathAcceptsOnlyCapturedLocations(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{path: ".codex/config.toml", want: "codex"},
+		{path: ".codex/AGENTS.md", want: "codex"},
+		{path: ".zshrc", want: "oh-my-zsh"},
+		{path: ".zprofile", want: "oh-my-zsh"},
+		{path: ".oh-my-zsh/custom/plugins/prompt.zsh", want: "oh-my-zsh"},
+		{path: ".config/starship.toml", want: "starship"},
+	}
+	for _, tc := range cases {
+		got, ok := RestoreAdapterForPath(tc.path)
+		if !ok || got != tc.want {
+			t.Errorf("RestoreAdapterForPath(%q) = %q, %v; want %q, true", tc.path, got, ok, tc.want)
+		}
+	}
+	for _, path := range []string{".codex/auth.json", ".ssh/authorized_keys", ".oh-my-zsh/plugins/git/git.plugin.zsh", "../.zshrc", ".config/starship.toml/child"} {
+		if got, ok := RestoreAdapterForPath(path); ok {
+			t.Errorf("RestoreAdapterForPath(%q) = %q, true; want rejected", path, got)
+		}
+	}
+}
+
 func TestReadStableRetriesWhenContentChanges(t *testing.T) {
 	reads := 0
 	data, err := readStableWith(func() ([]byte, error) {

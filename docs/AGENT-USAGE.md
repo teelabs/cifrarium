@@ -68,6 +68,7 @@ credentials. It is sufficient to check whether required variables are present.
 | `snapshot audit` | Read-only local comparison | May report matches, differences, or no snapshot; it does not create a snapshot or update local/remote state |
 | `recovery shares` | Secret creation/display | Human-only by default; never capture output |
 | `recovery import` | Keyring mutation and integrity-sensitive | Require explicit human confirmation and two supplied shares |
+| `restore` | Local file, vault, keyring, and provider configuration mutation after read-only remote fetch | TTY-only; require final confirmation; shares come only from hidden terminal input; daemon stays disabled |
 | `migrate-catalog` | Local data migration | Require explicit confirmation and backup/rollback plan |
 | `daemon` | Persistent process and remote-capable | Require explicit confirmation before activation |
 | `snapshot.plan` | Read-only MCP plan | May inspect; does not perform upload |
@@ -268,7 +269,21 @@ cifrarium recovery import \
 Then run `status`. If recovery fails, preserve the vault and existing keyring;
 do not retry with guessed, reordered, or copied shares.
 
-### 5.6 Migrate a legacy catalog
+### 5.6 Restore selected files on a new machine
+
+Use `cifrarium restore` in a controlling terminal when only the private GitHub
+provider and two recovery shares are available. The command reads shares with
+echo disabled, verifies the remote history before writing local recovery
+state, and asks the operator to select a snapshot and allowlisted files.
+Review conflict choices and the final confirmation carefully. The daemon stays
+disabled after recovery. If it is already active, the CLI sends only the
+snapshot, paths, conflict choices, and a preflight fingerprint through the
+private control socket; the daemon independently stages and verifies history,
+rechecks destinations, applies the restore, and exits. MCP `restore.plan`
+remains planning only. The provider branch is the new machine's freshness
+anchor; a valid older signed history after branch rollback cannot be detected.
+
+### 5.7 Migrate a legacy catalog
 
 Preconditions:
 

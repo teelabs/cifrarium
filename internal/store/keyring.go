@@ -108,6 +108,29 @@ func (k *Keyring) SaveForRoot(root string, operational []byte, signing ed25519.P
 	return nil
 }
 
+// DeleteForRoot removes key material created for a recovery attempt only when
+// the stored entry is still bound to the same root.
+func (k *Keyring) DeleteForRoot(root string) error {
+	raw, err := keyring.Get(service, k.User)
+	if errors.Is(err, keyring.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("keyring unavailable: %w", err)
+	}
+	current, err := decodePayload(raw)
+	if err != nil {
+		return err
+	}
+	if current.Root != root {
+		return fmt.Errorf("refusing to remove key material for a different root")
+	}
+	if err := keyring.Delete(service, k.User); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		return fmt.Errorf("keyring unavailable: %w", err)
+	}
+	return nil
+}
+
 // LoadExisting reads the Cifrarium keyring entry without creating one. It is
 // intended for read-only diagnostics and health checks.
 func (k *Keyring) LoadExisting() (operational []byte, signing ed25519.PrivateKey, err error) {

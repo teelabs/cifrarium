@@ -662,7 +662,30 @@ func (v *Vault) RecordsFromCiphertext(ciphertext []byte) ([]Record, error) {
 type RenameFunc func(oldPath, newPath string) error
 
 func Restore(records []Record, target, backupRoot string) error {
-	return restoreSecure(records, target, backupRoot)
+	return RestoreWithCommit(records, target, backupRoot, nil)
+}
+
+// RestoreWithCommit activates the selected files and runs commit while the
+// original states remain available for rollback. A commit error restores all
+// handled file changes before returning.
+func RestoreWithCommit(records []Record, target, backupRoot string, commit func() error) error {
+	return restoreSecureWithCommit(records, target, backupRoot, commit)
+}
+
+// RestoreWithExpectedState aborts if a selected destination changed after the
+// interactive preflight. Expected entries include files that will be skipped.
+func RestoreWithExpectedState(records []Record, expected []RestoreDestination, target, backupRoot string, commit func() error) error {
+	return restoreSecureWithExpected(records, expected, target, backupRoot, commit)
+}
+
+// RestoreWithVaultLock holds the same exclusive lock as snapshot saves and
+// recovery imports across file activation, verified-history installation,
+// keyring guard updates, and rollback. The commit callback must not reacquire
+// this lock.
+func RestoreWithVaultLock(records []Record, expected []RestoreDestination, target, backupRoot, vaultRoot string, commit func() error) error {
+	return withVaultLock(vaultRoot, func() error {
+		return restoreSecureWithExpected(records, expected, target, backupRoot, commit)
+	})
 }
 
 // RestoreWithRename is the transactional restore implementation with an

@@ -418,6 +418,12 @@ daemon by answering `n` at `Retry?`, or stop a systemd-managed daemon with
 `systemctl --user stop cifrarium.service`; a successful local snapshot does
 not by itself prove daemon readiness.
 
+During an interactive restore, an active daemon receives the selected snapshot,
+paths, conflict choices, and a destination preflight fingerprint over its
+private control socket. It verifies the remote chain and destination state
+again, applies the restore, and exits; the CLI disables its systemd service.
+The daemon remains disabled when recovery finishes.
+
 When `daemon.env` or the service unit changes, refresh the managed daemon:
 
 ~~~sh
@@ -433,29 +439,34 @@ a second foreground daemon.
 
 ## Recover a fresh environment
 
-When moving to a new machine, preserve or copy the encrypted vault directory,
-install the same or a compatible Cifrarium release, make the user keyring
-available, and provide two trusted distinct shares through a protected local
-input path:
+For a new installation, install Cifrarium, authenticate `gh` for the private
+GitHub repository, and run the interactive restore command:
 
 ~~~sh
-cifrarium recovery import \
-  -recovery-share "$SHARE_1_FROM_PROTECTED_INPUT" \
-  -recovery-share "$SHARE_2_FROM_PROTECTED_INPUT"
-cifrarium status
+cifrarium restore
 ~~~
 
-Recovery verifies the existing signed catalog and head before replacing the
-keyring. If it fails, preserve the vault and current keyring; do not delete
-`head.json`, catalog files, snapshots, or the provider checkout and do not
-force an import. A historical or inconsistent head must be rejected.
+The command accepts two distinct shares without echo, verifies the private
+remote's signed snapshot history before writing local recovery state, and lets
+you choose the newest or another verified snapshot plus adapters or individual
+files. Existing destinations are preflighted; conflicts require overwrite,
+keep, or cancel, and replaced files receive private backups in the configured
+vault. The daemon remains disabled after recovery. Setup also offers this flow
+before creating new keys on a fresh interactive installation.
+
+On a new machine the remote branch is the freshness anchor. Cifrarium cannot
+detect a valid older signed history after the remote branch has been rolled
+back. `restore.plan` remains read-only; restoration requires the interactive
+CLI and final confirmation. For an existing vault with only a lost keyring,
+use `recovery import` instead. If any recovery step fails, preserve the vault,
+keyring, provider checkout, and recovery material; do not force an import.
 
 ## Troubleshooting and data-loss prevention
 
 | Symptom | Safe response |
 | --- | --- |
 | Installer checksum, signature, manifest, archive, or platform failure | Stop. Do not disable TLS or Cosign, substitute a different script, or retry with an unreviewed version. |
-| `keyring unavailable` | Preserve the vault. Repair the user keyring/session and rerun `status`; use `recovery import` only when keys were actually lost. |
+| `keyring unavailable` | Preserve the vault. Repair the user keyring/session and rerun `status`; use `recovery import` for an existing vault or `restore` for a new machine. |
 | Provider access timeout or authentication failure | Run `provider health`, inspect Git credentials, and preserve `pending.queue`; never embed a token in a URL. |
 | Repository reported public | Stop uploads, fix GitHub visibility/policy, rerun the privacy check, and retain existing encrypted history. |
 | Pending queue exists | Treat it as durable encrypted work. Do not delete it to make the daemon appear healthy. |

@@ -22,6 +22,37 @@ type Adapter interface {
 	Collect(home string) ([]File, error)
 }
 
+// RestoreAdapterForPath returns the capture adapter that owns path. Snapshot
+// signatures authenticate the bytes, but they do not grant authority to write
+// arbitrary files under a user's home directory.
+func RestoreAdapterForPath(path string) (string, bool) {
+	if validateCapturePath(path) != nil {
+		return "", false
+	}
+	switch path {
+	case ".codex/AGENTS.md", ".codex/config.toml":
+		return "codex", true
+	case ".zshrc", ".zprofile":
+		return "oh-my-zsh", true
+	case ".config/starship.toml":
+		return "starship", true
+	}
+	const customPrefix = ".oh-my-zsh/custom/"
+	if !strings.HasPrefix(path, customPrefix) {
+		return "", false
+	}
+	relative := strings.TrimPrefix(path, customPrefix)
+	if relative == "" {
+		return "", false
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || strings.HasPrefix(component, ".") {
+			return "", false
+		}
+	}
+	return "oh-my-zsh", true
+}
+
 type Config struct{}
 
 func (Config) Name() string { return "codex" }

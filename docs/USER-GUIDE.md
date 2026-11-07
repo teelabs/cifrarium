@@ -43,9 +43,9 @@ Check the current interface before copying examples:
 go run ./cmd/cifrarium -h
 ~~~
 
-The main commands are `status`, `doctor`, `snapshot`, `snapshot audit`, `daemon`,
-`daemon refresh`, `migrate-catalog`, `provider setup`, `provider health`,
-`recovery shares`, and `recovery import`. Options follow the subcommand, for example
+The main commands are `status`, `doctor`, `setup`, `restore`, `snapshot`,
+`snapshot audit`, `daemon`, `daemon refresh`, `migrate-catalog`, `provider setup`,
+`provider health`, `recovery shares`, and `recovery import`. Options follow the subcommand, for example
 `cifrarium provider health --verify-private`.
 
 `cifrarium snapshot audit` compares current allowlisted adapter files with the
@@ -347,18 +347,36 @@ actually lost or on a new machine.
 
 ### Recovery on a new machine
 
-Copy the encrypted vault if it is available and provide two distinct shares:
+For a new installation, install Cifrarium, authenticate `gh` for the private
+GitHub repository, then run the interactive restore command:
 
 ~~~sh
-go run ./cmd/cifrarium recovery import \
-  -recovery-share 'cifrarium-1:VALUE_1' \
-  -recovery-share 'cifrarium-2:VALUE_2'
-go run ./cmd/cifrarium status
+cifrarium restore
 ~~~
 
-Recovery verifies the head and signed chain before replacing the keyring. A
-historical or inconsistent head must be rejected. If recovery fails, preserve
-the files and investigate; do not force the import.
+The command asks for the private GitHub remote when it is not configured and
+reads two distinct recovery shares without echo when the keyring is missing.
+It stages the remote history locally, verifies its signatures and hashes, then
+lets you choose the newest snapshot (default) or another verified snapshot,
+and select adapters or individual files. Destination conflicts offer
+overwrite, keep, cancel, and an optional terminal-only diff. Existing files
+that are replaced receive private backups under `backups/` in the configured
+vault. If the daemon is already active, the CLI asks it to independently
+reverify the history and destination preflight, then apply the selected files.
+It exits after a successful restore, and the CLI disables its systemd service.
+The daemon remains disabled after recovery.
+
+The flow requires a TTY and does not accept shares through command arguments or
+JSON output. It does not upload to GitHub. On a new machine, the provider branch
+is the freshness anchor: Cifrarium cannot detect a valid older signed history
+if the remote branch itself was rolled back. A valid signed chain is still
+required. If recovery fails, preserve local files and investigate; do not force
+an import.
+
+During initial interactive setup, answer yes to the recovery question to run
+the same flow before any new keys or recovery shares are created. Non-interactive
+setup never offers recovery. For an existing vault whose keys alone were lost,
+use `recovery import` with two protected shares instead.
 
 ### Legacy catalog
 
@@ -388,8 +406,9 @@ Plans are not mutations: they require explicit confirmation and a separate
 flow. Do not expose the socket over a network, copy it to another host, or
 treat a plan response as proof that a restore was applied.
 
-The current CLI does not expose a public restore-activation command;
-restore.plan is planning only. Agents must state this clearly.
+`restore.plan` remains a read-only MCP plan. File restoration is available only
+through the interactive `cifrarium restore` CLI and requires final human
+confirmation.
 
 ## 9. Usage scenarios
 
@@ -397,7 +416,8 @@ restore.plan is planning only. Agents must state this clearly.
 | --- | --- | --- |
 | Local evaluation | status -> snapshot | Snapshot created and status remains healthy |
 | Recurring private backup | provider health -> daemon | Clean logs and provider updated |
-| New laptop | Copy vault -> two shares -> recover -> status | Chain verified and keyring imported |
+| New laptop and selected files | `cifrarium restore` -> choose snapshot/files | Verified chain installed, selected files restored, daemon disabled |
+| Lost keyring with existing vault | Two shares -> `recovery import` -> status | Chain verified and keyring imported |
 | Offline period | Keep daemon running | Encrypted queue persists and later uploads |
 | Repository became public | Stop uploads, check GitHub, fix policy | Provider is private before resuming |
 | Same-user process compromised | Assume read/alter capability | External isolation, rotation, and recovery; do not treat the vault as a sandbox |

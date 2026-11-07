@@ -3,14 +3,18 @@ package daemon
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/subtle"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/teelabs/cifrarium/internal/adapters"
 	"github.com/teelabs/cifrarium/internal/provider"
 	"github.com/teelabs/cifrarium/internal/recovery"
+	"github.com/teelabs/cifrarium/internal/restore"
 	"github.com/teelabs/cifrarium/internal/store"
 	syncvault "github.com/teelabs/cifrarium/internal/sync"
 )
@@ -25,9 +29,134 @@ type Backend struct {
 	Pending            *Queue
 	QueuePath          string
 	Provider           provider.Provider
+	Guard              store.HeadGuard
 	RecoveryShares     []recovery.Share
 	ProviderConfigured bool
 	operationMu        sync.Mutex
+	restorePending     atomic.Bool
+}
+
+// FileRestoreRequest contains only the user's selection and the digest of the
+// terminal preflight. File contents and recovery shares stay out of RPC.
+type FileRestoreRequest struct {
+	Snapshot    string                            `json:"snapshot"`
+	Remote      string                            `json:"remote"`
+	Paths       []string                          `json:"paths"`
+	Choices     map[string]restore.ConflictChoice `json:"choices,omitempty"`
+	Fingerprint string                            `json:"fingerprint"`
+}
+
+// RestoreFiles re-verifies the remote chain and destination state inside the
+// daemon before applying a terminal-confirmed file selection.
+func (b *Backend) RestoreFiles(ctx context.Context, request FileRestoreRequest) error {
+	if !b.restorePending.CompareAndSwap(false, true) {
+		return fmt.Errorf("a restore is already in progress")
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			b.restorePending.Store(false)
+		}
+	}()
+	b.operationMu.Lock()
+	defer b.operationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if b.Vault == nil || len(b.Operational) == 0 || len(b.Signing) == 0 {
+		return fmt.Errorf("daemon restore backend is not ready")
+	}
+	if request.Snapshot == "" || len(request.Paths) == 0 || len(request.Paths) > 4096 || request.Fingerprint == "" {
+		return fmt.Errorf("invalid daemon restore request")
+	}
+	source := b.Provider
+	if request.Remote != "" {
+		if !strings.HasPrefix(request.Remote, "https://github.com/") || strings.ContainsAny(request.Remote, "\r\n\t ") {
+			return fmt.Errorf("invalid GitHub restore remote")
+		}
+		stage, err := os.MkdirTemp("", "cifrarium-daemon-restore-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(stage)
+		staged := provider.Git{Dir: stage, Remote: request.Remote}
+		if err := staged.VerifyPrivate(ctx); err != nil {
+			return fmt.Errorf("private GitHub provider verification failed")
+		}
+		if err := staged.StageRemoteSnapshots(ctx); err != nil {
+			return fmt.Errorf("stage remote restore history: %w", err)
+		}
+		source = staged
+	} else if source == nil {
+		return fmt.Errorf("daemon restore requires a configured GitHub remote")
+	}
+	history, err := restore.VerifyRemoteHistory(ctx, source, b.Operational, b.Signing)
+	if err != nil {
+		return fmt.Errorf("verify remote restore history: %w", err)
+	}
+	var target *restore.VerifiedSnapshot
+	for i := range history.Entries {
+		if history.Entries[i].ID == request.Snapshot {
+			target = &history.Entries[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("selected snapshot is not in verified remote history")
+	}
+	selected := make([]store.Record, 0, len(request.Paths))
+	seen := make(map[string]bool, len(request.Paths))
+	for _, path := range request.Paths {
+		if path == "" || seen[path] {
+			return fmt.Errorf("invalid or duplicate restore path")
+		}
+		seen[path] = true
+		found := false
+		for _, record := range target.Records {
+			if record.Path == path {
+				selected = append(selected, record)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("selected restore path is absent from the snapshot")
+		}
+	}
+	plan, err := restore.BuildFilePlan(b.Home, history, request.Snapshot, selected)
+	if err != nil {
+		return fmt.Errorf("daemon restore preflight failed: %w", err)
+	}
+	fingerprint, err := restore.Fingerprint(plan)
+	if err != nil {
+		return err
+	}
+	if len(fingerprint) != len(request.Fingerprint) || subtle.ConstantTimeCompare([]byte(fingerprint), []byte(request.Fingerprint)) != 1 {
+		return fmt.Errorf("restore destinations changed after terminal preflight; review and confirm again")
+	}
+	apply, err := restore.ResolveFilePlan(plan, request.Choices)
+	if err != nil {
+		return err
+	}
+	expected := make([]store.RestoreDestination, 0, len(plan))
+	for _, item := range plan {
+		expected = append(expected, store.RestoreDestination{Path: item.Record.Path, Exists: item.Status != restore.PlanNew, Data: item.Current, Mode: item.CurrentMode})
+	}
+	guard := b.Guard
+	if guard == nil {
+		guard = b.Vault.Guard
+	}
+	commit := func() error {
+		return store.InstallVerifiedHistoryWithCommit(b.Vault.Root, history, b.Operational, b.Signing, guard, func() error {
+			_, err := store.OpenWithGuard(b.Vault.Root, b.Operational, b.Signing, guard)
+			return err
+		})
+	}
+	if err := store.RestoreWithVaultLock(apply, expected, b.Home, filepath.Join(b.Vault.Root, "backups"), b.Vault.Root, commit); err != nil {
+		return err
+	}
+	completed = true
+	return nil
 }
 
 // Status is the daemon-owned operational status contract. Interface adapters
@@ -99,6 +228,9 @@ func (b *Backend) RestorePlan(snapshot string) (map[string]any, error) {
 func (b *Backend) CaptureSnapshot(ctx context.Context) (Item, error) {
 	b.operationMu.Lock()
 	defer b.operationMu.Unlock()
+	if b.restorePending.Load() {
+		return Item{}, fmt.Errorf("daemon is stopping after file restore")
+	}
 	if err := ctx.Err(); err != nil {
 		return Item{}, err
 	}
@@ -169,6 +301,9 @@ func (b *Backend) collectAdapterRecords(ctx context.Context) ([]store.Record, er
 func (b *Backend) UploadSnapshot(ctx context.Context, item Item) error {
 	b.operationMu.Lock()
 	defer b.operationMu.Unlock()
+	if b.restorePending.Load() {
+		return fmt.Errorf("daemon is stopping after file restore")
+	}
 	if b.Vault == nil {
 		return fmt.Errorf("daemon backend vault is unavailable")
 	}
@@ -186,6 +321,9 @@ func (b *Backend) UploadSnapshot(ctx context.Context, item Item) error {
 func (b *Backend) PersistQueue() error {
 	b.operationMu.Lock()
 	defer b.operationMu.Unlock()
+	if b.restorePending.Load() {
+		return fmt.Errorf("daemon is stopping after file restore")
+	}
 	if b.Vault == nil {
 		return fmt.Errorf("daemon backend vault is unavailable")
 	}

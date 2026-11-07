@@ -3,6 +3,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -33,6 +34,30 @@ type restoreActivation struct {
 // transaction. Every rename is relative to an already-open directory;
 // replacing a path component after validation cannot redirect the operation.
 func restoreSecure(records []Record, target, backupRoot string) error {
+	return restoreSecureWithCommit(records, target, backupRoot, nil)
+}
+
+func restoreSecureWithCommit(records []Record, target, backupRoot string, commit func() error) error {
+	return restoreSecureWithExpected(records, nil, target, backupRoot, commit)
+}
+
+func restoreSecureWithExpected(records []Record, expected []RestoreDestination, target, backupRoot string, commit func() error) error {
+	if len(records) == 0 {
+		current, err := inspectRestoreDestinations(target, expectedRecords(expected))
+		if err != nil {
+			return err
+		}
+		for i, state := range expected {
+			got := current[i]
+			if got.Exists != state.Exists || (state.Exists && (!bytes.Equal(got.Data, state.Data) || got.Mode.Perm() != state.Mode.Perm())) {
+				return fmt.Errorf("restore destination changed after preflight: %s", state.Path)
+			}
+		}
+		if commit != nil {
+			return commit()
+		}
+		return nil
+	}
 	if err := validateRestoreRoots(target, backupRoot); err != nil {
 		return err
 	}
@@ -53,6 +78,16 @@ func restoreSecure(records []Record, target, backupRoot string) error {
 		return fmt.Errorf("open restore backup root: %w", err)
 	}
 	defer unix.Close(backupRootFD)
+	expectedByPath := make(map[string]RestoreDestination, len(expected))
+	for _, state := range expected {
+		if err := validateRestoreRecordPath(state.Path); err != nil {
+			return err
+		}
+		if _, exists := expectedByPath[state.Path]; exists {
+			return fmt.Errorf("duplicate expected restore path")
+		}
+		expectedByPath[state.Path] = state
+	}
 
 	stageName, stageFD, err := createRestoreDirectory(targetFD, ".cifrarium-restore-")
 	if err != nil {
@@ -88,11 +123,18 @@ func restoreSecure(records []Record, target, backupRoot string) error {
 		}
 	}
 
-	_, backupFD, err := createRestoreDirectory(backupRootFD, "restore-")
+	backupName, backupFD, err := createRestoreDirectory(backupRootFD, "restore-")
 	if err != nil {
 		return err
 	}
 	openFDs = append(openFDs, backupFD)
+	backupCommitted := false
+	rollbackFailed := false
+	defer func() {
+		if !backupCommitted && !rollbackFailed {
+			_ = removeRestoreTree(backupRootFD, backupName)
+		}
+	}()
 
 	var moved []restoreMove
 	var activated []restoreActivation
@@ -109,6 +151,9 @@ func restoreSecure(records []Record, target, backupRoot string) error {
 			if err := unix.Renameat2(move.toFD, move.to, move.fromFD, move.from, unix.RENAME_NOREPLACE); err != nil && rollbackErr == nil {
 				rollbackErr = fmt.Errorf("restore backup %s: %w", move.to, err)
 			}
+		}
+		if rollbackErr != nil {
+			rollbackFailed = true
 		}
 		return rollbackErr
 	}
@@ -140,13 +185,64 @@ func restoreSecure(records []Record, target, backupRoot string) error {
 				return restoreFailure(err, rollback)
 			}
 			moved = append(moved, restoreMove{fromFD: targetParent, from: base, toFD: backupParent, to: base})
+			if state, ok := expectedByPath[record.Path]; ok {
+				backupState, err := inspectRestoreFile(backupParent, base, record.Path)
+				if err != nil || !state.Exists || !backupState.Exists || !bytes.Equal(state.Data, backupState.Data) || state.Mode.Perm() != backupState.Mode.Perm() {
+					if err == nil {
+						err = fmt.Errorf("restore destination changed after preflight: %s", record.Path)
+					}
+					return restoreFailure(err, rollback)
+				}
+			}
+		} else if state, ok := expectedByPath[record.Path]; ok && state.Exists {
+			return restoreFailure(fmt.Errorf("restore destination changed after preflight: %s", record.Path), rollback)
 		}
 		if err := unix.Renameat2(stageParent, base, targetParent, base, unix.RENAME_NOREPLACE); err != nil {
 			return restoreFailure(err, rollback)
 		}
 		activated = append(activated, restoreActivation{stageFD: stageParent, stage: base, targetFD: targetParent, target: base})
 	}
+	// Recheck selected files that are kept or identical and therefore were not
+	// renamed. Applied files were compared after moving into the private backup.
+	for path, state := range expectedByPath {
+		if _, applied := seen[path]; applied {
+			continue
+		}
+		parent, base := restoreParentAndBase(path)
+		parentFD, err := openRestoreRelativeDir(targetFD, parent, false)
+		if err == unix.ENOENT {
+			if state.Exists {
+				return restoreFailure(fmt.Errorf("restore destination changed after preflight: %s", path), rollback)
+			}
+			continue
+		}
+		if err != nil {
+			return restoreFailure(fmt.Errorf("unsafe restore destination %q", path), rollback)
+		}
+		current, err := inspectRestoreFile(parentFD, base, path)
+		_ = unix.Close(parentFD)
+		if err != nil || current.Exists != state.Exists || (state.Exists && (!bytes.Equal(current.Data, state.Data) || current.Mode.Perm() != state.Mode.Perm())) {
+			if err == nil {
+				err = fmt.Errorf("restore destination changed after preflight: %s", path)
+			}
+			return restoreFailure(err, rollback)
+		}
+	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			return restoreFailure(err, rollback)
+		}
+	}
+	backupCommitted = true
 	return nil
+}
+
+func expectedRecords(states []RestoreDestination) []Record {
+	records := make([]Record, len(states))
+	for i, state := range states {
+		records[i] = Record{Path: state.Path}
+	}
+	return records
 }
 
 func restoreFailure(cause error, rollback func() error) error {
