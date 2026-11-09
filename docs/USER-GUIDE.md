@@ -372,8 +372,13 @@ is the freshness anchor: Cifrarium cannot detect a valid older signed history
 if the remote branch itself was rolled back. A valid signed chain is still
 required. If recovery fails, preserve local files and investigate; do not force
 an import. If the remote history has multiple branches or no unique head,
-restore stops before writing local recovery state; do not choose or edit
-catalog entries manually.
+restore stops before writing local recovery state. On a trusted machine whose
+verified vault and keyring are available, with its daemon stopped, run
+`cifrarium restore history` to inspect the signed branches and select one that
+contains that machine's current vault head. The command requires a TTY and final
+confirmation, writes an encrypted selection marker to the private provider,
+and preserves every branch. Do not choose or edit catalog entries manually.
+Then retry `cifrarium restore` on the new machine.
 
 During initial interactive setup, answer yes to the recovery question to run
 the same flow before any new keys or recovery shares are created. Non-interactive

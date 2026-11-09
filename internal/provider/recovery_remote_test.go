@@ -1,8 +1,13 @@
 package provider
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 var idA = strings.Repeat("a", 64)
@@ -46,5 +51,60 @@ func TestRecoveryOutputBufferEnforcesBound(t *testing.T) {
 	}
 	if buffer.String() != "abc" {
 		t.Fatalf("buffer=%q", buffer.String())
+	}
+}
+
+func TestParseRecoveryTreeWithSelectionAcceptsOnlyExactRegularMarker(t *testing.T) {
+	raw := []byte("100644 blob 0123456789012345678901234567890123456789\tobjects/" + idA + "\x00100644 blob 1123456789012345678901234567890123456789\tcatalog/" + idA + ".json\x00100644 blob 2123456789012345678901234567890123456789\thistory/selection.json\x00")
+	entries, marker, err := parseRecoveryTreeWithSelection(raw)
+	if err != nil || len(entries) != 1 || marker != "2123456789012345678901234567890123456789" {
+		t.Fatalf("entries=%+v marker=%q err=%v", entries, marker, err)
+	}
+	unsafe := []byte("120000 blob 2123456789012345678901234567890123456789\thistory/selection.json\x00")
+	if _, _, err := parseRecoveryTreeWithSelection(unsafe); err == nil {
+		t.Fatal("symlink history marker accepted")
+	}
+	unknown := []byte("100644 blob 2123456789012345678901234567890123456789\thistory/other.json\x00")
+	if _, _, err := parseRecoveryTreeWithSelection(unknown); err == nil {
+		t.Fatal("unknown history metadata accepted")
+	}
+}
+
+func TestDownloadStagedHistorySelectionUsesBoundedNoFollowRead(t *testing.T) {
+	dir := t.TempDir()
+	g := Git{Dir: dir}
+	if err := os.MkdirAll(filepath.Join(dir, "history"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := []byte("opaque encrypted marker")
+	if err := os.WriteFile(filepath.Join(dir, "history", "selection.json"), marker, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := g.DownloadHistorySelection(t.Context())
+	if err != nil || !bytes.Equal(got, marker) {
+		t.Fatalf("marker=%q err=%v", got, err)
+	}
+	if err := os.Remove(filepath.Join(dir, "history", "selection.json")); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("outside sentinel"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "history", "selection.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.DownloadHistorySelection(t.Context()); err == nil {
+		t.Fatal("history marker symlink was read")
+	}
+	if err := os.Remove(filepath.Join(dir, "history", "selection.json")); err != nil {
+		t.Fatal(err)
+	}
+	oversized := bytes.Repeat([]byte{'x'}, int(limits.MaxManifestBytes)+1)
+	if err := os.WriteFile(filepath.Join(dir, "history", "selection.json"), oversized, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.DownloadHistorySelection(t.Context()); err == nil {
+		t.Fatal("oversized staged marker was read")
 	}
 }

@@ -180,6 +180,64 @@ func TestUploadSnapshotAcceptsEquivalentLegacyRemoteManifestOnUpgrade(t *testing
 	}
 }
 
+type canonicalSnapshotFake struct {
+	fakeProvider
+	marker    []byte
+	revision  string
+	gotMarker []byte
+	gotID     string
+}
+
+func (f *canonicalSnapshotFake) ReadRemoteHistorySelection(context.Context) ([]byte, string, error) {
+	return f.marker, f.revision, nil
+}
+func (f *canonicalSnapshotFake) UploadSnapshotWithHistorySelection(_ context.Context, id string, _, _, marker []byte, revision string) error {
+	f.gotID, f.gotMarker, f.revision = id, append([]byte(nil), marker...), revision
+	return nil
+}
+
+func TestUploadSnapshotAtomicallyAdvancesSelectedHistory(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := store.New(t.TempDir(), op, signing)
+	base, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Mode: 0600, Data: []byte("base")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Mode: 0600, Data: []byte("next")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, err := store.SealHistorySelection(base.Manifest.Snapshot, op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := store.RecoveryShares(op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &canonicalSnapshotFake{marker: marker, revision: "0123456789012345678901234567890123456789"}
+	gate := UploadGate{OperationalKey: op, SigningKey: signing}
+	if err := gate.UploadSnapshot(context.Background(), p, next.Manifest.Snapshot, next.Ciphertext, next.ManifestBytes, shares[:2]); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := store.OpenHistorySelection(p.gotMarker, op, signing.Public().(ed25519.PublicKey))
+	if err != nil || p.gotID != next.Manifest.Snapshot || selection.Head != next.Manifest.Snapshot {
+		t.Fatalf("id=%q selection=%+v err=%v", p.gotID, selection, err)
+	}
+	updatedMarker := append([]byte(nil), p.gotMarker...)
+	p.marker = updatedMarker
+	p.gotMarker = nil
+	if err := gate.UploadSnapshot(context.Background(), p, next.Manifest.Snapshot, next.Ciphertext, next.ManifestBytes, shares[:2]); err != nil {
+		t.Fatal(err)
+	}
+	if p.gotID != next.Manifest.Snapshot || !bytes.Equal(p.gotMarker, updatedMarker) {
+		t.Fatal("canonical retry did not reuse the exact marker for local cache repair")
+	}
+}
+
 type fakeProvider struct {
 	uploads, catalogs int
 	download, catalog []byte

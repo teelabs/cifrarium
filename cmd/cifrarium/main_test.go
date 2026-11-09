@@ -200,6 +200,7 @@ func TestCanonicalCommandUsesNestedSubcommands(t *testing.T) {
 	}{
 		{[]string{"doctor", "--format=json"}, "doctor", []string{"--format=json"}},
 		{[]string{"restore"}, "restore", nil},
+		{[]string{"restore", "history"}, "restore-history", nil},
 		{[]string{"provider", "health", "--verify-private"}, "provider-health", []string{"--verify-private"}},
 		{[]string{"provider", "setup"}, "provider-setup", nil},
 		{[]string{"recovery", "shares"}, "recovery-shares", nil},
@@ -511,7 +512,7 @@ func TestSystemdUsesConfiguredRootResolver(t *testing.T) {
 }
 
 func TestNonInteractiveRejectsStatefulCommands(t *testing.T) {
-	for _, command := range []string{"provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "restore", "migrate-catalog", "daemon"} {
+	for _, command := range []string{"provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "restore", "restore-history", "migrate-catalog", "daemon"} {
 		if !commandMutatesOrHandlesSecrets(command) {
 			t.Fatalf("%s was not classified as stateful", command)
 		}

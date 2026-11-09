@@ -461,6 +461,21 @@ CLI and final confirmation. For an existing vault with only a lost keyring,
 use `recovery import` instead. If any recovery step fails, preserve the vault,
 keyring, provider checkout, and recovery material; do not force an import.
 
+If restore reports `backup history verification failed`, the provider may have
+multiple valid branches. On a trusted machine with the existing vault and
+keyring, authenticate `gh` and run:
+
+~~~sh
+cifrarium restore history
+~~~
+
+This verifies the branches, offers only branches containing the local vault
+head, and asks before writing an encrypted, signed canonical-selection marker.
+It preserves every branch and snapshot. Retry `cifrarium restore` on the new
+machine after the selection is confirmed. If no branch contains the local
+head, stop and recover the trusted machine's vault state before selecting
+anything; do not force a branch choice.
+
 ## Troubleshooting and data-loss prevention
 
 | Symptom | Safe response |
@@ -468,6 +483,7 @@ keyring, provider checkout, and recovery material; do not force an import.
 | Installer checksum, signature, manifest, archive, or platform failure | Stop. Do not disable TLS or Cosign, substitute a different script, or retry with an unreviewed version. |
 | `keyring unavailable` | Preserve the vault. Repair the user keyring/session and rerun `status`; use `recovery import` for an existing vault or `restore` for a new machine. |
 | Provider access timeout or authentication failure | Run `provider health`, inspect Git credentials, and preserve `pending.queue`; never embed a token in a URL. |
+| `backup history verification failed` | On the trusted machine, use `cifrarium restore history` to verify and explicitly select a branch containing its current vault head; preserve all provider branches. |
 | Repository reported public | Stop uploads, fix GitHub visibility/policy, rerun the privacy check, and retain existing encrypted history. |
 | Pending queue exists | Treat it as durable encrypted work. Do not delete it to make the daemon appear healthy. |
 | Queue or catalog persistence failure | Stop or leave the daemon stopped and preserve the vault, queue, and head for investigation. |
