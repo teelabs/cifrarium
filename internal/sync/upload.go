@@ -44,6 +44,40 @@ func (g UploadGate) UploadSnapshot(ctx context.Context, p provider.Provider, id 
 	if err := verifyPrivate(ctx, p); err != nil {
 		return err
 	}
+	if canonical, ok := p.(provider.CanonicalSnapshotProvider); ok {
+		marker, revision, err := canonical.ReadRemoteHistorySelection(ctx)
+		if err != nil {
+			return fmt.Errorf("read canonical backup history: %w", err)
+		}
+		if len(marker) != 0 {
+			selection, err := store.OpenHistorySelection(marker, g.OperationalKey, g.SigningKey.Public().(ed25519.PublicKey))
+			if err != nil {
+				return fmt.Errorf("canonical backup history marker is invalid; snapshot upload stopped")
+			}
+			if selection.Head != id {
+				if manifest.Previous != selection.Head {
+					return fmt.Errorf("snapshot does not extend the selected canonical backup history")
+				}
+				vault := store.New("", g.OperationalKey, g.SigningKey)
+				if err := vault.VerifySnapshot(manifest, ciphertext, g.SigningKey.Public().(ed25519.PublicKey)); err != nil {
+					return fmt.Errorf("snapshot verification failed before canonical history advance")
+				}
+				updated, err := store.SealHistorySelection(id, g.OperationalKey, g.SigningKey)
+				if err != nil {
+					return err
+				}
+				return canonical.UploadSnapshotWithHistorySelection(ctx, id, ciphertext, manifestBytes, updated, revision)
+			}
+			vault := store.New("", g.OperationalKey, g.SigningKey)
+			if err := vault.VerifySnapshot(manifest, ciphertext, g.SigningKey.Public().(ed25519.PublicKey)); err != nil {
+				return fmt.Errorf("snapshot verification failed before canonical upload retry")
+			}
+			// An earlier push may have succeeded even if its response was lost.
+			// Re-submit the exact artifacts so the provider can repair its local
+			// checkout without advancing or re-encrypting the marker.
+			return canonical.UploadSnapshotWithHistorySelection(ctx, id, ciphertext, manifestBytes, marker, revision)
+		}
+	}
 	if equivalent, ok := p.(provider.EquivalentManifestSnapshotProvider); ok {
 		return equivalent.UploadSnapshotWithEquivalentManifest(ctx, id, ciphertext, manifestBytes, func(existingBytes []byte) bool {
 			existing, err := store.OpenManifest(existingBytes, g.OperationalKey)

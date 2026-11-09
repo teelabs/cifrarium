@@ -3,11 +3,15 @@ package provider
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/teelabs/cifrarium/internal/limits"
 )
 
 func runProviderGitTest(t *testing.T, dir string, args ...string) string {
@@ -79,6 +83,81 @@ func TestGitUploadSnapshotCommitsCiphertextAndCatalogTogether(t *testing.T) {
 	out, err := cmd.Output()
 	if err != nil || string(out) != "1\n" {
 		t.Fatalf("commits=%q err=%v", out, err)
+	}
+}
+
+func TestCanonicalSelectionUploadPreservesSnapshotTreeAndRejectsStaleRevision(t *testing.T) {
+	bare, seed, local := t.TempDir(), t.TempDir(), t.TempDir()
+	runProviderGitTest(t, bare, "init", "--bare", "--initial-branch=main")
+	runProviderGitTest(t, seed, "init", "--initial-branch=main")
+	for path, value := range map[string]string{"objects/old": "cipher", "catalog/old.json": "catalog"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(seed, path)), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(seed, path), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runProviderGitTest(t, seed, "add", "objects/old", "catalog/old.json")
+	runProviderGitTest(t, seed, "commit", "-m", "seed snapshots")
+	runProviderGitTest(t, seed, "push", bare, "HEAD:refs/heads/main")
+	gitBinary, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteURL := "https://github.com/teelabs/cifrarium-history-test.git"
+	binDir := t.TempDir()
+	wrapper := fmt.Sprintf("#!/bin/bash\nargs=()\nrewrite=1\nif [[ \" $* \" == *' remote add origin '* ]]; then rewrite=0; fi\nfor arg in \"$@\"; do if [[ $rewrite == 1 && \"$arg\" == %s ]]; then arg=%s; fi; args+=(\"$arg\"); done\nexec %s \"${args[@]}\"\n", strconv.Quote(remoteURL), strconv.Quote(bare), strconv.Quote(gitBinary))
+	if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(wrapper), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte("#!/bin/sh\nprintf 'true\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	g := Git{Dir: local, Remote: remoteURL}
+	if err := g.Ensure(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, revision, err := g.remoteHead(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeObjects, err := exec.Command("git", "-C", local, "count-objects", "-v").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeCount, err := exec.Command("git", "--git-dir", bare, "rev-list", "--count", "refs/heads/main").Output()
+	if err != nil || strings.TrimSpace(string(beforeCount)) != "1" {
+		t.Fatalf("initial remote commit count=%q err=%v", beforeCount, err)
+	}
+	if err := g.UploadSnapshotWithHistorySelection(context.Background(), idA, []byte("ciphertext"), []byte("signed catalog"), []byte("encrypted marker"), strings.Repeat("a", 40)); err == nil {
+		t.Fatal("stale revision accepted")
+	}
+	afterStaleObjects, err := exec.Command("git", "-C", local, "count-objects", "-v").Output()
+	if err != nil || !bytes.Equal(beforeObjects, afterStaleObjects) {
+		t.Fatalf("stale upload left local Git objects: before=%q after=%q err=%v", beforeObjects, afterStaleObjects, err)
+	}
+	if _, err := os.Stat(filepath.Join(local, "objects", idA)); !os.IsNotExist(err) {
+		t.Fatalf("stale upload modified the local cache: %v", err)
+	}
+	if err := g.UploadSnapshotWithHistorySelection(context.Background(), idA, []byte("ciphertext"), []byte("signed catalog"), []byte("encrypted marker"), revision); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"objects/" + idA: "ciphertext", "catalog/" + idA + ".json": "signed catalog", historySelectionPath: "encrypted marker"} {
+		got, err := readProviderFileLimited(local, path, limits.MaxSnapshotCipherBytes)
+		if err != nil || string(got) != want {
+			t.Fatalf("local cache %s=%q err=%v", path, got, err)
+		}
+	}
+	got := strings.Fields(runProviderGitTest(t, bare, "ls-tree", "-r", "--name-only", "refs/heads/main"))
+	want := []string{"catalog/" + idA + ".json", "catalog/old.json", "history/selection.json", "objects/" + idA, "objects/old"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("remote paths=%v want=%v", got, want)
+	}
+	afterCount, err := exec.Command("git", "--git-dir", bare, "rev-list", "--count", "refs/heads/main").Output()
+	if err != nil || strings.TrimSpace(string(afterCount)) != "2" {
+		t.Fatalf("remote commit count=%q, want exactly one atomic update after %q; err=%v", afterCount, beforeCount, err)
 	}
 }
 

@@ -14,6 +14,20 @@ type Provider interface {
 	List(ctx context.Context) ([]string, error)
 	Health(ctx context.Context) error
 }
+
+// CanonicalHistoryProvider exposes an encrypted operator selection marker.
+// Implementations must not interpret or log its contents.
+type CanonicalHistoryProvider interface {
+	DownloadHistorySelection(ctx context.Context) ([]byte, error)
+	UploadHistorySelection(ctx context.Context, marker []byte) error
+}
+
+// CanonicalSnapshotProvider atomically advances a selected history marker with
+// the new encrypted snapshot, guarded by the remote revision that was read.
+type CanonicalSnapshotProvider interface {
+	ReadRemoteHistorySelection(ctx context.Context) (marker []byte, revision string, err error)
+	UploadSnapshotWithHistorySelection(ctx context.Context, id string, ciphertext, manifest, marker []byte, expectedRevision string) error
+}
 type AtomicSnapshotProvider interface {
 	UploadSnapshot(ctx context.Context, id string, ciphertext, manifest []byte) error
 }

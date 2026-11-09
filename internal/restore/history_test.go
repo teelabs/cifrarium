@@ -9,8 +9,9 @@ import (
 )
 
 type historyProvider struct {
-	objects  map[string][]byte
-	catalogs map[string][]byte
+	objects   map[string][]byte
+	catalogs  map[string][]byte
+	selection []byte
 }
 
 func (p *historyProvider) Upload(context.Context, string, []byte) error        { return nil }
@@ -29,6 +30,10 @@ func (p *historyProvider) List(context.Context) ([]string, error) {
 	return ids, nil
 }
 func (p *historyProvider) Health(context.Context) error { return nil }
+func (p *historyProvider) DownloadHistorySelection(context.Context) ([]byte, error) {
+	return append([]byte(nil), p.selection...), nil
+}
+func (p *historyProvider) UploadHistorySelection(context.Context, []byte) error { return nil }
 
 func TestVerifyRemoteHistoryReturnsNewestVerifiedChain(t *testing.T) {
 	op, signing, err := store.GenerateKeyMaterial()
@@ -88,6 +93,39 @@ func TestVerifyRemoteHistoryRejectsForksAndTamperedObjects(t *testing.T) {
 	}
 	if _, err := VerifyRemoteHistory(context.Background(), tampered, op, signing); err == nil {
 		t.Fatal("tampered snapshot accepted")
+	}
+}
+
+func TestInspectRemoteHistoryHonorsAuthenticatedSelection(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeRoot := func(text string) store.SnapshotResult {
+		v := store.New(t.TempDir(), op, signing)
+		snap, e := v.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte(text), Mode: 0600}})
+		if e != nil {
+			t.Fatal(e)
+		}
+		return snap
+	}
+	left, right := makeRoot("left"), makeRoot("right")
+	p := &historyProvider{objects: map[string][]byte{left.Manifest.Snapshot: left.Ciphertext, right.Manifest.Snapshot: right.Ciphertext}, catalogs: map[string][]byte{left.Manifest.Snapshot: left.ManifestBytes, right.Manifest.Snapshot: right.ManifestBytes}}
+	if _, err := VerifyRemoteHistory(context.Background(), p, op, signing); err == nil {
+		t.Fatal("unmarked fork accepted")
+	}
+	marker, err := store.SealHistorySelection(right.Manifest.Snapshot, op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.selection = marker
+	history, err := VerifyRemoteHistory(context.Background(), p, op, signing)
+	if err != nil || history.Head != right.Manifest.Snapshot {
+		t.Fatalf("selected history=%+v err=%v", history, err)
+	}
+	inspection, gotMarker, err := InspectRemoteHistory(context.Background(), p, op, signing)
+	if err != nil || len(inspection.Branches) != 2 || string(gotMarker) != string(marker) {
+		t.Fatalf("inspection=%+v marker=%d err=%v", inspection, len(gotMarker), err)
 	}
 }
 

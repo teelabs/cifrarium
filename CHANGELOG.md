@@ -4,6 +4,15 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-09
+
+### Added
+
+- Inspect every verified private backup branch and interactively select a
+  canonical branch anchored to the current local vault head. The encrypted,
+  signed selection preserves all snapshots and branches; future snapshots
+  advance the selection atomically with their encrypted object and catalog.
+
 ## [0.13.1] - 2026-11-06
 
 ### Fixed

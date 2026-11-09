@@ -311,6 +311,165 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	return nil
 }
 
+func ensureDaemonInactiveForHistory(root string) error {
+	for _, socket := range []string{filepath.Join(root, "control.sock"), filepath.Join(root, "cifrarium.sock")} {
+		info, err := os.Lstat(socket)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("daemon state is unknown at the configured vault; stop and inspect it before history reconciliation")
+		}
+		probe := daemonRefreshProbe
+		if strings.HasSuffix(socket, "control.sock") {
+			probe = func(path string) error { _, err := daemonRefreshBackendProbe(path); return err }
+		}
+		if probe(socket) == nil {
+			return fmt.Errorf("Cifrarium daemon is active; stop it before history reconciliation")
+		}
+		return fmt.Errorf("a daemon socket remains at the configured vault; inspect or stop the daemon before history reconciliation")
+	}
+	if runDaemonRefreshSystemctl("is-active", "--quiet", "cifrarium.service") == nil {
+		return fmt.Errorf("Cifrarium service is active; stop it before history reconciliation")
+	}
+	return nil
+}
+
+// runHistoryReconcile verifies all remote lineages and lets the operator mark
+// one branch that contains the current local vault head. It keeps every
+// snapshot and branch in the provider.
+func runHistoryReconcile(home, rootOverride, providerDir, remote string, output io.Writer) error {
+	if !isTerminalFile(os.Stdin) || !isTerminalFile(os.Stdout) {
+		return fmt.Errorf("cifrarium restore history requires an interactive terminal")
+	}
+	tty, err := openSetupTTY()
+	if err != nil {
+		return err
+	}
+	defer tty.Close()
+	reader := bufio.NewReader(tty)
+	root, err := resolveVaultRoot("restore", rootOverride, home)
+	if err != nil {
+		return err
+	}
+	if err := ensureDaemonInactiveForHistory(root); err != nil {
+		return err
+	}
+	currentProvider, _, err := readDaemonEnv(home)
+	if err != nil {
+		return fmt.Errorf("protected provider configuration is unsafe or unreadable")
+	}
+	if providerDir == "" {
+		providerDir = currentProvider.Dir
+	}
+	if remote == "" {
+		remote = currentProvider.Remote
+	}
+	if providerDir == "" {
+		providerDir = filepath.Join(home, ".local", "share", "cifrarium-provider")
+	}
+	if !strings.HasPrefix(remote, "https://github.com/") || strings.ContainsAny(remote, "\r\n\t ") {
+		return fmt.Errorf("restore history requires a configured HTTPS GitHub remote")
+	}
+	keys := store.NewKeyring()
+	op, signing, err := keys.LoadExistingForRoot(root)
+	if err != nil {
+		return fmt.Errorf("restore history requires the existing trusted vault keyring")
+	}
+	vault, err := store.Open(root, op, signing)
+	if err != nil {
+		return fmt.Errorf("local vault could not be verified; history was not changed")
+	}
+	localHead := vault.Head
+	guardHead, err := keys.CatalogHead()
+	if err != nil || (guardHead != "" && guardHead != localHead) {
+		return fmt.Errorf("local vault guard does not match its verified head; history was not changed")
+	}
+	stage, err := os.MkdirTemp("", "cifrarium-history-inspect-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	gitProvider := provider.Git{Dir: stage, Remote: remote}
+	if err := gitProvider.VerifyPrivate(context.Background()); err != nil {
+		return fmt.Errorf("private GitHub provider could not be verified")
+	}
+	if err := gitProvider.StageRemoteSnapshots(context.Background()); err != nil {
+		return fmt.Errorf("private backup could not be staged for inspection")
+	}
+	inspection, marker, err := restore.InspectRemoteHistory(context.Background(), gitProvider, op, signing)
+	if err != nil {
+		return fmt.Errorf("remote history inspection failed; no state was changed")
+	}
+	branches := make([]store.VerifiedHistory, 0, len(inspection.Branches))
+	for _, branch := range inspection.Branches {
+		for _, entry := range branch.Entries {
+			if entry.ID == localHead {
+				branches = append(branches, branch)
+				break
+			}
+		}
+	}
+	if len(branches) == 0 {
+		return fmt.Errorf("no verified remote branch contains the current local vault head; no state was changed")
+	}
+	if len(marker) != 0 {
+		selection, err := store.OpenHistorySelection(marker, op, signing.Public().(ed25519.PublicKey))
+		if err != nil {
+			return fmt.Errorf("remote canonical history marker is invalid; no state was changed")
+		}
+		found := false
+		for _, branch := range inspection.Branches {
+			if branch.Head == selection.Head {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("remote canonical history marker does not name a verified branch; no state was changed")
+		}
+	}
+	fmt.Fprintln(tty, "Verified remote branches containing the current local vault head:")
+	for i, branch := range branches {
+		fmt.Fprintf(tty, "  %d) %s (%d snapshots)\n", i+1, branch.Head, len(branch.Entries))
+	}
+	choice, err := promptLine(reader, tty, "Canonical branch number", "")
+	if err != nil {
+		return err
+	}
+	var index int
+	if _, err := fmt.Sscan(choice, &index); err != nil || index < 1 || index > len(branches) {
+		return fmt.Errorf("invalid branch selection")
+	}
+	selected := branches[index-1]
+	fmt.Fprintln(tty, "Planned command: cifrarium restore history")
+	fmt.Fprintln(tty, "Remote effect: write one encrypted, signed marker to the verified private GitHub provider; no snapshots or branches are deleted.")
+	fmt.Fprintf(tty, "Local effect: fast-forward verified vault catalogs and head under %s; update the keyring guard.\n", root)
+	fmt.Fprintf(tty, "Provider: %s\n", remote)
+	fmt.Fprintf(tty, "Selected canonical head: %s\n", selected.Head)
+	fmt.Fprintln(tty, "Validation completed: every remote snapshot branch, catalog signature, ciphertext hash, and decryption checked; selected branch contains the current local vault head.")
+	fmt.Fprintln(tty, "Rollback path: if provider push fails, local vault files and keyring guard are rolled back. If the provider accepts a push but the client loses its response, rerun this command to inspect the marker before retrying.")
+	fmt.Fprintln(tty, "Residual risk: a valid older provider commit cannot be distinguished from a remote rollback; selection does not provide an external freshness witness.")
+	answer, err := promptYesNo(reader, tty, "Confirm canonical history selection and remote write?", false)
+	if err != nil {
+		return err
+	}
+	if !answer {
+		return nil
+	}
+	sealed, err := store.SealHistorySelection(selected.Head, op, signing)
+	if err != nil {
+		return err
+	}
+	if err := store.InstallVerifiedHistoryWithCommit(root, selected, op, signing, keys, func() error {
+		return gitProvider.UploadHistorySelection(context.Background(), sealed)
+	}); err != nil {
+		return fmt.Errorf("history reconciliation did not complete; local recovery state was rolled back if necessary; inspect the provider before retrying")
+	}
+	fmt.Fprintln(tty, "Canonical history selected. All remote branches remain preserved; the daemon remains in its current state.")
+	return nil
+}
+
 func restoreHistoryVerificationError(err error) error {
 	if errors.Is(err, store.ErrRemoteHistoryForked) {
 		return fmt.Errorf("backup history has multiple branches or no unique head; no local recovery state was written")
@@ -387,7 +546,7 @@ func commitVerifiedRestore(home, root, providerDir, remote string, shares []stri
 		}
 		keySaved = true
 	}
-	if err := store.InstallVerifiedHistoryWithCommit(root, history, op, signing, keys, func() error { _, err := store.OpenWithGuard(root, op, signing, keys); return err }); err != nil {
+	if err := store.InstallVerifiedHistoryWithCommitUnderLock(root, history, op, signing, keys, func() error { _, err := store.OpenWithGuard(root, op, signing, keys); return err }); err != nil {
 		return rollback(err)
 	}
 	return nil

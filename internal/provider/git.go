@@ -424,7 +424,7 @@ func (g Git) commitAndPush(ctx context.Context, message string, objects ...gitOb
 		if err := g.VerifyPrivate(ctx); err != nil {
 			return fmt.Errorf("privacy verification before push failed: %w", err)
 		}
-		return g.commitAndPushRemote(ctx, indexPath, message, objects, hashes)
+		return g.commitAndPushRemoteAt(ctx, indexPath, message, objects, hashes, "")
 	}
 	for i, object := range objects {
 		if err := g.run(ctx, "update-index", "--add", "--cacheinfo", "100644,"+hashes[i]+","+object.path); err != nil {
@@ -449,9 +449,16 @@ func (g Git) commitAndPush(ctx context.Context, message string, objects ...gitOb
 // commitAndPushRemote creates the upload commit on the fetched remote branch,
 // so unrelated local commits can never become ancestors sent by this upload.
 func (g Git) commitAndPushRemote(ctx context.Context, indexPath, message string, objects []gitObject, hashes []string) error {
+	return g.commitAndPushRemoteAt(ctx, indexPath, message, objects, hashes, "")
+}
+
+func (g Git) commitAndPushRemoteAt(ctx context.Context, indexPath, message string, objects []gitObject, hashes []string, expectedParent string) error {
 	branch, parent, err := g.remoteHead(ctx)
 	if err != nil {
 		return err
+	}
+	if expectedParent != "" && parent != expectedParent {
+		return fmt.Errorf("remote provider changed during history operation; inspect again")
 	}
 	if parent == "" {
 		if err := g.runWithIndex(ctx, indexPath, "read-tree", "--empty"); err != nil {

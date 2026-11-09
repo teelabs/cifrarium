@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -28,6 +29,9 @@ type remoteSnapshotEntry struct {
 	catalogOID string
 }
 
+const historySelectionPath = "history/selection.json"
+const stagedRemoteHeadPath = ".cifrarium-staged-remote-head"
+
 // StageRemoteSnapshots fetches the configured GitHub branch into this local
 // staging checkout and copies only bounded regular snapshot/catalog blobs into
 // the provider layout. It never checks out repository files or writes remotely.
@@ -48,11 +52,11 @@ func (g Git) StageRemoteSnapshots(ctx context.Context) error {
 	if head == "" {
 		return fmt.Errorf("private GitHub provider has no snapshot history")
 	}
-	tree, err := g.outputRecoveryLimited(ctx, 1<<20, "ls-tree", "-r", "-z", head, "--", "objects", "catalog")
+	tree, err := g.outputRecoveryLimited(ctx, 1<<20, "ls-tree", "-r", "-z", head, "--", "objects", "catalog", "history")
 	if err != nil {
 		return fmt.Errorf("list remote snapshot history: %w", err)
 	}
-	entries, err := parseRecoveryTree(tree)
+	entries, markerOID, err := parseRecoveryTreeWithSelection(tree)
 	if err != nil {
 		return err
 	}
@@ -76,7 +80,166 @@ func (g Git) StageRemoteSnapshots(ctx context.Context) error {
 			}
 		}
 	}
+	if markerOID != "" {
+		marker, size, err := g.readBlobLimited(ctx, markerOID, limits.MaxManifestBytes)
+		if err != nil || int64(len(marker)) != size {
+			return fmt.Errorf("read remote history selection: invalid bounded marker")
+		}
+		if total > maxRecoveryBytes-size {
+			return fmt.Errorf("remote snapshot history exceeds recovery limits")
+		}
+		if err := writeProviderFileLimited(g.Dir, historySelectionPath, marker, limits.MaxManifestBytes); err != nil {
+			return fmt.Errorf("stage remote history selection: %w", err)
+		}
+	}
+	if err := writeProviderFileLimited(g.Dir, stagedRemoteHeadPath, []byte(head), 128); err != nil {
+		return fmt.Errorf("record remote history revision: %w", err)
+	}
 	return nil
+}
+
+// DownloadHistorySelection returns the staged encrypted selection marker, if
+// present. The marker is opaque here and is authenticated by the store layer.
+func (g Git) DownloadHistorySelection(context.Context) ([]byte, error) {
+	data, err := readProviderFileLimited(g.Dir, filepath.FromSlash(historySelectionPath), limits.MaxManifestBytes)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := limits.CheckBytes(len(data), limits.MaxManifestBytes); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// ReadRemoteHistorySelection reads the current encrypted marker together with
+// the commit that protects it from a concurrent provider update.
+func (g Git) ReadRemoteHistorySelection(ctx context.Context) ([]byte, string, error) {
+	_, revision, err := g.remoteHead(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if revision == "" {
+		return nil, "", nil
+	}
+	mode, kind, oid, exists, err := g.remoteTreeEntry(ctx, revision, historySelectionPath)
+	if err != nil {
+		return nil, "", err
+	}
+	if !exists {
+		return nil, revision, nil
+	}
+	if mode != "100644" || kind != "blob" || !validGitObjectID(oid) {
+		return nil, "", fmt.Errorf("remote history marker is not a regular file")
+	}
+	marker, _, err := g.readBlobLimited(ctx, oid, limits.MaxManifestBytes)
+	if err != nil {
+		return nil, "", err
+	}
+	return marker, revision, nil
+}
+
+// UploadHistorySelection writes only the encrypted marker and pushes a
+// fast-forward commit based on the exact revision staged by this instance.
+func (g Git) UploadHistorySelection(ctx context.Context, marker []byte) error {
+	if err := limits.CheckBytes(len(marker), limits.MaxManifestBytes); err != nil {
+		return err
+	}
+	parentBytes, err := readProviderFileLimited(g.Dir, stagedRemoteHeadPath, 128)
+	if err != nil || !validGitObjectID(strings.TrimSpace(string(parentBytes))) {
+		return fmt.Errorf("history selection requires a staged remote revision")
+	}
+	parent := strings.TrimSpace(string(parentBytes))
+	_, currentParent, err := g.remoteHead(ctx)
+	if err != nil {
+		return err
+	}
+	if parent != currentParent {
+		return fmt.Errorf("remote provider changed after history inspection; inspect again")
+	}
+	if err := g.VerifyPrivate(ctx); err != nil {
+		return fmt.Errorf("privacy verification before history selection failed: %w", err)
+	}
+	return g.uploadRemoteObjectsExpected(ctx, "select canonical backup history", parent, gitObject{historySelectionPath, marker})
+}
+
+// UploadSnapshotWithHistorySelection atomically publishes the encrypted
+// snapshot, signed catalog, and advanced encrypted marker on one commit.
+func (g Git) UploadSnapshotWithHistorySelection(ctx context.Context, id string, ciphertext, manifest, marker []byte, expectedRevision string) error {
+	if err := g.Ensure(ctx); err != nil {
+		return err
+	}
+	if err := validateID(id); err != nil {
+		return err
+	}
+	if err := limits.CheckBytes(len(ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
+		return err
+	}
+	if err := limits.CheckBytes(len(manifest), limits.MaxManifestBytes); err != nil {
+		return err
+	}
+	if err := limits.CheckBytes(len(marker), limits.MaxManifestBytes); err != nil {
+		return err
+	}
+	if !validGitObjectID(expectedRevision) {
+		return fmt.Errorf("canonical snapshot upload requires a verified remote revision")
+	}
+	if err := g.VerifyPrivate(ctx); err != nil {
+		return fmt.Errorf("privacy verification before canonical snapshot upload failed: %w", err)
+	}
+	objects := []gitObject{
+		{filepath.ToSlash(filepath.Join("objects", id)), ciphertext},
+		{filepath.ToSlash(filepath.Join("catalog", id+".json")), manifest},
+		{historySelectionPath, marker},
+	}
+	if err := g.uploadRemoteObjectsExpected(ctx, "snapshot "+id, expectedRevision, objects...); err != nil {
+		return err
+	}
+	for _, object := range objects {
+		max := int64(limits.MaxSnapshotCipherBytes)
+		if strings.HasPrefix(object.path, "catalog/") || object.path == historySelectionPath {
+			max = limits.MaxManifestBytes
+		}
+		if err := writeProviderFileLimited(g.Dir, object.path, object.data, max); err != nil {
+			return fmt.Errorf("provider accepted canonical snapshot but local checkout update failed; retry upload to repair it: %w", err)
+		}
+	}
+	return nil
+}
+
+func (g Git) uploadRemoteObjectsExpected(ctx context.Context, message, expectedParent string, objects ...gitObject) error {
+	_, currentParent, err := g.remoteHead(ctx)
+	if err != nil {
+		return err
+	}
+	if currentParent != expectedParent {
+		return fmt.Errorf("remote provider changed during history operation; inspect again")
+	}
+	indexPath, cleanup, err := g.newUploadIndex(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	hashes := make([]string, len(objects))
+	for i, object := range objects {
+		cmd, closeCommand, err := g.commandAtDir(ctx, "git", "hash-object", "-w", "--stdin")
+		if err != nil {
+			return err
+		}
+		cmd.Stdin = bytes.NewReader(object.data)
+		hash, runErr := cmd.Output()
+		closeCommand()
+		if runErr != nil {
+			return runErr
+		}
+		hashes[i] = strings.TrimSpace(string(hash))
+		if !validGitObjectID(hashes[i]) {
+			return fmt.Errorf("invalid provider object hash")
+		}
+	}
+	return g.commitAndPushRemoteAt(ctx, indexPath, message, objects, hashes, expectedParent)
 }
 
 func (g Git) checkRecoveryRepositorySize(ctx context.Context) error {
@@ -186,8 +349,20 @@ func (b *recoveryOutputBuffer) Write(p []byte) (int, error) {
 }
 
 func parseRecoveryTree(raw []byte) ([]remoteSnapshotEntry, error) {
+	entries, marker, err := parseRecoveryTreeWithSelection(raw)
+	if err != nil {
+		return nil, err
+	}
+	if marker != "" {
+		return nil, fmt.Errorf("remote provider contains an unexpected history selection")
+	}
+	return entries, nil
+}
+
+func parseRecoveryTreeWithSelection(raw []byte) ([]remoteSnapshotEntry, string, error) {
 	byID := make(map[string]*remoteSnapshotEntry)
 	seenPaths := make(map[string]struct{})
+	markerOID := ""
 	for _, record := range strings.Split(string(raw), "\x00") {
 		if record == "" {
 			continue
@@ -195,41 +370,44 @@ func parseRecoveryTree(raw []byte) ([]remoteSnapshotEntry, error) {
 		metadata, path, ok := strings.Cut(record, "\t")
 		fields := strings.Fields(metadata)
 		if !ok || len(fields) != 3 || fields[0] != "100644" || fields[1] != "blob" || !validGitObjectID(fields[2]) {
-			return nil, fmt.Errorf("remote provider contains an unsafe snapshot entry")
+			return nil, "", fmt.Errorf("remote provider contains an unsafe snapshot entry")
 		}
 		if _, duplicate := seenPaths[path]; duplicate {
-			return nil, fmt.Errorf("remote provider contains a duplicate snapshot entry")
+			return nil, "", fmt.Errorf("remote provider contains a duplicate snapshot entry")
 		}
 		seenPaths[path] = struct{}{}
 		var id string
 		var object, catalog bool
 		switch {
+		case path == historySelectionPath:
+			markerOID = fields[2]
+			continue
 		case strings.HasPrefix(path, "objects/"):
 			id, object = strings.TrimPrefix(path, "objects/"), true
 		case strings.HasPrefix(path, "catalog/") && strings.HasSuffix(path, ".json"):
 			id, catalog = strings.TrimSuffix(strings.TrimPrefix(path, "catalog/"), ".json"), true
 		default:
-			return nil, fmt.Errorf("remote provider contains a path outside snapshot storage")
+			return nil, "", fmt.Errorf("remote provider contains a path outside snapshot storage")
 		}
 		if !validSnapshotID(id) {
-			return nil, fmt.Errorf("remote provider contains an invalid snapshot identifier")
+			return nil, "", fmt.Errorf("remote provider contains an invalid snapshot identifier")
 		}
 		entry := byID[id]
 		if entry == nil {
 			if len(byID) >= maxRecoverySnapshots {
-				return nil, fmt.Errorf("remote snapshot history exceeds the supported depth")
+				return nil, "", fmt.Errorf("remote snapshot history exceeds the supported depth")
 			}
 			entry = &remoteSnapshotEntry{id: id}
 			byID[id] = entry
 		}
 		if object {
 			if entry.objectOID != "" {
-				return nil, fmt.Errorf("remote provider contains duplicate snapshots")
+				return nil, "", fmt.Errorf("remote provider contains duplicate snapshots")
 			}
 			entry.objectOID = fields[2]
 		} else if catalog {
 			if entry.catalogOID != "" {
-				return nil, fmt.Errorf("remote provider contains duplicate catalog entries")
+				return nil, "", fmt.Errorf("remote provider contains duplicate catalog entries")
 			}
 			entry.catalogOID = fields[2]
 		}
@@ -237,12 +415,12 @@ func parseRecoveryTree(raw []byte) ([]remoteSnapshotEntry, error) {
 	entries := make([]remoteSnapshotEntry, 0, len(byID))
 	for _, entry := range byID {
 		if entry.objectOID == "" || entry.catalogOID == "" {
-			return nil, fmt.Errorf("remote provider snapshot or catalog is missing")
+			return nil, "", fmt.Errorf("remote provider snapshot or catalog is missing")
 		}
 		entries = append(entries, *entry)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].id < entries[j].id })
-	return entries, nil
+	return entries, markerOID, nil
 }
 
 func validSnapshotID(id string) bool {

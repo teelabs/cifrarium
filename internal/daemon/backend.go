@@ -147,7 +147,7 @@ func (b *Backend) RestoreFiles(ctx context.Context, request FileRestoreRequest) 
 		guard = b.Vault.Guard
 	}
 	commit := func() error {
-		return store.InstallVerifiedHistoryWithCommit(b.Vault.Root, history, b.Operational, b.Signing, guard, func() error {
+		return store.InstallVerifiedHistoryWithCommitUnderLock(b.Vault.Root, history, b.Operational, b.Signing, guard, func() error {
 			_, err := store.OpenWithGuard(b.Vault.Root, b.Operational, b.Signing, guard)
 			return err
 		})

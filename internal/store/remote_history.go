@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/teelabs/cifrarium/internal/limits"
@@ -40,111 +42,128 @@ type VerifiedHistory struct {
 	verified bool
 }
 
-// VerifyRemoteHistory validates one complete, linear signed chain before
-// returning any decrypted records to the caller.
-func VerifyRemoteHistory(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey) (VerifiedHistory, error) {
-	if len(remote) == 0 || len(remote) > maxRemoteHistorySnapshots {
-		return VerifiedHistory{}, fmt.Errorf("remote snapshot history is empty or exceeds the supported limit")
+// RemoteHistoryInspection contains one fully verified lineage for every tip
+// in the remote object set. Branches are sorted by head identifier.
+type RemoteHistoryInspection struct {
+	Branches []VerifiedHistory
+}
+
+// InspectRemoteHistory verifies every complete lineage in a remote object set.
+// Shared ancestors are retained in each branch; no branch is chosen implicitly.
+func InspectRemoteHistory(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey) (RemoteHistoryInspection, error) {
+	if len(remote) == 0 || len(remote) > maxRemoteHistorySnapshots || len(operational) != 32 || len(signing) != ed25519.PrivateKeySize {
+		return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot history is empty or exceeds the supported limit")
 	}
-	objects := make(map[string]RemoteSnapshot, len(remote))
+	items := make(map[string]VerifiedSnapshot, len(remote))
 	manifests := make(map[string]Manifest, len(remote))
-	previous := make(map[string]bool, len(remote))
+	children := make(map[string]bool, len(remote))
+	vault := New("", operational, signing)
+	public := signing.Public().(ed25519.PublicKey)
 	var total int64
 	for _, item := range remote {
 		if !validHistorySnapshotID(item.ID) {
-			return VerifiedHistory{}, fmt.Errorf("remote provider contains an invalid snapshot identifier")
+			return RemoteHistoryInspection{}, fmt.Errorf("remote provider contains an invalid snapshot identifier")
 		}
-		if _, duplicate := objects[item.ID]; duplicate {
-			return VerifiedHistory{}, fmt.Errorf("remote provider contains duplicate snapshot identifiers")
+		if _, ok := items[item.ID]; ok {
+			return RemoteHistoryInspection{}, fmt.Errorf("remote provider contains duplicate snapshot identifiers")
 		}
 		if err := limits.CheckBytes(len(item.Ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
-			return VerifiedHistory{}, err
+			return RemoteHistoryInspection{}, err
 		}
 		if err := limits.CheckBytes(len(item.Catalog), limits.MaxManifestBytes); err != nil {
-			return VerifiedHistory{}, err
+			return RemoteHistoryInspection{}, err
 		}
 		if total > maxRemoteHistoryBytes-int64(len(item.Ciphertext))-int64(len(item.Catalog)) {
-			return VerifiedHistory{}, fmt.Errorf("remote snapshot history exceeds the recovery size limit")
+			return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot history exceeds the recovery size limit")
 		}
 		total += int64(len(item.Ciphertext)) + int64(len(item.Catalog))
 		manifest, err := OpenManifest(item.Catalog, operational)
 		if err != nil || manifest.Snapshot != item.ID {
-			return VerifiedHistory{}, fmt.Errorf("remote snapshot catalog is invalid")
+			return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot catalog is invalid")
+		}
+		if err := vault.VerifySnapshot(manifest, item.Ciphertext, public); err != nil {
+			return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot signature or hash verification failed")
+		}
+		records, err := vault.RecordsFromCiphertext(item.Ciphertext)
+		if err != nil {
+			return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot decryption failed")
 		}
 		if manifest.Previous != "" {
 			if !validHistorySnapshotID(manifest.Previous) {
-				return VerifiedHistory{}, fmt.Errorf("remote snapshot chain contains an invalid link")
+				return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot chain contains an invalid link")
 			}
-			previous[manifest.Previous] = true
+			children[manifest.Previous] = true
 		}
-		objects[item.ID] = item
+		items[item.ID] = VerifiedSnapshot{ID: item.ID, Manifest: manifest, Records: records, Ciphertext: append([]byte(nil), item.Ciphertext...), Catalog: append([]byte(nil), item.Catalog...)}
 		manifests[item.ID] = manifest
 	}
 	var heads []string
-	for id := range objects {
-		if !previous[id] {
+	for id := range items {
+		if !children[id] {
 			heads = append(heads, id)
 		}
 	}
-	if len(heads) != 1 {
+	sort.Strings(heads)
+	if len(heads) == 0 {
+		return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot history contains a loop")
+	}
+	inspection := RemoteHistoryInspection{Branches: make([]VerifiedHistory, 0, len(heads))}
+	covered := make(map[string]bool, len(items))
+	for _, head := range heads {
+		branch := VerifiedHistory{Head: head, Entries: make([]VerifiedSnapshot, 0), verified: true}
+		seen := make(map[string]bool)
+		for current := head; current != ""; current = manifests[current].Previous {
+			if seen[current] {
+				return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot chain contains a loop")
+			}
+			item, ok := items[current]
+			if !ok {
+				return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot chain is incomplete")
+			}
+			seen[current], covered[current] = true, true
+			branch.Entries = append(branch.Entries, item)
+		}
+		inspection.Branches = append(inspection.Branches, branch)
+	}
+	if len(covered) != len(items) {
+		return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot history contains disconnected branches")
+	}
+	return inspection, nil
+}
+
+// VerifyRemoteHistory keeps the legacy single-chain contract and fails closed
+// when more than one verified tip exists.
+func VerifyRemoteHistory(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey) (VerifiedHistory, error) {
+	inspection, err := InspectRemoteHistory(remote, operational, signing)
+	if err != nil {
+		return VerifiedHistory{}, err
+	}
+	if len(inspection.Branches) != 1 {
 		return VerifiedHistory{}, ErrRemoteHistoryForked
 	}
-	head := heads[0]
-	chain := make([]string, 0, len(objects))
-	seen := make(map[string]bool, len(objects))
-	for current := head; current != ""; current = manifests[current].Previous {
-		if seen[current] || len(chain) >= maxRemoteHistorySnapshots {
-			return VerifiedHistory{}, fmt.Errorf("remote snapshot chain contains a loop or exceeds its limit")
-		}
-		if _, ok := objects[current]; !ok {
-			return VerifiedHistory{}, fmt.Errorf("remote snapshot chain is incomplete")
-		}
-		seen[current] = true
-		chain = append(chain, current)
+	return inspection.Branches[0], nil
+}
+
+// VerifyRemoteHistoryWithSelection uses an authenticated encrypted marker to
+// select a branch. Without a marker, only a unique branch is accepted.
+func VerifyRemoteHistoryWithSelection(remote []RemoteSnapshot, marker, operational []byte, signing ed25519.PrivateKey) (VerifiedHistory, error) {
+	if len(marker) == 0 {
+		return VerifyRemoteHistory(remote, operational, signing)
 	}
-	if len(chain) != len(objects) {
-		return VerifiedHistory{}, fmt.Errorf("remote snapshot history contains disconnected branches")
-	}
-	stage, err := os.MkdirTemp("", "cifrarium-recovery-verify-")
+	inspection, err := InspectRemoteHistory(remote, operational, signing)
 	if err != nil {
-		return VerifiedHistory{}, fmt.Errorf("create recovery verification staging area: %w", err)
-	}
-	defer os.RemoveAll(stage)
-	if err := os.Mkdir(filepath.Join(stage, "snapshots"), 0700); err != nil {
 		return VerifiedHistory{}, err
 	}
-	if err := os.Mkdir(filepath.Join(stage, "catalog"), 0700); err != nil {
-		return VerifiedHistory{}, err
+	selection, err := OpenHistorySelection(marker, operational, signing.Public().(ed25519.PublicKey))
+	if err != nil {
+		return VerifiedHistory{}, ErrInvalidHistorySelection
 	}
-	for id, item := range objects {
-		if err := writeHistoryStageFile(filepath.Join(stage, "snapshots", id), item.Ciphertext); err != nil {
-			return VerifiedHistory{}, err
-		}
-		if err := writeHistoryStageFile(filepath.Join(stage, "catalog", id+".json"), item.Catalog); err != nil {
-			return VerifiedHistory{}, err
+	for _, branch := range inspection.Branches {
+		if branch.Head == selection.Head {
+			return branch, nil
 		}
 	}
-	if err := writeHistoryStageFile(filepath.Join(stage, "head.json"), objects[head].Catalog); err != nil {
-		return VerifiedHistory{}, err
-	}
-	vault := New(stage, operational, signing)
-	if err := vault.VerifyChain(head, signing.Public().(ed25519.PublicKey)); err != nil {
-		return VerifiedHistory{}, fmt.Errorf("remote snapshot chain verification failed")
-	}
-	vault.Head = head
-	history := VerifiedHistory{Head: head, Entries: make([]VerifiedSnapshot, 0, len(chain)), verified: true}
-	for _, id := range chain {
-		records, err := vault.Load(id)
-		if err != nil {
-			return VerifiedHistory{}, fmt.Errorf("decrypt verified remote snapshot")
-		}
-		item := objects[id]
-		history.Entries = append(history.Entries, VerifiedSnapshot{
-			ID: id, Manifest: manifests[id], Records: records,
-			Ciphertext: append([]byte(nil), item.Ciphertext...), Catalog: append([]byte(nil), item.Catalog...),
-		})
-	}
-	return history, nil
+	return VerifiedHistory{}, ErrInvalidHistorySelection
 }
 
 // InstallVerifiedHistory copies a verified remote chain into the local vault.
@@ -156,8 +175,36 @@ func InstallVerifiedHistory(root string, history VerifiedHistory, operational []
 // InstallVerifiedHistoryWithCommit keeps its file and head-guard rollback
 // available until the caller's final local validation has succeeded.
 func InstallVerifiedHistoryWithCommit(root string, history VerifiedHistory, operational []byte, signing ed25519.PrivateKey, guard HeadGuard, commit func() error) error {
+	cloned, err := cloneVerifiedHistory(history)
+	if err != nil {
+		return err
+	}
+	history = cloned
 	if !history.verified || history.Head == "" || len(history.Entries) == 0 || history.Entries[0].ID != history.Head {
 		return fmt.Errorf("remote snapshot history was not verified")
+	}
+	return withVaultLock(root, func() error {
+		return installVerifiedHistoryWithCommitLocked(root, history, operational, signing, guard, commit)
+	})
+}
+
+// InstallVerifiedHistoryWithCommitUnderLock is for callers that already hold
+// the vault recovery lock for a larger restore transaction.
+func InstallVerifiedHistoryWithCommitUnderLock(root string, history VerifiedHistory, operational []byte, signing ed25519.PrivateKey, guard HeadGuard, commit func() error) error {
+	cloned, err := cloneVerifiedHistory(history)
+	if err != nil {
+		return err
+	}
+	history = cloned
+	return installVerifiedHistoryWithCommitLocked(root, history, operational, signing, guard, commit)
+}
+
+func installVerifiedHistoryWithCommitLocked(root string, history VerifiedHistory, operational []byte, signing ed25519.PrivateKey, guard HeadGuard, commit func() error) error {
+	if !history.verified || history.Head == "" || len(history.Entries) == 0 || history.Entries[0].ID != history.Head {
+		return fmt.Errorf("remote snapshot history was not verified")
+	}
+	if err := validateVerifiedHistoryContents(history, operational, signing); err != nil {
+		return err
 	}
 	if err := ValidateRoot(root); err != nil {
 		return err
@@ -262,20 +309,91 @@ func InstallVerifiedHistoryWithCommit(root string, history VerifiedHistory, oper
 	return nil
 }
 
-func writeHistoryStageFile(path string, data []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
+func cloneVerifiedHistory(history VerifiedHistory) (VerifiedHistory, error) {
+	if !history.verified || history.Head == "" || len(history.Entries) == 0 || len(history.Entries) > maxRemoteHistorySnapshots || history.Entries[0].ID != history.Head {
+		return VerifiedHistory{}, fmt.Errorf("invalid verified snapshot history")
 	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		return err
+	cloned := VerifiedHistory{Head: history.Head, verified: history.verified, Entries: make([]VerifiedSnapshot, len(history.Entries))}
+	var total, recordsTotal int64
+	seen := make(map[string]bool, len(history.Entries))
+	for i, entry := range history.Entries {
+		if !validHistorySnapshotID(entry.ID) || seen[entry.ID] || entry.ID != entry.Manifest.Snapshot {
+			return VerifiedHistory{}, fmt.Errorf("invalid verified snapshot history")
+		}
+		seen[entry.ID] = true
+		wantPrevious := ""
+		if i+1 < len(history.Entries) {
+			wantPrevious = history.Entries[i+1].ID
+		}
+		if entry.Manifest.Previous != wantPrevious {
+			return VerifiedHistory{}, fmt.Errorf("verified snapshot history is not a complete linear chain")
+		}
+		if err := limits.CheckBytes(len(entry.Ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
+			return VerifiedHistory{}, err
+		}
+		if err := limits.CheckBytes(len(entry.Catalog), limits.MaxManifestBytes); err != nil {
+			return VerifiedHistory{}, err
+		}
+		if err := validateRecords(entry.Records); err != nil {
+			return VerifiedHistory{}, err
+		}
+		for _, record := range entry.Records {
+			recordsTotal += int64(len(record.Path)) + int64(len(record.Data))
+		}
+		if recordsTotal > maxRemoteHistoryBytes {
+			return VerifiedHistory{}, fmt.Errorf("remote snapshot history exceeds the recovery size limit")
+		}
+		total += int64(len(entry.Ciphertext)) + int64(len(entry.Catalog))
+		if total > maxRemoteHistoryBytes {
+			return VerifiedHistory{}, fmt.Errorf("remote snapshot history exceeds the recovery size limit")
+		}
+		entry.Ciphertext = append([]byte(nil), entry.Ciphertext...)
+		entry.Catalog = append([]byte(nil), entry.Catalog...)
+		entry.Records = append([]Record(nil), entry.Records...)
+		for j := range entry.Records {
+			entry.Records[j].Data = append([]byte(nil), entry.Records[j].Data...)
+		}
+		if entry.Manifest.Metadata != nil {
+			metadata := *entry.Manifest.Metadata
+			entry.Manifest.Metadata = &metadata
+		}
+		cloned.Entries[i] = entry
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
+	return cloned, nil
+}
+
+func validateVerifiedHistoryContents(history VerifiedHistory, operational []byte, signing ed25519.PrivateKey) error {
+	if len(history.Entries) > maxRemoteHistorySnapshots || len(operational) != 32 || len(signing) != ed25519.PrivateKeySize {
+		return fmt.Errorf("invalid verified snapshot history")
 	}
-	return file.Close()
+	vault := New("", operational, signing)
+	public := signing.Public().(ed25519.PublicKey)
+	seen := make(map[string]bool, len(history.Entries))
+	for i, entry := range history.Entries {
+		if !validHistorySnapshotID(entry.ID) || seen[entry.ID] || entry.ID != entry.Manifest.Snapshot {
+			return fmt.Errorf("invalid verified snapshot history")
+		}
+		seen[entry.ID] = true
+		manifest, err := OpenManifest(entry.Catalog, operational)
+		if err != nil || !reflect.DeepEqual(manifest, entry.Manifest) {
+			return fmt.Errorf("verified snapshot catalog was modified")
+		}
+		wantPrevious := ""
+		if i+1 < len(history.Entries) {
+			wantPrevious = history.Entries[i+1].ID
+		}
+		if manifest.Previous != wantPrevious {
+			return fmt.Errorf("verified snapshot history is not a complete linear chain")
+		}
+		if err := vault.VerifySnapshot(manifest, entry.Ciphertext, public); err != nil {
+			return fmt.Errorf("verified snapshot content was modified")
+		}
+		records, err := vault.RecordsFromCiphertext(entry.Ciphertext)
+		if err != nil || !reflect.DeepEqual(records, entry.Records) {
+			return fmt.Errorf("verified snapshot records were modified")
+		}
+	}
+	return nil
 }
 
 func validHistorySnapshotID(id string) bool {

@@ -69,6 +69,7 @@ credentials. It is sufficient to check whether required variables are present.
 | `recovery shares` | Secret creation/display | Human-only by default; never capture output |
 | `recovery import` | Keyring mutation and integrity-sensitive | Require explicit human confirmation and two supplied shares |
 | `restore` | Local file, vault, keyring, and provider configuration mutation after read-only remote fetch | TTY-only; require final confirmation; shares come only from hidden terminal input; daemon stays disabled |
+| `restore history` | Authenticated remote history selection and local vault fast-forward | TTY-only on a trusted machine; requires existing vault/keyring, branches containing the local head, and a final confirmation; preserves all remote branches |
 | `migrate-catalog` | Local data migration | Require explicit confirmation and backup/rollback plan |
 | `daemon` | Persistent process and remote-capable | Require explicit confirmation before activation |
 | `snapshot.plan` | Read-only MCP plan | May inspect; does not perform upload |

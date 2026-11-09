@@ -127,6 +127,21 @@ func main() {
 		}
 		return
 	}
+	if cmd == "restore-history" {
+		if format != outputHuman {
+			fmt.Fprintln(os.Stderr, "cifrarium: restore history is interactive and supports human output only")
+			os.Exit(2)
+		}
+		if len(recoveryValues) != 0 {
+			fmt.Fprintln(os.Stderr, "cifrarium: restore history never accepts recovery shares as command-line arguments")
+			os.Exit(2)
+		}
+		if err := runHistoryReconcile(home, *root, *providerDir, *providerRemote, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if cmd == "provider-health" {
 		if *providerDir == "" || *providerRemote == "" {
 			fmt.Fprintln(os.Stderr, "cifrarium: provider-health requires -provider-dir and -provider-remote")
@@ -463,6 +478,14 @@ func canonicalCommand(args []string) (string, []string, error) {
 			return "", nil, fmt.Errorf("unknown snapshot command %q", args[1])
 		}
 		return "snapshot", append([]string{}, args[1:]...), nil
+	case "restore":
+		if len(args) >= 2 && args[1] == "history" {
+			return "restore-history", append([]string{}, args[2:]...), nil
+		}
+		if len(args) > 1 {
+			return "", nil, fmt.Errorf("unknown restore command %q", args[1])
+		}
+		return "restore", append([]string{}, args[1:]...), nil
 	case "provider":
 		if len(args) < 2 {
 			return "", nil, fmt.Errorf("provider requires setup or health")
@@ -495,7 +518,7 @@ func canonicalCommand(args []string) (string, []string, error) {
 			return "", nil, fmt.Errorf("unknown daemon command %q", args[1])
 		}
 		return "daemon", append([]string{}, args[1:]...), nil
-	case "status", "doctor", "setup", "restore", "migrate-catalog":
+	case "status", "doctor", "setup", "migrate-catalog":
 		return args[0], append([]string{}, args[1:]...), nil
 	case "help":
 		return "help", append([]string{}, args[1:]...), nil
@@ -511,6 +534,7 @@ func writeCifrariumUsage(w io.Writer, fs *flag.FlagSet, program string) {
 	fmt.Fprintln(w, "  doctor                  Run a read-only installation diagnostic")
 	fmt.Fprintln(w, "  setup                   Configure the local vault")
 	fmt.Fprintln(w, "  restore                 Recover selected files from a private GitHub backup")
+	fmt.Fprintln(w, "  restore history         Verify and interactively select a canonical remote branch")
 	fmt.Fprintln(w, "  snapshot                Capture a local encrypted snapshot")
 	fmt.Fprintln(w, "  snapshot audit          Compare adapter files with the latest verified snapshot")
 	fmt.Fprintln(w, "  daemon                  Run the user daemon")
@@ -538,7 +562,7 @@ func parseOutputFormat(value string) (outputFormat, error) {
 
 func commandMutatesOrHandlesSecrets(command string) bool {
 	switch command {
-	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "restore", "migrate-catalog", "daemon", "daemon-refresh":
+	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "restore", "restore-history", "migrate-catalog", "daemon", "daemon-refresh":
 		return true
 	default:
 		return false
