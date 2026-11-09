@@ -356,7 +356,9 @@ cifrarium restore
 
 The command asks for the private GitHub remote when it is not configured and
 reads two distinct recovery shares without echo when the keyring is missing.
-It stages the remote history locally, verifies its signatures and hashes, then
+It stages the remote history locally, searches older reachable provider
+commits for any required snapshots missing from the current backup view, and
+verifies the complete history's signatures and hashes before it
 lets you choose the newest snapshot (default) or another verified snapshot,
 and select adapters or individual files. Destination conflicts offer
 overwrite, keep, cancel, and an optional terminal-only diff. Existing files
@@ -371,7 +373,11 @@ JSON output. It does not upload to GitHub. On a new machine, the provider branch
 is the freshness anchor: Cifrarium cannot detect a valid older signed history
 if the remote branch itself was rolled back. A valid signed chain is still
 required. If recovery fails, preserve local files and investigate; do not force
-an import. If the remote history has multiple branches or no unique head,
+an import. The search reads only and does not repair or write to the provider.
+If required snapshots cannot be found in the available provider history,
+Cifrarium explains that it could not find all required versions, suggests trying
+another valid backup copy, and stops before writing local recovery state. If the
+remote history has multiple branches or no unique head,
 restore stops before writing local recovery state. On a trusted machine whose
 verified vault and keyring are available, with its daemon stopped, run
 `cifrarium restore history` to inspect the signed branches and select one that

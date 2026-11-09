@@ -22,6 +22,13 @@ type CanonicalHistoryProvider interface {
 	UploadHistorySelection(ctx context.Context, marker []byte) error
 }
 
+// HistoricalSnapshotStager can recover exact snapshot IDs referenced by a
+// verified catalog from commits reachable from the provider's configured
+// default branch. Implementations stage data locally and never write remotely.
+type HistoricalSnapshotStager interface {
+	StageHistoricalSnapshots(ctx context.Context, ids []string) (bool, error)
+}
+
 // CanonicalSnapshotProvider atomically advances a selected history marker with
 // the new encrypted snapshot, guarded by the remote revision that was read.
 type CanonicalSnapshotProvider interface {

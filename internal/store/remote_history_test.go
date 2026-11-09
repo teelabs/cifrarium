@@ -96,6 +96,74 @@ func TestInspectRemoteHistoryVerifiesEachForkedBranch(t *testing.T) {
 	}
 }
 
+func TestInspectRemoteHistoryWithResolverLoadsEachMissingAncestorOnce(t *testing.T) {
+	op, signing, err := GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := New(t.TempDir(), op, signing)
+	var chain []RemoteSnapshot
+	for _, content := range []string{"root", "middle", "tip"} {
+		result, err := vault.SaveIfChanged([]Record{{Path: ".zshrc", Data: []byte(content), Mode: 0600}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		chain = append(chain, RemoteSnapshot{ID: result.Manifest.Snapshot, Ciphertext: result.Ciphertext, Catalog: result.ManifestBytes})
+	}
+	byID := make(map[string]RemoteSnapshot, 2)
+	byID[chain[0].ID], byID[chain[1].ID] = chain[0], chain[1]
+	calls := make(map[string]int)
+	inspection, err := InspectRemoteHistoryWithResolver(chain[2:], op, signing, func(id string) (RemoteSnapshot, bool, error) {
+		calls[id]++
+		item, ok := byID[id]
+		return item, ok, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inspection.Branches) != 1 || inspection.Branches[0].Head != chain[2].ID || len(inspection.Branches[0].Entries) != 3 {
+		t.Fatalf("inspection=%+v; want complete three-snapshot chain", inspection)
+	}
+	if calls[chain[1].ID] != 1 || calls[chain[0].ID] != 1 || len(calls) != 2 {
+		t.Fatalf("resolver calls=%v; want each missing ancestor exactly once", calls)
+	}
+}
+
+func TestInspectRemoteHistoryWithResolverReturnsSafeMissingAncestorError(t *testing.T) {
+	op, signing, err := GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := New(t.TempDir(), op, signing)
+	first, err := vault.SaveIfChanged([]Record{{Path: ".zshrc", Data: []byte("first"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := vault.SaveIfChanged([]Record{{Path: ".zshrc", Data: []byte("second"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = InspectRemoteHistoryWithResolver([]RemoteSnapshot{{ID: second.Manifest.Snapshot, Ciphertext: second.Ciphertext, Catalog: second.ManifestBytes}}, op, signing, func(string) (RemoteSnapshot, bool, error) {
+		return RemoteSnapshot{}, false, nil
+	})
+	var missing *MissingHistorySnapshotsError
+	if !errors.As(err, &missing) || len(missing.SnapshotIDs) != 1 || missing.SnapshotIDs[0] != first.Manifest.Snapshot {
+		t.Fatalf("error=%v missing=%+v; want generic incomplete-history error with requested ancestor available internally", err, missing)
+	}
+	if strings.Contains(err.Error(), first.Manifest.Snapshot) {
+		t.Fatal("missing snapshot identifier leaked in error text")
+	}
+}
+
+func TestRemoteHistorySnapshotCountLimit(t *testing.T) {
+	if err := checkRemoteHistorySnapshotCount(maxRemoteHistorySnapshots - 1); err != nil {
+		t.Fatalf("count below limit rejected: %v", err)
+	}
+	if err := checkRemoteHistorySnapshotCount(maxRemoteHistorySnapshots); err == nil || !strings.Contains(err.Error(), "supported limit") {
+		t.Fatalf("count at limit error=%v; want supported-limit error", err)
+	}
+}
+
 func TestCanonicalHistorySelectionIsEncryptedAndAuthenticated(t *testing.T) {
 	op, signing, err := GenerateKeyMaterial()
 	if err != nil {

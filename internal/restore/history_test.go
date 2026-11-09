@@ -9,9 +9,11 @@ import (
 )
 
 type historyProvider struct {
-	objects   map[string][]byte
-	catalogs  map[string][]byte
-	selection []byte
+	objects    map[string][]byte
+	catalogs   map[string][]byte
+	selection  []byte
+	ancestors  map[string]store.RemoteSnapshot
+	stageCalls int
 }
 
 func (p *historyProvider) Upload(context.Context, string, []byte) error        { return nil }
@@ -30,6 +32,20 @@ func (p *historyProvider) List(context.Context) ([]string, error) {
 	return ids, nil
 }
 func (p *historyProvider) Health(context.Context) error { return nil }
+func (p *historyProvider) StageHistoricalSnapshots(_ context.Context, ids []string) (bool, error) {
+	p.stageCalls++
+	staged := false
+	for _, id := range ids {
+		item, ok := p.ancestors[id]
+		if !ok {
+			return false, nil
+		}
+		p.objects[id] = append([]byte(nil), item.Ciphertext...)
+		p.catalogs[id] = append([]byte(nil), item.Catalog...)
+		staged = true
+	}
+	return staged, nil
+}
 func (p *historyProvider) DownloadHistorySelection(context.Context) ([]byte, error) {
 	return append([]byte(nil), p.selection...), nil
 }
@@ -62,6 +78,37 @@ func TestVerifyRemoteHistoryReturnsNewestVerifiedChain(t *testing.T) {
 	}
 	if string(history.Entries[0].Records[0].Data) != "two\n" {
 		t.Fatalf("latest data=%q", history.Entries[0].Records[0].Data)
+	}
+}
+
+func TestVerifyRemoteHistoryResolvesMissingAncestorThroughStager(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := store.New(t.TempDir(), op, signing)
+	first, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("base\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("tip\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &historyProvider{
+		objects:   map[string][]byte{second.Manifest.Snapshot: second.Ciphertext},
+		catalogs:  map[string][]byte{second.Manifest.Snapshot: second.ManifestBytes},
+		ancestors: map[string]store.RemoteSnapshot{first.Manifest.Snapshot: {ID: first.Manifest.Snapshot, Ciphertext: first.Ciphertext, Catalog: first.ManifestBytes}},
+	}
+	history, err := VerifyRemoteHistory(context.Background(), remote, op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if history.Head != second.Manifest.Snapshot || len(history.Entries) != 2 || history.Entries[1].ID != first.Manifest.Snapshot {
+		t.Fatalf("history=%+v; want tip and recovered base", history)
+	}
+	if remote.stageCalls != 1 {
+		t.Fatalf("historical stage calls=%d; want exactly one", remote.stageCalls)
 	}
 }
 

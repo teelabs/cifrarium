@@ -285,7 +285,14 @@ remains planning only. The provider branch is the new machine's freshness
 anchor; a valid older signed history after branch rollback cannot be detected.
 If remote history has multiple branches or no unique head, restore stops
 without writing local recovery state; preserve the provider and do not choose
-or edit catalog entries manually.
+or edit catalog entries manually. When a required ancestor is missing from the
+current provider tree, Cifrarium searches reachable commits on the configured
+default branch and stages only the exact missing encrypted snapshot/catalog
+pairs. This is a read-only remote operation; recovered objects remain in
+temporary staging until the full chain is verified. If an ancestor is not
+available in reachable provider history, restore stops with no local recovery
+state written. The operator should use another valid backup copy; they should
+not need to inspect or repair Git history manually.
 
 ### 5.7 Migrate a legacy catalog
 

@@ -20,18 +20,14 @@ func InspectRemoteHistory(ctx context.Context, source provider.Provider, operati
 	if err != nil {
 		return HistoryInspection{}, nil, err
 	}
-	inspection, err := store.InspectRemoteHistory(remote, operational, signing)
+	resolver := historicalSnapshotResolver(ctx, source)
+	inspection, err := store.InspectRemoteHistoryWithResolver(remote, operational, signing, resolver)
 	if err != nil {
 		return HistoryInspection{}, nil, err
 	}
-	var marker []byte
-	if marked, ok := source.(interface {
-		DownloadHistorySelection(context.Context) ([]byte, error)
-	}); ok {
-		marker, err = marked.DownloadHistorySelection(ctx)
-		if err != nil {
-			return HistoryInspection{}, nil, fmt.Errorf("read remote history selection: %w", err)
-		}
+	marker, err := downloadHistorySelection(ctx, source)
+	if err != nil {
+		return HistoryInspection{}, nil, err
 	}
 	return inspection, marker, nil
 }
@@ -43,16 +39,49 @@ func VerifyRemoteHistory(ctx context.Context, source provider.Provider, operatio
 	if err != nil {
 		return VerifiedHistory{}, err
 	}
-	var marker []byte
+	marker, err := downloadHistorySelection(ctx, source)
+	if err != nil {
+		return VerifiedHistory{}, err
+	}
+	return store.VerifyRemoteHistoryWithSelectionResolver(remote, marker, operational, signing, historicalSnapshotResolver(ctx, source))
+}
+
+func historicalSnapshotResolver(ctx context.Context, source provider.Provider) store.RemoteSnapshotResolver {
+	stager, ok := source.(provider.HistoricalSnapshotStager)
+	if !ok {
+		return nil
+	}
+	return func(id string) (store.RemoteSnapshot, bool, error) {
+		staged, err := stager.StageHistoricalSnapshots(ctx, []string{id})
+		if err != nil {
+			return store.RemoteSnapshot{}, false, fmt.Errorf("recover missing remote snapshot history: %w", err)
+		}
+		if !staged {
+			return store.RemoteSnapshot{}, false, nil
+		}
+		ciphertext, err := source.Download(ctx, id)
+		if err != nil {
+			return store.RemoteSnapshot{}, false, fmt.Errorf("download recovered remote snapshot: %w", err)
+		}
+		catalog, err := source.DownloadCatalog(ctx, id)
+		if err != nil {
+			return store.RemoteSnapshot{}, false, fmt.Errorf("download recovered remote catalog: %w", err)
+		}
+		return store.RemoteSnapshot{ID: id, Ciphertext: ciphertext, Catalog: catalog}, true, nil
+	}
+}
+
+func downloadHistorySelection(ctx context.Context, source provider.Provider) ([]byte, error) {
 	if marked, ok := source.(interface {
 		DownloadHistorySelection(context.Context) ([]byte, error)
 	}); ok {
-		marker, err = marked.DownloadHistorySelection(ctx)
+		marker, err := marked.DownloadHistorySelection(ctx)
 		if err != nil {
-			return VerifiedHistory{}, fmt.Errorf("read remote history selection: %w", err)
+			return nil, fmt.Errorf("read remote history selection: %w", err)
 		}
+		return marker, nil
 	}
-	return store.VerifyRemoteHistoryWithSelection(remote, marker, operational, signing)
+	return nil, nil
 }
 
 func downloadHistory(ctx context.Context, source provider.Provider) ([]store.RemoteSnapshot, error) {
