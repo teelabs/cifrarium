@@ -399,7 +399,7 @@ func runHistoryReconcile(home, rootOverride, providerDir, remote string, output 
 	}
 	inspection, marker, err := restore.InspectRemoteHistory(context.Background(), gitProvider, op, signing)
 	if err != nil {
-		return fmt.Errorf("remote history inspection failed; no state was changed")
+		return restoreHistoryVerificationError(err)
 	}
 	branches := make([]store.VerifiedHistory, 0, len(inspection.Branches))
 	for _, branch := range inspection.Branches {
@@ -473,6 +473,10 @@ func runHistoryReconcile(home, rootOverride, providerDir, remote string, output 
 func restoreHistoryVerificationError(err error) error {
 	if errors.Is(err, store.ErrRemoteHistoryForked) {
 		return fmt.Errorf("backup history has multiple branches or no unique head; no local recovery state was written")
+	}
+	var missing *store.MissingHistorySnapshotsError
+	if errors.As(err, &missing) {
+		return fmt.Errorf("Cifrarium could not find all required versions in the available backup history. No local recovery state was written. Try another valid backup copy.")
 	}
 	return fmt.Errorf("backup history verification failed; no local recovery state was written")
 }

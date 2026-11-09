@@ -4,6 +4,14 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-09
+
+### Fixed
+
+- Restore required ancestor snapshots from commits reachable on the configured
+  private provider branch when they are absent from its current tree, without
+  writing recovered objects back to the provider.
+
 ## [0.14.0] - 2026-11-09
 
 ### Added

@@ -48,9 +48,30 @@ type RemoteHistoryInspection struct {
 	Branches []VerifiedHistory
 }
 
+// MissingHistorySnapshotsError reports encrypted snapshot IDs referenced by a
+// verified catalog but absent from the supplied remote object set. IDs are
+// available only to internal recovery code; Error intentionally stays generic.
+type MissingHistorySnapshotsError struct {
+	SnapshotIDs []string
+}
+
+func (e *MissingHistorySnapshotsError) Error() string {
+	return "remote snapshot chain is incomplete"
+}
+
+// RemoteSnapshotResolver loads one specifically requested, previously absent
+// ancestor. The returned boolean is false when the provider cannot supply it.
+type RemoteSnapshotResolver func(id string) (RemoteSnapshot, bool, error)
+
 // InspectRemoteHistory verifies every complete lineage in a remote object set.
 // Shared ancestors are retained in each branch; no branch is chosen implicitly.
 func InspectRemoteHistory(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey) (RemoteHistoryInspection, error) {
+	return InspectRemoteHistoryWithResolver(remote, operational, signing, nil)
+}
+
+// InspectRemoteHistoryWithResolver verifies each supplied snapshot once and
+// resolves only missing ancestors as the graph traversal reaches them.
+func InspectRemoteHistoryWithResolver(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey, resolve RemoteSnapshotResolver) (RemoteHistoryInspection, error) {
 	if len(remote) == 0 || len(remote) > maxRemoteHistorySnapshots || len(operational) != 32 || len(signing) != ed25519.PrivateKeySize {
 		return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot history is empty or exceeds the supported limit")
 	}
@@ -60,42 +81,51 @@ func InspectRemoteHistory(remote []RemoteSnapshot, operational []byte, signing e
 	vault := New("", operational, signing)
 	public := signing.Public().(ed25519.PublicKey)
 	var total int64
-	for _, item := range remote {
+	addSnapshot := func(item RemoteSnapshot) error {
+		if err := checkRemoteHistorySnapshotCount(len(items)); err != nil {
+			return err
+		}
 		if !validHistorySnapshotID(item.ID) {
-			return RemoteHistoryInspection{}, fmt.Errorf("remote provider contains an invalid snapshot identifier")
+			return fmt.Errorf("remote provider contains an invalid snapshot identifier")
 		}
 		if _, ok := items[item.ID]; ok {
-			return RemoteHistoryInspection{}, fmt.Errorf("remote provider contains duplicate snapshot identifiers")
+			return fmt.Errorf("remote provider contains duplicate snapshot identifiers")
 		}
 		if err := limits.CheckBytes(len(item.Ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
-			return RemoteHistoryInspection{}, err
+			return err
 		}
 		if err := limits.CheckBytes(len(item.Catalog), limits.MaxManifestBytes); err != nil {
-			return RemoteHistoryInspection{}, err
+			return err
 		}
 		if total > maxRemoteHistoryBytes-int64(len(item.Ciphertext))-int64(len(item.Catalog)) {
-			return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot history exceeds the recovery size limit")
+			return fmt.Errorf("remote snapshot history exceeds the recovery size limit")
 		}
-		total += int64(len(item.Ciphertext)) + int64(len(item.Catalog))
 		manifest, err := OpenManifest(item.Catalog, operational)
 		if err != nil || manifest.Snapshot != item.ID {
-			return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot catalog is invalid")
+			return fmt.Errorf("remote snapshot catalog is invalid")
 		}
 		if err := vault.VerifySnapshot(manifest, item.Ciphertext, public); err != nil {
-			return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot signature or hash verification failed")
+			return fmt.Errorf("remote snapshot signature or hash verification failed")
 		}
 		records, err := vault.RecordsFromCiphertext(item.Ciphertext)
 		if err != nil {
-			return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot decryption failed")
+			return fmt.Errorf("remote snapshot decryption failed")
 		}
 		if manifest.Previous != "" {
 			if !validHistorySnapshotID(manifest.Previous) {
-				return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot chain contains an invalid link")
+				return fmt.Errorf("remote snapshot chain contains an invalid link")
 			}
 			children[manifest.Previous] = true
 		}
+		total += int64(len(item.Ciphertext)) + int64(len(item.Catalog))
 		items[item.ID] = VerifiedSnapshot{ID: item.ID, Manifest: manifest, Records: records, Ciphertext: append([]byte(nil), item.Ciphertext...), Catalog: append([]byte(nil), item.Catalog...)}
 		manifests[item.ID] = manifest
+		return nil
+	}
+	for _, item := range remote {
+		if err := addSnapshot(item); err != nil {
+			return RemoteHistoryInspection{}, err
+		}
 	}
 	var heads []string
 	for id := range items {
@@ -109,6 +139,7 @@ func InspectRemoteHistory(remote []RemoteSnapshot, operational []byte, signing e
 	}
 	inspection := RemoteHistoryInspection{Branches: make([]VerifiedHistory, 0, len(heads))}
 	covered := make(map[string]bool, len(items))
+	missing := make(map[string]struct{})
 	for _, head := range heads {
 		branch := VerifiedHistory{Head: head, Entries: make([]VerifiedSnapshot, 0), verified: true}
 		seen := make(map[string]bool)
@@ -118,12 +149,38 @@ func InspectRemoteHistory(remote []RemoteSnapshot, operational []byte, signing e
 			}
 			item, ok := items[current]
 			if !ok {
-				return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot chain is incomplete")
+				if resolve == nil {
+					missing[current] = struct{}{}
+					break
+				}
+				resolved, found, err := resolve(current)
+				if err != nil {
+					return RemoteHistoryInspection{}, err
+				}
+				if !found {
+					missing[current] = struct{}{}
+					break
+				}
+				if resolved.ID != current {
+					return RemoteHistoryInspection{}, fmt.Errorf("remote history resolver returned the wrong snapshot")
+				}
+				if err := addSnapshot(resolved); err != nil {
+					return RemoteHistoryInspection{}, err
+				}
+				item = items[current]
 			}
 			seen[current], covered[current] = true, true
 			branch.Entries = append(branch.Entries, item)
 		}
 		inspection.Branches = append(inspection.Branches, branch)
+	}
+	if len(missing) > 0 {
+		ids := make([]string, 0, len(missing))
+		for id := range missing {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		return RemoteHistoryInspection{}, &MissingHistorySnapshotsError{SnapshotIDs: ids}
 	}
 	if len(covered) != len(items) {
 		return RemoteHistoryInspection{}, fmt.Errorf("remote snapshot history contains disconnected branches")
@@ -131,10 +188,23 @@ func InspectRemoteHistory(remote []RemoteSnapshot, operational []byte, signing e
 	return inspection, nil
 }
 
+func checkRemoteHistorySnapshotCount(count int) error {
+	if count >= maxRemoteHistorySnapshots {
+		return fmt.Errorf("remote snapshot history exceeds the supported limit")
+	}
+	return nil
+}
+
 // VerifyRemoteHistory keeps the legacy single-chain contract and fails closed
 // when more than one verified tip exists.
 func VerifyRemoteHistory(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey) (VerifiedHistory, error) {
-	inspection, err := InspectRemoteHistory(remote, operational, signing)
+	return VerifyRemoteHistoryWithResolver(remote, operational, signing, nil)
+}
+
+// VerifyRemoteHistoryWithResolver preserves the unique-head contract while
+// resolving required ancestors during the same verification traversal.
+func VerifyRemoteHistoryWithResolver(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey, resolve RemoteSnapshotResolver) (VerifiedHistory, error) {
+	inspection, err := InspectRemoteHistoryWithResolver(remote, operational, signing, resolve)
 	if err != nil {
 		return VerifiedHistory{}, err
 	}
@@ -147,10 +217,16 @@ func VerifyRemoteHistory(remote []RemoteSnapshot, operational []byte, signing ed
 // VerifyRemoteHistoryWithSelection uses an authenticated encrypted marker to
 // select a branch. Without a marker, only a unique branch is accepted.
 func VerifyRemoteHistoryWithSelection(remote []RemoteSnapshot, marker, operational []byte, signing ed25519.PrivateKey) (VerifiedHistory, error) {
+	return VerifyRemoteHistoryWithSelectionResolver(remote, marker, operational, signing, nil)
+}
+
+// VerifyRemoteHistoryWithSelectionResolver authenticates the selection marker
+// after verifying each history entry once, including lazily recovered ancestors.
+func VerifyRemoteHistoryWithSelectionResolver(remote []RemoteSnapshot, marker, operational []byte, signing ed25519.PrivateKey, resolve RemoteSnapshotResolver) (VerifiedHistory, error) {
 	if len(marker) == 0 {
-		return VerifyRemoteHistory(remote, operational, signing)
+		return VerifyRemoteHistoryWithResolver(remote, operational, signing, resolve)
 	}
-	inspection, err := InspectRemoteHistory(remote, operational, signing)
+	inspection, err := InspectRemoteHistoryWithResolver(remote, operational, signing, resolve)
 	if err != nil {
 		return VerifiedHistory{}, err
 	}
