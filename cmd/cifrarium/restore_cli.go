@@ -26,7 +26,7 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-func runFileRestore(home, rootOverride, providerDir, remote string, output io.Writer) error {
+func runFileRestore(home, rootOverride, providerDir, remote string, output io.Writer) (resultErr error) {
 	if !isTerminalFile(os.Stdin) || !isTerminalFile(os.Stdout) {
 		return fmt.Errorf("cifrarium restore requires an interactive terminal")
 	}
@@ -75,12 +75,18 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 			return fmt.Errorf("existing keyring is unavailable; restore stopped")
 		}
 		freshKeys = true
+		if err := writeRestoreProgress(tty, "Recovering backup keys from the two hidden recovery shares..."); err != nil {
+			return err
+		}
 		first, err := readRecoveryShare(tty, 1)
 		if err != nil {
 			return err
 		}
 		second, err := readRecoveryShare(tty, 2)
 		if err != nil {
+			return err
+		}
+		if err := writeRestoreProgress(tty, "Validating recovery shares and unlocking backup keys..."); err != nil {
 			return err
 		}
 		shares, err := parseRecoveryShares([]string{first, second})
@@ -97,13 +103,12 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 		if err != nil {
 			return fmt.Errorf("recovery shares could not unlock this backup")
 		}
+		if err := writeRestoreProgress(tty, "Recovery shares accepted; continuing with remote backup verification."); err != nil {
+			return err
+		}
 	} else {
 		if savedValues["CIFRARIUM_RECOVERY_SHARE_1"] != "" && savedValues["CIFRARIUM_RECOVERY_SHARE_2"] != "" {
 			shareValues = []string{savedValues["CIFRARIUM_RECOVERY_SHARE_1"], savedValues["CIFRARIUM_RECOVERY_SHARE_2"]}
-			shares, parseErr := parseRecoveryShares(shareValues)
-			if parseErr != nil || !matchesKeyMaterial(op, signing, shares) {
-				return fmt.Errorf("saved recovery shares do not match this vault")
-			}
 		} else {
 			for i := 1; i <= 2; i++ {
 				value, readErr := readRecoveryShare(tty, i)
@@ -112,24 +117,37 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 				}
 				shareValues = append(shareValues, value)
 			}
-			shares, parseErr := parseRecoveryShares(shareValues)
-			if parseErr != nil || !matchesKeyMaterial(op, signing, shares) {
-				return fmt.Errorf("recovery shares do not match this vault")
-			}
+		}
+		if err := validateRestoreRecoveryShares(tty, op, signing, shareValues); err != nil {
+			return err
+		}
+		if err := writeRestoreProgress(tty, "Recovery shares accepted; continuing with remote backup verification."); err != nil {
+			return err
 		}
 	}
 
 	stage, err := os.MkdirTemp("", "cifrarium-restore-provider-")
 	if err != nil {
+		return restoreStagingFailure(err)
+	}
+	defer func() {
+		resultErr = restoreStageCleanupFailure(resultErr, os.RemoveAll(stage))
+	}()
+	gitProvider := provider.Git{Dir: stage, Remote: remote}
+	if err := writeRestoreProgress(tty, "Verifying private GitHub backup access..."); err != nil {
 		return err
 	}
-	defer os.RemoveAll(stage)
-	gitProvider := provider.Git{Dir: stage, Remote: remote}
 	if err := gitProvider.VerifyPrivate(context.Background()); err != nil {
 		return fmt.Errorf("private GitHub provider could not be verified; restore stopped")
 	}
+	if err := writeRestoreProgress(tty, "Staging encrypted backup history from GitHub..."); err != nil {
+		return err
+	}
 	if err := gitProvider.StageRemoteSnapshots(context.Background()); err != nil {
 		return fmt.Errorf("private backup could not be staged or verified")
+	}
+	if err := writeRestoreProgress(tty, "Verifying backup history signatures, integrity, and encryption..."); err != nil {
+		return err
 	}
 	history, err := restore.VerifyRemoteHistory(context.Background(), gitProvider, op, signing)
 	if err != nil {
@@ -208,9 +226,12 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	if len(selected) == 0 {
 		return fmt.Errorf("no files selected")
 	}
+	if err := writeRestoreProgress(tty, "Checking selected files and preparing the local restore plan..."); err != nil {
+		return err
+	}
 	plan, err := restore.BuildFilePlan(home, history, selectedSnapshot.ID, selected)
 	if err != nil {
-		return fmt.Errorf("restore preflight failed: %w", err)
+		return restorePreflightFailure(err)
 	}
 	choices := map[string]restore.ConflictChoice{}
 	for _, item := range plan {
@@ -268,10 +289,19 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	if !promptConfirmation(reader, tty, "Apply selected restore? Replaced files will receive private backups and vault/keyring configuration will be installed.") {
 		return fmt.Errorf("restore cancelled; no local state was changed")
 	}
+	if err := writeRestoreProgress(tty, "Starting the selected restore; checking daemon state and preparing rollback..."); err != nil {
+		return err
+	}
 	if daemonMayBeActive {
 		rollbackConfig, err := prepareRestoreConfiguration(home, root, providerDir, remote, shareValues)
 		if err != nil {
 			return fmt.Errorf("could not prepare protected recovery configuration")
+		}
+		if err := writeRestoreProgress(tty, "Submitting the selected restore to the active daemon..."); err != nil {
+			if rollbackErr := rollbackConfig(); rollbackErr != nil {
+				return fmt.Errorf("could not report daemon restore progress; protected configuration rollback failed")
+			}
+			return err
 		}
 		active, callErr := callDaemonRestore(root, request)
 		if callErr != nil {
@@ -284,12 +314,14 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 			if err := finishDaemonRestore(root); err != nil {
 				return err
 			}
-			fmt.Fprintf(tty, "Recovery completed through the daemon. %d selected files applied; the user daemon is disabled.\n", len(apply))
-			return nil
+			return writeRestoreCompletion(tty, fmt.Sprintf("Recovery completed through the daemon. %d selected files applied; the user daemon is disabled.", len(apply)))
 		}
 		if err := rollbackConfig(); err != nil {
 			return fmt.Errorf("daemon stopped before restore; protected configuration rollback failed")
 		}
+	}
+	if err := writeRestoreProgress(tty, "Applying selected files and saving private rollback copies..."); err != nil {
+		return err
 	}
 	if err := disableUserDaemonForRestore(root); err != nil {
 		return err
@@ -305,10 +337,9 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 		expected = append(expected, store.RestoreDestination{Path: item.Record.Path, Exists: item.Status != restore.PlanNew, Data: item.Current, Mode: item.CurrentMode})
 	}
 	if err := store.RestoreWithVaultLock(apply, expected, home, filepath.Join(root, "backups"), root, commit); err != nil {
-		return fmt.Errorf("restore application failed and was rolled back where possible: %w", err)
+		return restoreApplicationFailure(err)
 	}
-	fmt.Fprintf(tty, "Recovery completed. %d selected files applied; the user daemon remains disabled.\n", len(apply))
-	return nil
+	return writeRestoreCompletion(tty, fmt.Sprintf("Recovery completed. %d selected files applied; the user daemon remains disabled.", len(apply)))
 }
 
 func ensureDaemonInactiveForHistory(root string) error {
@@ -478,7 +509,73 @@ func restoreHistoryVerificationError(err error) error {
 	if errors.As(err, &missing) {
 		return fmt.Errorf("Cifrarium could not find all required versions in the available backup history. No local recovery state was written. Try another valid backup copy.")
 	}
+	if errors.Is(err, store.ErrRemoteSnapshotCatalog) {
+		return fmt.Errorf("backup contains a catalog that failed validation; no local recovery state was written")
+	}
+	if errors.Is(err, store.ErrRemoteSnapshotIntegrity) {
+		return fmt.Errorf("backup contains a snapshot that failed integrity verification; no local recovery state was written")
+	}
+	if errors.Is(err, store.ErrRemoteSnapshotDecryption) {
+		return fmt.Errorf("backup contains a snapshot that could not be decrypted; no local recovery state was written")
+	}
 	return fmt.Errorf("backup history verification failed; no local recovery state was written")
+}
+
+func validateRestoreRecoveryShares(progress io.Writer, op []byte, signing ed25519.PrivateKey, values []string) error {
+	if err := writeRestoreProgress(progress, "Validating recovery shares against the existing vault..."); err != nil {
+		return err
+	}
+	shares, err := parseRecoveryShares(values)
+	if err != nil || !matchesKeyMaterial(op, signing, shares) {
+		return fmt.Errorf("recovery shares do not match this vault")
+	}
+	for i := range shares {
+		shares[i].Value = ""
+	}
+	return nil
+}
+
+func writeRestoreProgress(progress io.Writer, message string) error {
+	if _, err := fmt.Fprintln(progress, message); err != nil {
+		return fmt.Errorf("could not write restore progress to the controlling terminal")
+	}
+	return nil
+}
+
+func writeRestoreCompletion(terminal io.Writer, message string) error {
+	if _, err := fmt.Fprintln(terminal, message); err != nil {
+		return fmt.Errorf("restore completed, but confirmation could not be written to the controlling terminal")
+	}
+	return nil
+}
+
+func writeRecoverySharePrompt(terminal io.Writer, number int) error {
+	if _, err := fmt.Fprintf(terminal, "Recovery share %d (hidden): ", number); err != nil {
+		return fmt.Errorf("could not display the hidden recovery-share prompt")
+	}
+	return nil
+}
+
+func restorePreflightFailure(error) error {
+	return fmt.Errorf("restore preflight failed; no files or vault state were changed")
+}
+
+func restoreApplicationFailure(error) error {
+	return fmt.Errorf("Cifrarium could not complete the restore. Inspect selected files and local vault state before retrying.")
+}
+
+func restoreStagingFailure(error) error {
+	return fmt.Errorf("could not create temporary backup staging area; restore stopped")
+}
+
+func restoreStageCleanupFailure(restoreErr, cleanupErr error) error {
+	if cleanupErr == nil {
+		return restoreErr
+	}
+	if restoreErr == nil {
+		return fmt.Errorf("restore completed, but encrypted backup staging cleanup failed; inspect temporary storage")
+	}
+	return fmt.Errorf("restore failed, and encrypted backup staging cleanup failed; inspect temporary storage before retrying")
 }
 
 func validateDaemonRestoreRequestSize(request daemon.FileRestoreRequest) error {

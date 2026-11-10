@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -34,6 +35,81 @@ func (k *failingRestoreStateKeyring) SaveForRoot(string, []byte, ed25519.Private
 }
 func (k *failingRestoreStateKeyring) DeleteForRoot(string) error { k.saved = false; return nil }
 
+func TestValidateRestoreRecoverySharesReportsProgressWithoutPrintingShares(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := store.RecoveryShares(op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := []string{shares[0].Label + ":" + shares[0].Value, shares[1].Label + ":" + shares[1].Value}
+	var output bytes.Buffer
+	if err := validateRestoreRecoveryShares(&output, op, signing, values); err != nil {
+		t.Fatalf("valid recovery shares rejected: %v", err)
+	}
+	if !strings.Contains(output.String(), "Validating recovery shares") {
+		t.Fatalf("validation progress missing: %q", output.String())
+	}
+	for _, share := range shares {
+		if strings.Contains(output.String(), share.Value) {
+			t.Fatal("recovery share appeared in progress output")
+		}
+	}
+}
+
+func TestRestoreFailureDiagnosticsHideUnderlyingPathsAndErrors(t *testing.T) {
+	unsafe := errors.New("open /home/user/.config/cifrarium/keyring: permission denied")
+	for _, tc := range []struct {
+		name string
+		got  error
+		want string
+	}{
+		{"preflight", restorePreflightFailure(unsafe), "restore preflight failed; no files or vault state were changed"},
+		{"application", restoreApplicationFailure(unsafe), "Cifrarium could not complete the restore. Inspect selected files and local vault state before retrying."},
+		{"staging", restoreStagingFailure(unsafe), "could not create temporary backup staging area; restore stopped"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got.Error() != tc.want || strings.Contains(tc.got.Error(), unsafe.Error()) || strings.Contains(tc.got.Error(), "/home/user") {
+				t.Fatalf("diagnostic = %q, want safe message %q", tc.got, tc.want)
+			}
+		})
+	}
+}
+
+type restoreProgressErrorWriter struct{}
+
+func (restoreProgressErrorWriter) Write([]byte) (int, error) {
+	return 0, errors.New("terminal failure with private detail")
+}
+
+func TestRestoreProgressWriteFailureIsSafeAndStopsProgress(t *testing.T) {
+	err := writeRestoreProgress(restoreProgressErrorWriter{}, "Applying selected files...")
+	if err == nil || err.Error() != "could not write restore progress to the controlling terminal" || strings.Contains(err.Error(), "private detail") {
+		t.Fatalf("progress write error = %v; want safe terminal error", err)
+	}
+}
+
+func TestRestoreCompletionAndSharePromptWriteFailuresAreSanitized(t *testing.T) {
+	if err := writeRestoreCompletion(restoreProgressErrorWriter{}, "Recovery completed."); err == nil || err.Error() != "restore completed, but confirmation could not be written to the controlling terminal" {
+		t.Fatalf("completion write error = %v", err)
+	}
+	if err := writeRecoverySharePrompt(restoreProgressErrorWriter{}, 1); err == nil || err.Error() != "could not display the hidden recovery-share prompt" || strings.Contains(err.Error(), "private detail") {
+		t.Fatalf("share prompt write error = %v", err)
+	}
+}
+
+func TestRestoreStageCleanupFailureReportsOutcomeWithoutPaths(t *testing.T) {
+	cleanupErr := errors.New("remove /tmp/cifrarium-private-stage: permission denied")
+	if got := restoreStageCleanupFailure(nil, cleanupErr).Error(); got != "restore completed, but encrypted backup staging cleanup failed; inspect temporary storage" || strings.Contains(got, "/tmp/") {
+		t.Fatalf("successful restore cleanup diagnostic = %q", got)
+	}
+	if got := restoreStageCleanupFailure(errors.New("restore failed"), cleanupErr).Error(); got != "restore failed, and encrypted backup staging cleanup failed; inspect temporary storage before retrying" || strings.Contains(got, "/tmp/") {
+		t.Fatalf("failed restore cleanup diagnostic = %q", got)
+	}
+}
+
 func TestRestoreDaemonStateFailsClosedForRemainingSocket(t *testing.T) {
 	oldSystemctl, oldMCP, oldBackend := runDaemonRefreshSystemctl, daemonRefreshProbe, daemonRefreshBackendProbe
 	defer func() {
@@ -61,6 +137,19 @@ func TestRestoreHistoryVerificationErrorExplainsForkWithoutDetailLeak(t *testing
 	}
 	if got, want := restoreHistoryVerificationError(errors.New("private object id and path detail")).Error(), "backup history verification failed; no local recovery state was written"; got != want {
 		t.Fatalf("generic diagnostic = %q, want %q", got, want)
+	}
+	for _, tc := range []struct {
+		cause error
+		want  string
+	}{
+		{fmt.Errorf("remote snapshot catalog is invalid: %w", store.ErrRemoteSnapshotCatalog), "backup contains a catalog that failed validation; no local recovery state was written"},
+		{fmt.Errorf("remote snapshot signature or hash verification failed: %w", store.ErrRemoteSnapshotIntegrity), "backup contains a snapshot that failed integrity verification; no local recovery state was written"},
+		{fmt.Errorf("remote snapshot decryption failed: %w", store.ErrRemoteSnapshotDecryption), "backup contains a snapshot that could not be decrypted; no local recovery state was written"},
+	} {
+		got := restoreHistoryVerificationError(tc.cause).Error()
+		if got != tc.want || strings.Contains(got, tc.cause.Error()) {
+			t.Fatalf("diagnostic for %q = %q, want sanitized %q", tc.cause, got, tc.want)
+		}
 	}
 }
 

@@ -4,6 +4,15 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-11-10
+
+### Fixed
+
+- Show safe progress during recovery-share validation, remote backup staging
+  and verification, restore preflight, and file application; classify invalid
+  catalogs and snapshot integrity or decryption failures without exposing raw
+  verification details.
+
 ## [0.14.1] - 2026-11-09
 
 ### Fixed
