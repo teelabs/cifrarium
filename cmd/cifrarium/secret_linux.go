@@ -29,7 +29,7 @@ func readRecoveryShare(tty *os.File, number int) (string, error) {
 		return "", fmt.Errorf("cannot disable terminal echo for recovery input")
 	}
 	defer func() { _ = unix.IoctlSetTermios(fd, unix.TCSETS, original) }()
-	if _, err := fmt.Fprintf(tty, "Recovery share %d (hidden): ", number); err != nil {
+	if err := writeRecoverySharePrompt(tty, number); err != nil {
 		return "", err
 	}
 	value := make([]byte, 0, 512)
@@ -43,7 +43,10 @@ func readRecoveryShare(tty *os.File, number int) (string, error) {
 		switch one[0] {
 		case '\n', '\r':
 			_ = unix.IoctlSetTermios(fd, unix.TCSETS, original)
-			_, _ = fmt.Fprintln(tty)
+			if _, err := fmt.Fprintln(tty); err != nil {
+				clear(value)
+				return "", fmt.Errorf("could not finish hidden recovery-share input")
+			}
 			return string(value), nil
 		case 3:
 			clear(value)

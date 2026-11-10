@@ -16,6 +16,9 @@ import (
 )
 
 var ErrRemoteHistoryForked = errors.New("remote snapshot history is forked or has no unique head")
+var ErrRemoteSnapshotCatalog = errors.New("remote snapshot catalog is invalid")
+var ErrRemoteSnapshotIntegrity = errors.New("remote snapshot integrity verification failed")
+var ErrRemoteSnapshotDecryption = errors.New("remote snapshot decryption failed")
 
 const (
 	maxRemoteHistorySnapshots = 1024
@@ -102,14 +105,14 @@ func InspectRemoteHistoryWithResolver(remote []RemoteSnapshot, operational []byt
 		}
 		manifest, err := OpenManifest(item.Catalog, operational)
 		if err != nil || manifest.Snapshot != item.ID {
-			return fmt.Errorf("remote snapshot catalog is invalid")
+			return fmt.Errorf("remote snapshot catalog is invalid: %w", ErrRemoteSnapshotCatalog)
 		}
 		if err := vault.VerifySnapshot(manifest, item.Ciphertext, public); err != nil {
-			return fmt.Errorf("remote snapshot signature or hash verification failed")
+			return fmt.Errorf("remote snapshot signature or hash verification failed: %w", ErrRemoteSnapshotIntegrity)
 		}
 		records, err := vault.RecordsFromCiphertext(item.Ciphertext)
 		if err != nil {
-			return fmt.Errorf("remote snapshot decryption failed")
+			return fmt.Errorf("remote snapshot decryption failed: %w", ErrRemoteSnapshotDecryption)
 		}
 		if manifest.Previous != "" {
 			if !validHistorySnapshotID(manifest.Previous) {
