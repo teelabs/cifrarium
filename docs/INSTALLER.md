@@ -118,6 +118,19 @@ the configured root, keyring, snapshots, provider checkout, and recovery
 shares intact; it does not run `setup` or generate shares again. It stages and
 preflights the candidate before changing the active link. A configured
 provider must pass local access, remote access, and GitHub privacy checks.
+The candidate stays in a private staging directory until all preflight checks
+pass. A failure during candidate preflight removes only its own staging
+directory and leaves the previous-version link and active installation
+unchanged. If the target version directory already exists, the installer
+preserves it and prints instructions for checking the active link and safely
+moving a recognized inactive remnant.
+The installer checks that its version and executable directories are not
+writable by other users, verifies candidate directory identity at promotion,
+creates missing directories with private permissions, and requires an absolute,
+trusted `XDG_CONFIG_HOME`. It replaces the user service file atomically and
+restores the prior unit if activation fails. If interrupted just after the new
+version becomes active, it reports that activation committed and recommends
+`cifrarium doctor` instead of suggesting a blind retry.
 
 If release metadata reports an incompatible provider format or
 `migrationRequired`, the installer prints an actionable `Upgrade blocked`
