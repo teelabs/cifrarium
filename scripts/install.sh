@@ -198,6 +198,68 @@ reject_symlinked_path_components() {
   done
 }
 
+assert_safe_install_path() {
+  local path=$1 current="/" part metadata owner mode mode_bits private_ancestor=0
+  local -a components
+  IFS=/ read -r -a components <<<"$path"
+  for part in "${components[@]}"; do
+    [[ -n "$part" ]] || continue
+    current="${current%/}/$part"
+    [[ ! -L "$current" ]] || die "prefix contains a symlinked path component: $current"
+    [[ -e "$current" ]] || break
+    [[ -d "$current" ]] || die "installation path component is not a directory: $current"
+    metadata=$(stat -c '%u %a' -- "$current") || die "cannot inspect installation directory permissions: $current"
+    read -r owner mode <<<"$metadata"
+    [[ "$owner" == "$EUID" || "$owner" == 0 ]] || die "installation directory has an untrusted owner: $current"
+    mode_bits=$((8#$mode))
+    if ((mode_bits & 0022)); then
+      if ((private_ancestor == 0)); then
+        if [[ "$current" == "$path" ]] || (( (mode_bits & 01000) == 0 )); then
+          die "unsafe writable installation directory: $current"
+        fi
+      fi
+    fi
+    if [[ "$current" != "$path" ]] && [[ "$owner" == "$EUID" ]] && (( (mode_bits & 0011) == 0 )); then
+      private_ancestor=1
+    fi
+  done
+}
+
+ensure_safe_install_directory() {
+  local path=$1 current=/ part saved_umask mkdir_status=0
+  local -a components
+  [[ "$path" == /* ]] || die "installation paths must be absolute: $path"
+  IFS=/ read -r -a components <<<"$path"
+  for part in "${components[@]}"; do
+    [[ -n "$part" ]] || continue
+    [[ "$part" != . && "$part" != .. ]] || die "installation paths must not contain dot components: $path"
+    current="${current%/}/$part"
+    [[ ! -L "$current" ]] || die "prefix contains a symlinked path component: $current"
+    if [[ -e "$current" ]]; then
+      [[ -d "$current" ]] || die "installation path component is not a directory: $current"
+      assert_safe_install_path "$path"
+      continue
+    fi
+    assert_safe_install_path "$path"
+    saved_umask=$(umask)
+    umask 077
+    if mkdir -m 0700 -- "$current"; then
+      mkdir_status=0
+    else
+      mkdir_status=$?
+    fi
+    umask "$saved_umask"
+    if ((mkdir_status != 0)) && [[ ! -d "$current" ]]; then
+      die "cannot create installation directory: $current"
+    fi
+    if ((mkdir_status == 0)); then
+      created_install_dirs+=("$current")
+      created_install_dir_identities+=("$(directory_identity "$current" 2>/dev/null || true)")
+    fi
+    assert_safe_install_path "$path"
+  done
+}
+
 for protected_path in \
   "$prefix" \
   "$prefix/bin" \
@@ -245,10 +307,10 @@ if [[ "$action" == rollback ]]; then
   valid_version "$version" || die "rollback requires an explicit SemVer such as 0.4.0"
 fi
 
-required_commands=(uname mkdir rm rmdir)
+required_commands=(uname mkdir rm rmdir stat)
 case "$action" in
   install)
-    required_commands+=(mktemp mv ln install dirname sed grep curl tar sha256sum cosign python3 stat readlink)
+required_commands+=(mktemp mv ln install dirname sed grep curl tar sha256sum cosign python3 stat readlink chmod cp)
     ;;
   rollback)
     required_commands+=(mv ln readlink)
@@ -260,7 +322,9 @@ esac
 if ((enable)); then
   required_commands+=(systemctl)
 fi
-unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+xdg_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+[[ "$xdg_config_home" == /* ]] || die "XDG_CONFIG_HOME must be an absolute path"
+unit_dir="$xdg_config_home/systemd/user"
 unit_path="$unit_dir/$PRODUCT.service"
 if [[ "$action" == uninstall && -f "$unit_path" ]]; then
   required_commands+=(systemctl)
@@ -287,32 +351,187 @@ versions_dir="$state_dir/versions"
 active_link="$prefix/bin/$PRODUCT"
 previous_link="$prefix/bin/$PRODUCT.previous"
 lock_dir="$state_dir/.install.lock"
+[[ "$prefix" == /* ]] || die "installation paths must be absolute: $prefix"
+assert_safe_install_path "$prefix"
+assert_safe_install_path "$prefix/bin"
+assert_safe_install_path "$versions_dir"
+assert_safe_install_path "$xdg_config_home"
+assert_safe_install_path "$unit_dir"
 upgrade=0
 validated_active_target=""
 validated_active_binary=""
 provider_dir_configured=""
 provider_remote_configured=""
 provider_configured=0
+stage_dir=""
+candidate_path=""
+candidate_owned=0
+candidate_identity=""
+candidate_move_started=0
+candidate_active_target=""
+previous_link_existed=0
+previous_link_target=""
+previous_link_changed=0
+unit_tmp=""
+unit_backup=""
+unit_backup_exists=0
+unit_file_changed=0
+unit_backup_preserve=0
+lock_owned=0
+lock_acquisition_in_progress=0
+signal_status=0
+install_committed=0
+created_install_dirs=()
+created_install_dir_identities=()
 
 if [[ -L "$active_link" ]]; then
   upgrade=1
 fi
 
+cleanup_install() {
+  if [[ -n "${work_dir:-}" ]]; then
+    rm -rf -- "$work_dir" || true
+  fi
+  if [[ "${candidate_owned:-0}" == 1 ]]; then
+    local current_active_target="" cleanup_path="" cleanup_identity="" active_state_confirmed=1
+    if [[ -L "$active_link" ]]; then
+      if ! current_active_target=$(readlink "$active_link" 2>/dev/null); then
+        active_state_confirmed=0
+      fi
+    fi
+    if [[ "$active_state_confirmed" == 0 ]]; then
+      unit_backup_preserve=1
+      printf 'warning: could not inspect the active link; candidate and service-unit backup were preserved for manual recovery\n' >&2
+    elif [[ "$current_active_target" != "$candidate_active_target" ]]; then
+      if [[ "${candidate_move_started:-0}" == 1 && ! -e "$stage_dir" && -d "$version_dir" ]]; then
+        cleanup_path=$version_dir
+      elif [[ -n "$candidate_path" ]]; then
+        cleanup_path=$candidate_path
+      fi
+      if [[ -n "$cleanup_path" && -d "$cleanup_path" && ! -L "$cleanup_path" ]]; then
+        cleanup_identity=$(directory_identity "$cleanup_path" 2>/dev/null || true)
+        if [[ -n "$candidate_identity" && "$cleanup_identity" == "$candidate_identity" ]]; then
+          rm -rf -- "$cleanup_path" || true
+        fi
+      fi
+      if [[ "${previous_link_changed:-0}" == 1 ]]; then
+        if [[ "${previous_link_existed:-0}" == 1 ]]; then
+          atomic_symlink "$previous_link_target" "$previous_link" || true
+        else
+          rm -f -- "$previous_link" || true
+        fi
+      fi
+      if [[ "${unit_file_changed:-0}" == 1 ]]; then
+        if [[ "${unit_backup_exists:-0}" == 1 && -n "${unit_backup:-}" && -f "$unit_backup" ]]; then
+          if mv -Tf -- "$unit_backup" "$unit_path"; then
+            unit_backup=""
+          else
+            unit_backup_preserve=1
+            printf 'warning: could not restore the prior service unit; backup preserved at %s\n' "$unit_backup" >&2
+          fi
+        else
+          rm -f -- "$unit_path" || true
+        fi
+        unit_file_changed=0
+      fi
+    fi
+  fi
+  if [[ -n "${unit_tmp:-}" ]]; then
+    rm -f -- "$unit_tmp" || true
+  fi
+  if [[ -n "${unit_backup:-}" && "${unit_backup_preserve:-0}" != 1 ]]; then
+    rm -f -- "$unit_backup" || true
+  fi
+  if [[ "${lock_owned:-0}" == 1 ]]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+    lock_owned=0
+  fi
+  if [[ "${action:-}" == rollback || "${action:-}" == uninstall ]]; then
+    local created_index created_path expected_identity actual_identity
+    for ((created_index=${#created_install_dirs[@]} - 1; created_index >= 0; created_index--)); do
+      created_path=${created_install_dirs[$created_index]}
+      expected_identity=${created_install_dir_identities[$created_index]}
+      if [[ -n "$expected_identity" && -d "$created_path" && ! -L "$created_path" ]]; then
+        actual_identity=$(directory_identity "$created_path" 2>/dev/null || true)
+        if [[ "$actual_identity" == "$expected_identity" ]]; then
+          rmdir -- "$created_path" 2>/dev/null || true
+        fi
+      fi
+    done
+  fi
+}
+
+handle_installer_signal() {
+  local status=$1
+  if [[ "${lock_acquisition_in_progress:-0}" == 1 ]]; then
+    signal_status=$status
+  else
+    if [[ "${install_committed:-0}" == 1 ]] || \
+      [[ -n "${candidate_active_target:-}" && -L "$active_link" && "$(readlink "$active_link" 2>/dev/null || true)" == "$candidate_active_target" ]]; then
+      install_committed=1
+      printf 'activation completed before interruption; the installed version remains active. Run cifrarium doctor to check it.\n' >&2
+    fi
+    exit "$status"
+  fi
+}
+
+trap cleanup_install EXIT
+trap 'handle_installer_signal 130' INT
+trap 'handle_installer_signal 143' TERM
+trap 'handle_installer_signal 129' HUP
+trap 'handle_installer_signal 131' QUIT
+
 acquire_lock() {
-  mkdir -p "$state_dir"
+  lock_acquisition_in_progress=1
+  assert_safe_install_path "$prefix"
+  assert_safe_install_path "$prefix/bin"
+  assert_safe_install_path "$versions_dir"
+  assert_safe_install_path "$xdg_config_home"
+  assert_safe_install_path "$unit_dir"
+  ensure_safe_install_directory "$prefix"
+  ensure_safe_install_directory "$state_dir"
+  if [[ "$action" == install ]]; then
+    ensure_safe_install_directory "$prefix/bin"
+    ensure_safe_install_directory "$versions_dir"
+  fi
+  if [[ "$action" == install ]]; then
+    ensure_safe_install_directory "$xdg_config_home"
+    ensure_safe_install_directory "$unit_dir"
+  fi
+  assert_safe_install_path "$prefix"
+  assert_safe_install_path "$state_dir"
+  assert_safe_install_path "$prefix/bin"
+  assert_safe_install_path "$versions_dir"
+  assert_safe_install_path "$xdg_config_home"
+  assert_safe_install_path "$unit_dir"
+  if ((signal_status != 0)); then
+    lock_acquisition_in_progress=0
+    exit "$signal_status"
+  fi
   if ! mkdir "$lock_dir" 2>/dev/null; then
+    lock_acquisition_in_progress=0
     die "another installer operation is active at $lock_dir"
   fi
-  trap 'rm -rf "${work_dir:-}"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
+  lock_owned=1
+  lock_acquisition_in_progress=0
+  if ((signal_status != 0)); then
+    exit "$signal_status"
+  fi
+}
+
+directory_identity() {
+  stat -c '%d:%i' -- "$1"
 }
 
 atomic_symlink() {
   local target=$1 link=$2 tmp
-  mkdir -p "$(dirname "$link")"
   tmp="${link}.tmp.$$"
   rm -f "$tmp"
   ln -s "$target" "$tmp"
-  mv -Tf "$tmp" "$link"
+  if ! mv -Tf "$tmp" "$link"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
 }
 
 read_provider_config() {
@@ -456,12 +675,27 @@ if [[ "$action" == install ]]; then
 fi
 
 write_unit() {
-  local target=$1 tmp extract_dir=${EXTRACT_DIR:?}
-  mkdir -p "$unit_dir"
-  tmp="$unit_path.tmp.$$"
-  sed "s|%h/.local/bin/cifrarium|$target|g" "$extract_dir/cifrarium.service" >"$tmp"
-  install -m 0644 "$tmp" "$unit_path"
-  rm -f "$tmp"
+  local target=$1 extract_dir=${EXTRACT_DIR:?}
+  ensure_safe_install_directory "$unit_dir"
+  assert_safe_install_path "$unit_dir"
+  if [[ -L "$unit_path" || ( -e "$unit_path" && ! -f "$unit_path" ) ]]; then
+    die "refusing to replace a non-regular service unit: $unit_path"
+  fi
+  unit_tmp=$(mktemp "$unit_dir/.cifrarium.service.XXXXXX")
+  sed "s|%h/.local/bin/cifrarium|$target|g" "$extract_dir/cifrarium.service" >"$unit_tmp"
+  chmod 0644 "$unit_tmp"
+  if [[ -e "$unit_path" ]]; then
+    unit_backup=$(mktemp "$unit_dir/.cifrarium.service.backup.XXXXXX")
+    if ! cp -p -- "$unit_path" "$unit_backup"; then
+      rm -f -- "$unit_backup"
+      unit_backup=""
+      die "cannot preserve the existing service unit"
+    fi
+    unit_backup_exists=1
+  fi
+  unit_file_changed=1
+  mv -Tf -- "$unit_tmp" "$unit_path"
+  unit_tmp=""
 }
 
 enable_service() {
@@ -474,6 +708,7 @@ rollback() {
   acquire_lock
   local target="$versions_dir/$version/cifrarium"
   [[ -f "$target" && -x "$target" ]] || die "version is not installed: $version"
+  ensure_safe_install_directory "$prefix/bin"
   if [[ -L "$active_link" ]]; then
     atomic_symlink "$(readlink "$active_link")" "$previous_link"
   fi
@@ -678,16 +913,22 @@ if ((upgrade)); then
 else
   [[ ! -e "$active_link" && ! -L "$active_link" ]] || die "An active version appeared during installation. Keep it in place and retry."
 fi
-mkdir -p "$versions_dir"
 version_dir="$versions_dir/$version"
-[[ ! -e "$version_dir" ]] || die "version is already installed: $version"
-stage_dir="$versions_dir/.staging-$version-$$"
-mkdir -m 0700 "$stage_dir"
+candidate_active_target="../lib/$PRODUCT/versions/$version/$PRODUCT"
+[[ ! -e "$version_dir" && ! -L "$version_dir" ]] || die "version directory already exists: $version_dir
+
+It was left unchanged. Keep it in place and verify the active version with:
+readlink $active_link
+
+If it is an inactive remnant you recognize from an earlier failed install, preserve it by moving it aside, then retry."
+stage_dir=$(mktemp -d "$versions_dir/.staging-$version.XXXXXX")
+candidate_path=$stage_dir
+candidate_owned=1
+candidate_identity=$(directory_identity "$stage_dir") || die "could not inspect staged candidate identity"
 install -m 0755 "$extract_dir/cifrarium" "$stage_dir/cifrarium"
 install -m 0644 "$extract_dir/cifrarium.service" "$stage_dir/cifrarium.service"
 install -m 0644 "$extract_dir/README.md" "$stage_dir/README.md"
 install -m 0644 "$extract_dir/release.json" "$stage_dir/release.json"
-mv "$stage_dir" "$version_dir"
 
 old_target=""
 if [[ -L "$active_link" ]]; then
@@ -695,20 +936,37 @@ if [[ -L "$active_link" ]]; then
 elif [[ -e "$active_link" ]]; then
   die "refusing to replace non-symlink active binary: $active_link"
 fi
-if [[ -n "$old_target" ]]; then
-  atomic_symlink "$old_target" "$previous_link"
+if [[ -e "$previous_link" && ! -L "$previous_link" ]]; then
+  die "refusing to replace non-symlink previous version pointer: $previous_link"
+fi
+if [[ -L "$previous_link" ]]; then
+  previous_link_existed=1
+  previous_link_target=$(readlink "$previous_link")
 fi
 step 'Running staged preflight'
-[[ "$($version_dir/cifrarium -version 2>/dev/null)" == "$version" ]] || die "candidate binary preflight failed"
+[[ "$($stage_dir/cifrarium -version 2>/dev/null)" == "$version" ]] || die "candidate binary preflight failed"
 set +e
-"$version_dir/cifrarium" doctor -format=json >/dev/null 2>&1
+"$stage_dir/cifrarium" doctor -format=json >/dev/null 2>&1
 candidate_diagnostic_status=$?
 set -e
 ((candidate_diagnostic_status <= 1)) || die "candidate diagnostic preflight failed"
 provider_preflight
 step_done 'Running staged preflight'
+candidate_move_started=1
+mv -T --no-clobber "$stage_dir" "$version_dir"
+promoted_identity=$(directory_identity "$version_dir" 2>/dev/null || true)
+[[ ! -e "$stage_dir" && -d "$version_dir" && ! -L "$version_dir" && "$promoted_identity" == "$candidate_identity" ]] || die "staged candidate identity changed during promotion; the existing path was left unchanged and this run's candidate was discarded"
+candidate_path=$version_dir
+candidate_move_started=0
 EXTRACT_DIR="$extract_dir" write_unit "$active_link"
-atomic_symlink "../lib/$PRODUCT/versions/$version/cifrarium" "$active_link"
+if [[ -n "$old_target" ]]; then
+  previous_link_changed=1
+  atomic_symlink "$old_target" "$previous_link"
+fi
+atomic_symlink "$candidate_active_target" "$active_link"
+install_committed=1
+candidate_owned=0
+previous_link_changed=0
 
 step 'Running final read-only diagnostic'
 set +e

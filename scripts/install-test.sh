@@ -6,6 +6,7 @@ VERSION=$(tr -d '[:space:]' <"$ROOT_DIR/VERSION")
 GO_CACHE=$(go env GOCACHE)
 GO_MOD_CACHE=$(go env GOMODCACHE)
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/cifrarium-installer-test.XXXXXX")
+UNSAFE_TEST_ROOT=""
 PUBLIC_DIR="$TEST_ROOT/public"
 HOME_DIR="$TEST_ROOT/home"
 PREFIX="$HOME_DIR/.local"
@@ -16,6 +17,11 @@ LIFECYCLE_PID=""
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 CERT="$TEST_ROOT/cert.pem"
 KEY="$TEST_ROOT/key.pem"
+SERVER_CERT="$TEST_ROOT/server-cert.pem"
+SERVER_KEY="$TEST_ROOT/server-key.pem"
+REAL_INSTALL=$(command -v install)
+REAL_MV=$(command -v mv)
+REAL_MKDIR=$(command -v mkdir)
 
 cleanup() {
   if [[ -n "$LIFECYCLE_PID" ]]; then
@@ -26,13 +32,22 @@ cleanup() {
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
+  if [[ -n "$UNSAFE_TEST_ROOT" ]]; then
+    rm -rf "$UNSAFE_TEST_ROOT"
+  fi
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
 
 mkdir -p "$PUBLIC_DIR" "$HOME_DIR" "$FAKE_BIN"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-  -subj /CN=127.0.0.1 -keyout "$KEY" -out "$CERT" >/dev/null 2>&1
+  -subj /CN=Cifrarium-Test-CA -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' -keyout "$KEY" -out "$CERT" >/dev/null 2>&1
+openssl req -new -newkey rsa:2048 -nodes -subj /CN=127.0.0.1 \
+  -addext 'subjectAltName=IP:127.0.0.1' -keyout "$SERVER_KEY" \
+  -out "$TEST_ROOT/server.csr" >/dev/null 2>&1
+openssl x509 -req -days 1 -in "$TEST_ROOT/server.csr" -CA "$CERT" -CAkey "$KEY" \
+  -CAcreateserial -copy_extensions copy -out "$SERVER_CERT" >/dev/null 2>&1
 
 MISSING_BIN="$TEST_ROOT/missing-bin"
 mkdir -p "$MISSING_BIN"
@@ -120,6 +135,58 @@ printf '%s\n' "$*" >>"${CIFRARIUM_SYSTEMCTL_LOG:?}"
 exit 0
 EOF
 chmod 0755 "$FAKE_BIN/cosign" "$FAKE_BIN/systemctl"
+cat >"$FAKE_BIN/install" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+target="${@: -1}"
+if [[ "${CIFRARIUM_TEST_INSTALL_SERVICE_FAIL:-0}" == 1 && "$target" == */systemd/user/cifrarium.service ]]; then
+  printf 'partial test unit write\n' >"$target"
+  exit 1
+fi
+exec "${CIFRARIUM_TEST_REAL_INSTALL:?}" "$@"
+EOF
+chmod 0755 "$FAKE_BIN/install"
+export CIFRARIUM_TEST_REAL_INSTALL="$REAL_INSTALL"
+cat >"$FAKE_BIN/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+target="${@: -1}"
+if [[ "${CIFRARIUM_TEST_INSTALL_SERVICE_FAIL:-0}" == 1 && "$target" == */systemd/user/cifrarium.service && ! -e "${CIFRARIUM_TEST_ROOT:?}/service-mv-failed" ]]; then
+  : >"$CIFRARIUM_TEST_ROOT/service-mv-failed"
+  exit 1
+fi
+if [[ "${CIFRARIUM_TEST_ACTIVE_LINK_FAIL:-0}" == 1 && "$target" == */bin/cifrarium ]]; then
+  exit 1
+fi
+source="${@: -2:1}"
+if [[ "${CIFRARIUM_TEST_CANDIDATE_SWAP:-0}" == 1 && "$target" == */versions/0.8.12 ]]; then
+  "${CIFRARIUM_TEST_REAL_MV:?}" -T "$source" "${CIFRARIUM_TEST_ROOT:?}/stolen-candidate"
+  mkdir -p "$target"
+  printf 'attacker-controlled version\n' >"$target/marker"
+  exit 0
+fi
+if [[ "${CIFRARIUM_TEST_ACTIVE_LINK_SIGNAL:-0}" == 1 && "$target" == */bin/cifrarium ]]; then
+  "${CIFRARIUM_TEST_REAL_MV:?}" "$@"
+  kill -TERM "$PPID"
+  exit 0
+fi
+exec "${CIFRARIUM_TEST_REAL_MV:?}" "$@"
+EOF
+cat >"$FAKE_BIN/mkdir" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+target="${@: -1}"
+if [[ "${CIFRARIUM_TEST_LOCK_SIGNAL:-0}" == 1 && "$target" == */.install.lock ]]; then
+  "${CIFRARIUM_TEST_REAL_MKDIR:?}" "$@"
+  kill -HUP "$PPID"
+  exit 0
+fi
+exec "${CIFRARIUM_TEST_REAL_MKDIR:?}" "$@"
+EOF
+chmod 0755 "$FAKE_BIN/mv" "$FAKE_BIN/mkdir"
+export CIFRARIUM_TEST_REAL_MV="$REAL_MV"
+export CIFRARIUM_TEST_REAL_MKDIR="$REAL_MKDIR"
+export CIFRARIUM_TEST_ROOT="$TEST_ROOT"
 cat >"$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -156,7 +223,7 @@ printf 'test bundle\n' >"$PUBLIC_DIR/install.sh.bundle"
 for archive in "$PUBLIC_DIR"/*.tar.gz; do
   printf 'test bundle\n' >"$archive.bundle"
 done
-python3 - "$PORT" "$PUBLIC_DIR" "$CERT" "$KEY" <<'PY' &
+python3 - "$PORT" "$PUBLIC_DIR" "$SERVER_CERT" "$SERVER_KEY" <<'PY' &
 import http.server
 import os
 import ssl
@@ -209,6 +276,69 @@ if "$ROOT_DIR/scripts/install.sh" --version "$VERSION" --prefix "$TEST_ROOT/deri
   echo 'symlinked derived prefix component unexpectedly accepted' >&2
   exit 1
 fi
+
+UNSAFE_TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/cifrarium-unsafe-install.XXXXXX")
+chmod 0755 "$UNSAFE_TEST_ROOT"
+UNSAFE_PREFIX="$UNSAFE_TEST_ROOT/prefix"
+mkdir -m 0755 "$UNSAFE_PREFIX"
+mkdir -m 0755 "$UNSAFE_PREFIX/lib"
+mkdir -m 0755 "$UNSAFE_PREFIX/lib/cifrarium"
+mkdir -m 0777 "$UNSAFE_PREFIX/lib/cifrarium/versions"
+mkdir -m 0755 "$UNSAFE_PREFIX/bin"
+if "$ROOT_DIR/scripts/install.sh" --version "$VERSION" --prefix "$UNSAFE_PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" --non-interactive >"$TEST_ROOT/unsafe-prefix.txt" 2>&1; then
+  echo 'world-writable installation prefix unexpectedly accepted' >&2
+  exit 1
+fi
+grep -Fq 'unsafe writable installation directory' "$TEST_ROOT/unsafe-prefix.txt"
+[[ ! -e "$UNSAFE_PREFIX/bin/cifrarium" && ! -L "$UNSAFE_PREFIX/bin/cifrarium" ]]
+
+SHARED_PREFIX="$UNSAFE_TEST_ROOT/shared-prefix"
+mkdir -m 1777 "$SHARED_PREFIX"
+if "$ROOT_DIR/scripts/install.sh" --version "$VERSION" --prefix "$SHARED_PREFIX" \
+  --base-url "https://127.0.0.1:$PORT" --non-interactive >"$TEST_ROOT/shared-prefix.txt" 2>&1; then
+  echo 'world-writable sticky installation prefix unexpectedly accepted' >&2
+  exit 1
+fi
+grep -Fq 'unsafe writable installation directory' "$TEST_ROOT/shared-prefix.txt"
+[[ ! -e "$SHARED_PREFIX/lib" && ! -e "$SHARED_PREFIX/bin" ]]
+
+SHARED_CONFIG="$UNSAFE_TEST_ROOT/shared-config"
+mkdir -m 1777 "$SHARED_CONFIG"
+if XDG_CONFIG_HOME="$SHARED_CONFIG" "$ROOT_DIR/scripts/install.sh" --version "$VERSION" \
+  --prefix "$TEST_ROOT/shared-config-prefix" --base-url "https://127.0.0.1:$PORT" \
+  --non-interactive >"$TEST_ROOT/shared-config.txt" 2>&1; then
+  echo 'world-writable sticky XDG config root unexpectedly accepted' >&2
+  exit 1
+fi
+grep -Fq 'unsafe writable installation directory' "$TEST_ROOT/shared-config.txt"
+[[ ! -e "$SHARED_CONFIG/systemd" ]]
+
+if XDG_CONFIG_HOME="relative-config-root" "$ROOT_DIR/scripts/install.sh" --version "$VERSION" \
+  --prefix "$TEST_ROOT/relative-config-prefix" --base-url "https://127.0.0.1:$PORT" \
+  --non-interactive >"$TEST_ROOT/relative-config.txt" 2>&1; then
+  echo 'relative XDG config root unexpectedly accepted' >&2
+  exit 1
+fi
+grep -Fq 'XDG_CONFIG_HOME must be an absolute path' "$TEST_ROOT/relative-config.txt"
+[[ ! -e "$TEST_ROOT/relative-config-root" ]]
+
+MISSING_ROLLBACK_PREFIX="$TEST_ROOT/missing-rollback-prefix"
+if "$ROOT_DIR/scripts/install.sh" --rollback 0.8.99 --prefix "$MISSING_ROLLBACK_PREFIX" \
+  >"$TEST_ROOT/missing-rollback.txt" 2>&1; then
+  echo 'rollback to a missing version unexpectedly succeeded' >&2
+  exit 1
+fi
+grep -Fq 'version is not installed: 0.8.99' "$TEST_ROOT/missing-rollback.txt"
+[[ ! -e "$MISSING_ROLLBACK_PREFIX" ]]
+
+EMPTY_UNINSTALL_PREFIX="$TEST_ROOT/empty-uninstall-prefix"
+if ! XDG_CONFIG_HOME="$TEST_ROOT/empty-uninstall-xdg" "$ROOT_DIR/scripts/install.sh" \
+  --uninstall --prefix "$EMPTY_UNINSTALL_PREFIX" --yes >"$TEST_ROOT/empty-uninstall.txt" 2>&1; then
+  cat "$TEST_ROOT/empty-uninstall.txt" >&2
+  exit 1
+fi
+[[ ! -e "$EMPTY_UNINSTALL_PREFIX" ]]
 
 install_output="$TEST_ROOT/install-output.txt"
 if ! "$INSTALLER_SCRIPT" --version "$VERSION" --prefix "$PREFIX" \
@@ -790,11 +920,15 @@ export CIFRARIUM_TEST_REMOTE_FAIL=1
 "$ROOT_DIR/scripts/build-release.sh" --version 0.8.5 --out-dir "$TEST_ROOT/release-0.8.5"
 cp "$TEST_ROOT/release-0.8.5"/* "$PUBLIC_DIR/"
 for archive in "$PUBLIC_DIR"/cifrarium-0.8.5-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+previous_target_before=$(readlink "$PREFIX/bin/cifrarium.previous" 2>/dev/null || true)
 if "$ROOT_DIR/scripts/install.sh" --version 0.8.5 --prefix "$PREFIX" \
   --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/provider-remote-fail.txt" 2>&1; then
   echo 'inaccessible provider remote unexpectedly upgraded' >&2; exit 1
 fi
 [[ "$($PREFIX/bin/cifrarium -version)" == 0.8.3 ]]
+[[ ! -e "$PREFIX/lib/cifrarium/versions/0.8.5" ]]
+[[ -z "$(find "$PREFIX/lib/cifrarium/versions" -maxdepth 1 -name '.staging-0.8.5-*' -print -quit)" ]]
+[[ "$(readlink "$PREFIX/bin/cifrarium.previous" 2>/dev/null || true)" == "$previous_target_before" ]]
 cmp -s "$TEST_ROOT/pending.before" "$HOME_DIR/.local/share/cifrarium/pending.queue"
 unset CIFRARIUM_TEST_REMOTE_FAIL
 
@@ -1128,5 +1262,174 @@ fi
 LIFECYCLE_PID=""
 cat "$LIFECYCLE_BRIDGE/go-test.log"
 unset CIFRARIUM_LIFECYCLE_INSTALL_BRIDGE
+
+# A failed new-install preflight must leave the same version retryable.
+RETRY_PREFIX="$TEST_ROOT/retry-prefix"
+RETRY_XDG="$TEST_ROOT/retry-xdg"
+mkdir -p "$RETRY_XDG/cifrarium"
+printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR" >"$RETRY_XDG/cifrarium/daemon.env"
+chmod 0600 "$RETRY_XDG/cifrarium/daemon.env"
+"$ROOT_DIR/scripts/build-release.sh" --version 0.8.12 --out-dir "$TEST_ROOT/release-0.8.12"
+cp "$TEST_ROOT/release-0.8.12"/* "$PUBLIC_DIR/"
+for archive in "$PUBLIC_DIR"/cifrarium-0.8.12-*.tar.gz; do printf 'test bundle\n' >"$archive.bundle"; done
+export CIFRARIUM_TEST_REMOTE_FAIL=1
+if XDG_CONFIG_HOME="$RETRY_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 --prefix "$RETRY_PREFIX" --non-interactive \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/retry-preflight-failure.txt" 2>&1; then
+  echo 'inaccessible provider remote unexpectedly installed a new version' >&2
+  cat "$TEST_ROOT/retry-preflight-failure.txt" >&2
+  exit 1
+fi
+[[ ! -e "$RETRY_PREFIX/lib/cifrarium/versions/0.8.12" ]]
+[[ ! -e "$RETRY_PREFIX/bin/cifrarium" && ! -L "$RETRY_PREFIX/bin/cifrarium" ]]
+[[ -z "$(find "$RETRY_PREFIX/lib/cifrarium/versions" -maxdepth 1 -name '.staging-0.8.12.*' -print -quit)" ]]
+unset CIFRARIUM_TEST_REMOTE_FAIL
+if ! XDG_CONFIG_HOME="$RETRY_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 --prefix "$RETRY_PREFIX" --non-interactive \
+  --base-url "https://127.0.0.1:$PORT" >"$TEST_ROOT/retry-after-preflight.txt" 2>&1; then
+  cat "$TEST_ROOT/retry-after-preflight.txt" >&2
+  exit 1
+fi
+[[ "$("$RETRY_PREFIX/bin/cifrarium" -version)" == 0.8.12 ]]
+[[ -d "$RETRY_PREFIX/lib/cifrarium/versions/0.8.12" ]]
+[[ -z "$(find "$RETRY_PREFIX/lib/cifrarium/versions" -maxdepth 1 -name '.staging-0.8.12.*' -print -quit)" ]]
+
+# A hangup during lock acquisition must not strand an installer lock.
+LOCKSIGNAL_PREFIX="$TEST_ROOT/locksignal-prefix"
+LOCKSIGNAL_XDG="$TEST_ROOT/locksignal-xdg"
+mkdir -p "$LOCKSIGNAL_XDG/cifrarium"
+printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR" >"$LOCKSIGNAL_XDG/cifrarium/daemon.env"
+chmod 0600 "$LOCKSIGNAL_XDG/cifrarium/daemon.env"
+export CIFRARIUM_TEST_LOCK_SIGNAL=1
+if XDG_CONFIG_HOME="$LOCKSIGNAL_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 \
+  --prefix "$LOCKSIGNAL_PREFIX" --non-interactive --base-url "https://127.0.0.1:$PORT" \
+  >"$TEST_ROOT/lock-signal.txt" 2>&1; then
+  echo 'lock-acquisition hangup unexpectedly returned success' >&2
+  exit 1
+else
+  lock_signal_status=$?
+fi
+unset CIFRARIUM_TEST_LOCK_SIGNAL
+if [[ "$lock_signal_status" != 129 ]]; then
+  cat "$TEST_ROOT/lock-signal.txt" >&2
+  echo "expected HUP exit 129, got $lock_signal_status" >&2
+  exit 1
+fi
+[[ ! -e "$LOCKSIGNAL_PREFIX/lib/cifrarium/.install.lock" ]]
+
+# A first install must create bin privately even when invoked with umask 000.
+UMASK_PREFIX="$TEST_ROOT/umask-prefix"
+if ! (umask 000; XDG_CONFIG_HOME="$RETRY_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 \
+  --prefix "$UMASK_PREFIX" --non-interactive --base-url "https://127.0.0.1:$PORT") \
+  >"$TEST_ROOT/umask-install.txt" 2>&1; then
+  cat "$TEST_ROOT/umask-install.txt" >&2
+  exit 1
+fi
+bin_mode=$(stat -c '%a' "$UMASK_PREFIX/bin")
+(( (8#$bin_mode & 0022) == 0 ))
+[[ "$($UMASK_PREFIX/bin/cifrarium -version)" == 0.8.12 ]]
+
+# A dangling collision must be preserved and reported without activating a version.
+COLLISION_PREFIX="$TEST_ROOT/collision-prefix"
+COLLISION_DIR="$COLLISION_PREFIX/lib/cifrarium/versions/0.8.12"
+mkdir -p "$(dirname "$COLLISION_DIR")"
+ln -s "$TEST_ROOT/missing-candidate-target" "$COLLISION_DIR"
+if XDG_CONFIG_HOME="$RETRY_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 \
+  --prefix "$COLLISION_PREFIX" --non-interactive --base-url "https://127.0.0.1:$PORT" \
+  >"$TEST_ROOT/version-collision.txt" 2>&1; then
+  echo 'dangling version collision unexpectedly installed' >&2
+  exit 1
+fi
+grep -Fq "version directory already exists: $COLLISION_DIR" "$TEST_ROOT/version-collision.txt"
+[[ -L "$COLLISION_DIR" ]]
+[[ "$(readlink "$COLLISION_DIR")" == "$TEST_ROOT/missing-candidate-target" ]]
+[[ ! -e "$COLLISION_PREFIX/bin/cifrarium" && ! -L "$COLLISION_PREFIX/bin/cifrarium" ]]
+
+# A source-to-destination swap during promotion must not activate or delete the replacement.
+ATTACK_PREFIX="$TEST_ROOT/attack-prefix"
+export CIFRARIUM_TEST_CANDIDATE_SWAP=1
+if XDG_CONFIG_HOME="$RETRY_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 \
+  --prefix "$ATTACK_PREFIX" --non-interactive --base-url "https://127.0.0.1:$PORT" \
+  >"$TEST_ROOT/candidate-swap.txt" 2>&1; then
+  echo 'substituted candidate directory unexpectedly installed' >&2
+  exit 1
+fi
+unset CIFRARIUM_TEST_CANDIDATE_SWAP
+grep -Fq 'staged candidate identity changed during promotion' "$TEST_ROOT/candidate-swap.txt"
+[[ -f "$ATTACK_PREFIX/lib/cifrarium/versions/0.8.12/marker" ]]
+grep -Fq 'attacker-controlled version' "$ATTACK_PREFIX/lib/cifrarium/versions/0.8.12/marker"
+[[ ! -e "$ATTACK_PREFIX/bin/cifrarium" && ! -L "$ATTACK_PREFIX/bin/cifrarium" ]]
+
+# A unit-file failure after candidate preflight must leave the candidate retryable.
+POSTFAIL_PREFIX="$TEST_ROOT/postfail-prefix"
+POSTFAIL_XDG="$TEST_ROOT/postfail-xdg"
+mkdir -p "$POSTFAIL_XDG/cifrarium" "$POSTFAIL_XDG/systemd/user"
+printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR" >"$POSTFAIL_XDG/cifrarium/daemon.env"
+chmod 0600 "$POSTFAIL_XDG/cifrarium/daemon.env"
+printf 'prior service unit sentinel\n' >"$POSTFAIL_XDG/systemd/user/cifrarium.service"
+chmod 0644 "$POSTFAIL_XDG/systemd/user/cifrarium.service"
+cp "$POSTFAIL_XDG/systemd/user/cifrarium.service" "$TEST_ROOT/prior-service-unit"
+export CIFRARIUM_TEST_INSTALL_SERVICE_FAIL=1
+if XDG_CONFIG_HOME="$POSTFAIL_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 \
+  --prefix "$POSTFAIL_PREFIX" --non-interactive --base-url "https://127.0.0.1:$PORT" \
+  >"$TEST_ROOT/post-preflight-failure.txt" 2>&1; then
+  echo 'systemd unit write failure unexpectedly installed a version' >&2
+  exit 1
+fi
+[[ ! -e "$POSTFAIL_PREFIX/lib/cifrarium/versions/0.8.12" ]]
+[[ ! -e "$POSTFAIL_PREFIX/bin/cifrarium" && ! -L "$POSTFAIL_PREFIX/bin/cifrarium" ]]
+[[ ! -e "$POSTFAIL_PREFIX/bin/cifrarium.previous" && ! -L "$POSTFAIL_PREFIX/bin/cifrarium.previous" ]]
+[[ -z "$(find "$POSTFAIL_PREFIX/lib/cifrarium/versions" -maxdepth 1 -name '.staging-0.8.12.*' -print -quit)" ]]
+[[ -z "$(find "$POSTFAIL_XDG/systemd/user" -maxdepth 1 -name '.cifrarium.service.*' -print -quit)" ]]
+cmp -s "$TEST_ROOT/prior-service-unit" "$POSTFAIL_XDG/systemd/user/cifrarium.service"
+unset CIFRARIUM_TEST_INSTALL_SERVICE_FAIL
+if ! XDG_CONFIG_HOME="$POSTFAIL_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 \
+  --prefix "$POSTFAIL_PREFIX" --non-interactive --base-url "https://127.0.0.1:$PORT" \
+  >"$TEST_ROOT/post-preflight-retry.txt" 2>&1; then
+  cat "$TEST_ROOT/post-preflight-retry.txt" >&2
+  exit 1
+fi
+[[ "$("$POSTFAIL_PREFIX/bin/cifrarium" -version)" == 0.8.12 ]]
+
+# If active-link replacement fails after the unit write, restore the old unit.
+ACTIVEFAIL_PREFIX="$TEST_ROOT/activefail-prefix"
+ACTIVEFAIL_XDG="$TEST_ROOT/activefail-xdg"
+mkdir -p "$ACTIVEFAIL_XDG/cifrarium" "$ACTIVEFAIL_XDG/systemd/user"
+printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR" >"$ACTIVEFAIL_XDG/cifrarium/daemon.env"
+chmod 0600 "$ACTIVEFAIL_XDG/cifrarium/daemon.env"
+printf 'prior unit before activation failure\n' >"$ACTIVEFAIL_XDG/systemd/user/cifrarium.service"
+cp "$ACTIVEFAIL_XDG/systemd/user/cifrarium.service" "$TEST_ROOT/activefail-prior-unit"
+export CIFRARIUM_TEST_ACTIVE_LINK_FAIL=1
+if XDG_CONFIG_HOME="$ACTIVEFAIL_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 \
+  --prefix "$ACTIVEFAIL_PREFIX" --non-interactive --base-url "https://127.0.0.1:$PORT" \
+  >"$TEST_ROOT/active-link-failure.txt" 2>&1; then
+  echo 'active-link failure injection unexpectedly succeeded' >&2
+  exit 1
+fi
+unset CIFRARIUM_TEST_ACTIVE_LINK_FAIL
+cmp -s "$TEST_ROOT/activefail-prior-unit" "$ACTIVEFAIL_XDG/systemd/user/cifrarium.service"
+[[ ! -e "$ACTIVEFAIL_PREFIX/lib/cifrarium/versions/0.8.12" ]]
+[[ ! -e "$ACTIVEFAIL_PREFIX/bin/cifrarium" && ! -L "$ACTIVEFAIL_PREFIX/bin/cifrarium" ]]
+[[ -z "$(find "$ACTIVEFAIL_XDG/systemd/user" -maxdepth 1 -name '.cifrarium.service.*' -print -quit)" ]]
+
+# An interruption after the active-link swap must report that activation committed.
+SIGNAL_PREFIX="$TEST_ROOT/signal-prefix"
+SIGNAL_XDG="$TEST_ROOT/signal-xdg"
+mkdir -p "$SIGNAL_XDG/cifrarium"
+printf 'CIFRARIUM_PROVIDER_DIR=%s\nCIFRARIUM_PROVIDER_REMOTE=https://github.com/teelabs/private-provider.git\n' "$PROVIDER_DIR" >"$SIGNAL_XDG/cifrarium/daemon.env"
+chmod 0600 "$SIGNAL_XDG/cifrarium/daemon.env"
+export CIFRARIUM_TEST_ACTIVE_LINK_SIGNAL=1
+if XDG_CONFIG_HOME="$SIGNAL_XDG" "$ROOT_DIR/scripts/install.sh" --version 0.8.12 \
+  --prefix "$SIGNAL_PREFIX" --non-interactive --base-url "https://127.0.0.1:$PORT" \
+  >"$TEST_ROOT/activation-signal.txt" 2>&1; then
+  echo 'post-activation signal unexpectedly returned success' >&2
+  exit 1
+else
+  signal_status=$?
+fi
+unset CIFRARIUM_TEST_ACTIVE_LINK_SIGNAL
+[[ "$signal_status" == 143 ]]
+grep -Fq 'activation completed before interruption' "$TEST_ROOT/activation-signal.txt"
+[[ -L "$SIGNAL_PREFIX/bin/cifrarium" ]]
+[[ "$("$SIGNAL_PREFIX/bin/cifrarium" -version)" == 0.8.12 ]]
+[[ -d "$SIGNAL_PREFIX/lib/cifrarium/versions/0.8.12" ]]
 
 printf 'installer integration tests passed\n'

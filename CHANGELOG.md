@@ -4,6 +4,18 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-11-10
+
+### Fixed
+
+- Keep installer candidates in identity-checked staging through preflight and
+  activation, so failed checks can be retried without changing active version
+  links or deleting a substituted candidate path.
+- Roll back service-unit replacement when activation fails and report when a
+  signal arrives after activation has committed.
+- Create installation paths with private permissions and reject unsafe shared
+  or relative configuration paths.
+
 ## [0.14.2] - 2026-11-10
 
 ### Fixed
