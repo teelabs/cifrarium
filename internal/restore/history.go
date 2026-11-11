@@ -3,7 +3,9 @@ package restore
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/teelabs/cifrarium/internal/provider"
 	"github.com/teelabs/cifrarium/internal/store"
@@ -12,6 +14,15 @@ import (
 type VerifiedSnapshot = store.VerifiedSnapshot
 type VerifiedHistory = store.VerifiedHistory
 type HistoryInspection = store.RemoteHistoryInspection
+
+// SnapshotRecoveryHistory is safe for snapshot-only file recovery. Complete
+// histories are ordered newest first; incomplete histories contain the
+// individually verified objects from the provider's initially staged view,
+// sorted by recorded catalog date without implying freshness.
+type SnapshotRecoveryHistory struct {
+	Snapshots []VerifiedSnapshot
+	Complete  bool
+}
 
 // HistoryReader exposes only the remote reads needed to verify backup
 // history. Verification cannot upload through this interface.
@@ -52,6 +63,46 @@ func VerifyRemoteHistory(ctx context.Context, source HistoryReader, operational 
 		return VerifiedHistory{}, err
 	}
 	return store.VerifyRemoteHistoryWithSelectionResolver(remote, marker, operational, signing, historicalSnapshotResolver(ctx, source))
+}
+
+// VerifyRemoteHistoryForSnapshotRecovery retains normal full-history checks,
+// but permits explicit snapshot-only recovery when the only verification
+// failure is a missing ancestor. Fallback candidates come only from the
+// initially staged provider view, and every candidate must independently
+// pass catalog, signature, hash, and decryption verification.
+func VerifyRemoteHistoryForSnapshotRecovery(ctx context.Context, source HistoryReader, operational []byte, signing ed25519.PrivateKey) (SnapshotRecoveryHistory, error) {
+	remote, err := downloadHistory(ctx, source)
+	if err != nil {
+		return SnapshotRecoveryHistory{}, err
+	}
+	marker, err := downloadHistorySelection(ctx, source)
+	if err != nil {
+		return SnapshotRecoveryHistory{}, err
+	}
+	history, err := store.VerifyRemoteHistoryWithSelectionResolver(remote, marker, operational, signing, historicalSnapshotResolver(ctx, source))
+	if err == nil {
+		return SnapshotRecoveryHistory{Snapshots: append([]VerifiedSnapshot(nil), history.Entries...), Complete: true}, nil
+	}
+	var missing *store.MissingHistorySnapshotsError
+	if !errors.As(err, &missing) {
+		return SnapshotRecoveryHistory{}, err
+	}
+	snapshots, verifyErr := store.VerifyRemoteSnapshots(remote, operational, signing)
+	if verifyErr != nil {
+		return SnapshotRecoveryHistory{}, verifyErr
+	}
+	sortSnapshotRecoveryCandidates(snapshots)
+	return SnapshotRecoveryHistory{Snapshots: snapshots, Complete: false}, nil
+}
+
+func sortSnapshotRecoveryCandidates(snapshots []VerifiedSnapshot) {
+	sort.Slice(snapshots, func(i, j int) bool {
+		left, right := snapshots[i], snapshots[j]
+		if !left.Manifest.CreatedAt.Equal(right.Manifest.CreatedAt) {
+			return left.Manifest.CreatedAt.After(right.Manifest.CreatedAt)
+		}
+		return left.ID < right.ID
+	})
 }
 
 func historicalSnapshotResolver(ctx context.Context, source HistoryReader) store.RemoteSnapshotResolver {

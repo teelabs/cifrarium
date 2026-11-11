@@ -4,6 +4,17 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-11-11
+
+### Fixed
+
+- Allow snapshot-only file recovery from individually authenticated provider
+  snapshots when older history is missing, show non-authoritative recorded
+  times to help choose, require explicit selection and conflict choices, and
+  preserve local vault state.
+- Sort incomplete-history snapshot-only recovery candidates by their recorded
+  catalog date, newest first, with a stable snapshot-ID tie-break.
+
 ## [0.16.0] - 2026-11-11
 
 ### Added

@@ -70,6 +70,71 @@ func (e *MissingHistorySnapshotsError) Error() string {
 // ancestor. The returned boolean is false when the provider cannot supply it.
 type RemoteSnapshotResolver func(id string) (RemoteSnapshot, bool, error)
 
+// VerifyRemoteSnapshots authenticates each supplied snapshot object without
+// requiring its predecessor objects to be present. It is intended for
+// explicitly selected snapshot-only recovery; it does not establish history,
+// freshness, or a merge base.
+func VerifyRemoteSnapshots(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey) ([]VerifiedSnapshot, error) {
+	if len(remote) == 0 || len(remote) > maxRemoteHistorySnapshots || len(operational) != 32 || len(signing) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("remote snapshot set is empty or exceeds the supported limit")
+	}
+	items := make([]VerifiedSnapshot, 0, len(remote))
+	seen := make(map[string]bool, len(remote))
+	var total int64
+	for _, item := range remote {
+		if seen[item.ID] {
+			return nil, fmt.Errorf("remote provider contains duplicate snapshot identifiers")
+		}
+		verified, err := verifyRemoteSnapshot(item, operational, signing)
+		if err != nil {
+			return nil, err
+		}
+		if total > maxRemoteHistoryBytes-int64(len(item.Ciphertext))-int64(len(item.Catalog)) {
+			return nil, fmt.Errorf("remote snapshot set exceeds the recovery size limit")
+		}
+		total += int64(len(item.Ciphertext)) + int64(len(item.Catalog))
+		seen[item.ID] = true
+		items = append(items, verified)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	return items, nil
+}
+
+func verifyRemoteSnapshot(item RemoteSnapshot, operational []byte, signing ed25519.PrivateKey) (VerifiedSnapshot, error) {
+	if !validHistorySnapshotID(item.ID) {
+		return VerifiedSnapshot{}, fmt.Errorf("remote provider contains an invalid snapshot identifier")
+	}
+	if err := limits.CheckBytes(len(item.Ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
+		return VerifiedSnapshot{}, err
+	}
+	if err := limits.CheckBytes(len(item.Catalog), limits.MaxManifestBytes); err != nil {
+		return VerifiedSnapshot{}, err
+	}
+	if !validRemoteManifestEnvelope(item.Catalog) {
+		return VerifiedSnapshot{}, fmt.Errorf("remote snapshot catalog is malformed: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogMalformed))
+	}
+	manifest, err := OpenManifest(item.Catalog, operational)
+	if err != nil {
+		return VerifiedSnapshot{}, fmt.Errorf("remote snapshot catalog could not be opened: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogUnreadable))
+	}
+	if manifest.Snapshot != item.ID {
+		return VerifiedSnapshot{}, fmt.Errorf("remote snapshot catalog identifier does not match object: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogMismatch))
+	}
+	if manifest.Previous != "" && !validHistorySnapshotID(manifest.Previous) {
+		return VerifiedSnapshot{}, fmt.Errorf("remote snapshot chain contains an invalid link")
+	}
+	vault := New("", operational, signing)
+	public := signing.Public().(ed25519.PublicKey)
+	if err := vault.VerifySnapshot(manifest, item.Ciphertext, public); err != nil {
+		return VerifiedSnapshot{}, fmt.Errorf("remote snapshot signature or hash verification failed: %w", ErrRemoteSnapshotIntegrity)
+	}
+	records, err := vault.RecordsFromCiphertext(item.Ciphertext)
+	if err != nil {
+		return VerifiedSnapshot{}, fmt.Errorf("remote snapshot decryption failed: %w", ErrRemoteSnapshotDecryption)
+	}
+	return VerifiedSnapshot{ID: item.ID, Manifest: manifest, Records: records, Ciphertext: append([]byte(nil), item.Ciphertext...), Catalog: append([]byte(nil), item.Catalog...)}, nil
+}
+
 // InspectRemoteHistory verifies every complete lineage in a remote object set.
 // Shared ancestors are retained in each branch; no branch is chosen implicitly.
 func InspectRemoteHistory(remote []RemoteSnapshot, operational []byte, signing ed25519.PrivateKey) (RemoteHistoryInspection, error) {
@@ -85,54 +150,27 @@ func InspectRemoteHistoryWithResolver(remote []RemoteSnapshot, operational []byt
 	items := make(map[string]VerifiedSnapshot, len(remote))
 	manifests := make(map[string]Manifest, len(remote))
 	children := make(map[string]bool, len(remote))
-	vault := New("", operational, signing)
-	public := signing.Public().(ed25519.PublicKey)
 	var total int64
 	addSnapshot := func(item RemoteSnapshot) error {
 		if err := checkRemoteHistorySnapshotCount(len(items)); err != nil {
 			return err
 		}
-		if !validHistorySnapshotID(item.ID) {
-			return fmt.Errorf("remote provider contains an invalid snapshot identifier")
-		}
 		if _, ok := items[item.ID]; ok {
 			return fmt.Errorf("remote provider contains duplicate snapshot identifiers")
-		}
-		if err := limits.CheckBytes(len(item.Ciphertext), limits.MaxSnapshotCipherBytes); err != nil {
-			return err
-		}
-		if err := limits.CheckBytes(len(item.Catalog), limits.MaxManifestBytes); err != nil {
-			return err
 		}
 		if total > maxRemoteHistoryBytes-int64(len(item.Ciphertext))-int64(len(item.Catalog)) {
 			return fmt.Errorf("remote snapshot history exceeds the recovery size limit")
 		}
-		if !validRemoteManifestEnvelope(item.Catalog) {
-			return fmt.Errorf("remote snapshot catalog is malformed: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogMalformed))
-		}
-		manifest, err := OpenManifest(item.Catalog, operational)
+		verified, err := verifyRemoteSnapshot(item, operational, signing)
 		if err != nil {
-			return fmt.Errorf("remote snapshot catalog could not be opened: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogUnreadable))
+			return err
 		}
-		if manifest.Snapshot != item.ID {
-			return fmt.Errorf("remote snapshot catalog identifier does not match object: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogMismatch))
-		}
-		if err := vault.VerifySnapshot(manifest, item.Ciphertext, public); err != nil {
-			return fmt.Errorf("remote snapshot signature or hash verification failed: %w", ErrRemoteSnapshotIntegrity)
-		}
-		records, err := vault.RecordsFromCiphertext(item.Ciphertext)
-		if err != nil {
-			return fmt.Errorf("remote snapshot decryption failed: %w", ErrRemoteSnapshotDecryption)
-		}
-		if manifest.Previous != "" {
-			if !validHistorySnapshotID(manifest.Previous) {
-				return fmt.Errorf("remote snapshot chain contains an invalid link")
-			}
-			children[manifest.Previous] = true
+		if verified.Manifest.Previous != "" {
+			children[verified.Manifest.Previous] = true
 		}
 		total += int64(len(item.Ciphertext)) + int64(len(item.Catalog))
-		items[item.ID] = VerifiedSnapshot{ID: item.ID, Manifest: manifest, Records: records, Ciphertext: append([]byte(nil), item.Ciphertext...), Catalog: append([]byte(nil), item.Catalog...)}
-		manifests[item.ID] = manifest
+		items[item.ID] = verified
+		manifests[item.ID] = verified.Manifest
 		return nil
 	}
 	for _, item := range remote {

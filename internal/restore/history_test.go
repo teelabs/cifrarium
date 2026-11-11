@@ -2,7 +2,12 @@ package restore
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/teelabs/cifrarium/internal/provider"
 	"github.com/teelabs/cifrarium/internal/store"
@@ -14,6 +19,22 @@ type historyProvider struct {
 	selection  []byte
 	ancestors  map[string]store.RemoteSnapshot
 	stageCalls int
+}
+
+func TestSortSnapshotRecoveryCandidatesByRecordedDateNewestFirst(t *testing.T) {
+	newer := time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC)
+	older := newer.Add(-24 * time.Hour)
+	candidates := []VerifiedSnapshot{
+		{ID: "z-tie", Manifest: store.Manifest{CreatedAt: newer}},
+		{ID: "older", Manifest: store.Manifest{CreatedAt: older}},
+		{ID: "a-tie", Manifest: store.Manifest{CreatedAt: newer}},
+	}
+
+	sortSnapshotRecoveryCandidates(candidates)
+
+	if got := []string{candidates[0].ID, candidates[1].ID, candidates[2].ID}; got[0] != "a-tie" || got[1] != "z-tie" || got[2] != "older" {
+		t.Fatalf("candidate order = %v; want newest date first, then ID ascending for ties", got)
+	}
 }
 
 // readOnlyHistoryProvider deliberately has no upload methods: remote history
@@ -153,6 +174,171 @@ func TestVerifyRemoteHistoryResolvesMissingAncestorThroughStager(t *testing.T) {
 	}
 	if remote.stageCalls != 1 {
 		t.Fatalf("historical stage calls=%d; want exactly one", remote.stageCalls)
+	}
+}
+
+func TestVerifyRemoteHistoryForSnapshotRecoveryUsesVerifiedCurrentViewWhenAncestorIsMissing(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := store.New(t.TempDir(), op, signing)
+	_, err = vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("older\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tip, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("recoverable\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &historyProvider{
+		objects:  map[string][]byte{tip.Manifest.Snapshot: tip.Ciphertext},
+		catalogs: map[string][]byte{tip.Manifest.Snapshot: tip.ManifestBytes},
+	}
+	if _, err := VerifyRemoteHistory(context.Background(), remote, op, signing); err == nil {
+		t.Fatal("strict history verification accepted a snapshot with a missing ancestor")
+	}
+
+	got, err := VerifyRemoteHistoryForSnapshotRecovery(context.Background(), remote, op, signing)
+	if err != nil {
+		t.Fatalf("snapshot recovery rejected an independently verified current snapshot: %v", err)
+	}
+	if got.Complete {
+		t.Fatal("history without its referenced ancestor was reported complete")
+	}
+	if len(got.Snapshots) != 1 || got.Snapshots[0].ID != tip.Manifest.Snapshot || string(got.Snapshots[0].Records[0].Data) != "recoverable\n" {
+		t.Fatalf("verified snapshot candidates = %#v; want the signed current-view snapshot", got.Snapshots)
+	}
+}
+
+func TestVerifyRemoteHistoryForSnapshotRecoveryReturnsIncompleteCandidatesNewestDateFirst(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeCandidate := func(data string) store.SnapshotResult {
+		t.Helper()
+		vault := store.New(t.TempDir(), op, signing)
+		result, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte(data), Mode: 0600}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first, second := makeCandidate("first candidate"), makeCandidate("second candidate")
+	older, newer := first, second
+	if older.Manifest.Snapshot > newer.Manifest.Snapshot {
+		older, newer = newer, older
+	}
+	older.Manifest.CreatedAt = time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	newer.Manifest.CreatedAt = time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	newer.Manifest.Previous = strings.Repeat("f", 64)
+	older.ManifestBytes = sealTestManifest(t, older.Manifest, op, signing)
+	newer.ManifestBytes = sealTestManifest(t, newer.Manifest, op, signing)
+	remote := &historyProvider{
+		objects: map[string][]byte{
+			older.Manifest.Snapshot: older.Ciphertext,
+			newer.Manifest.Snapshot: newer.Ciphertext,
+		},
+		catalogs: map[string][]byte{
+			older.Manifest.Snapshot: older.ManifestBytes,
+			newer.Manifest.Snapshot: newer.ManifestBytes,
+		},
+	}
+
+	got, err := VerifyRemoteHistoryForSnapshotRecovery(context.Background(), remote, op, signing)
+	if err != nil {
+		t.Fatalf("VerifyRemoteHistoryForSnapshotRecovery() error = %v", err)
+	}
+	if got.Complete || len(got.Snapshots) != 2 {
+		t.Fatalf("recovery history = complete:%v candidates:%d; want two incomplete-history candidates", got.Complete, len(got.Snapshots))
+	}
+	if got.Snapshots[0].ID != newer.Manifest.Snapshot || got.Snapshots[1].ID != older.Manifest.Snapshot {
+		t.Fatalf("candidate order = [%s, %s]; want newest recorded date first, regardless of ID order", got.Snapshots[0].ID, got.Snapshots[1].ID)
+	}
+}
+
+func sealTestManifest(t *testing.T, manifest store.Manifest, operational []byte, signing ed25519.PrivateKey) []byte {
+	t.Helper()
+	manifest.Metadata = nil
+	manifest.Signature = ""
+	payload, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Signature = hex.EncodeToString(ed25519.Sign(signing, payload))
+	sealed, err := store.SealManifest(manifest, operational)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+func TestVerifyRemoteHistoryForSnapshotRecoveryDoesNotSalvageInvalidCurrentSnapshot(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := store.New(t.TempDir(), op, signing)
+	snapshot, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("recoverable\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := &historyProvider{
+		objects:  map[string][]byte{snapshot.Manifest.Snapshot: snapshot.Ciphertext},
+		catalogs: map[string][]byte{snapshot.Manifest.Snapshot: []byte("not an authenticated catalog")},
+	}
+
+	got, err := VerifyRemoteHistoryForSnapshotRecovery(context.Background(), remote, op, signing)
+	if err == nil || len(got.Snapshots) != 0 {
+		t.Fatalf("invalid current snapshot returned candidates %#v and error %v", got.Snapshots, err)
+	}
+}
+
+func TestVerifyRemoteHistoryForSnapshotRecoveryRejectsBadSignatureAndCiphertextHash(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := store.New(t.TempDir(), op, signing)
+	_, err = vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("older\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tip, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("recoverable\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	badSignature, err := store.OpenManifest(tip.ManifestBytes, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badSignature.Signature = "00"
+	badSignatureCatalog, err := store.SealManifest(badSignature, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badCiphertext := append([]byte(nil), tip.Ciphertext...)
+	badCiphertext[0] ^= 0xff
+
+	for _, tc := range []struct {
+		name    string
+		cipher  []byte
+		catalog []byte
+	}{
+		{name: "signature", cipher: tip.Ciphertext, catalog: badSignatureCatalog},
+		{name: "ciphertext hash", cipher: badCiphertext, catalog: tip.ManifestBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote := &historyProvider{
+				objects:  map[string][]byte{tip.Manifest.Snapshot: tc.cipher},
+				catalogs: map[string][]byte{tip.Manifest.Snapshot: tc.catalog},
+			}
+			got, err := VerifyRemoteHistoryForSnapshotRecovery(context.Background(), remote, op, signing)
+			if err == nil || len(got.Snapshots) != 0 {
+				t.Fatalf("invalid snapshot returned candidates %#v and error %v", got.Snapshots, err)
+			}
+		})
 	}
 }
 

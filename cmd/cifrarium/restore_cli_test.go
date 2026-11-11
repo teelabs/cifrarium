@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/teelabs/cifrarium/internal/config"
 	"github.com/teelabs/cifrarium/internal/provider"
+	"github.com/teelabs/cifrarium/internal/restore"
 	"github.com/teelabs/cifrarium/internal/store"
 	"github.com/zalando/go-keyring"
 )
@@ -92,6 +94,16 @@ func TestRestoreKeyModeRejectsUnknownChoice(t *testing.T) {
 	_, err := promptRestoreSnapshotOnly(bufio.NewReader(strings.NewReader("replace\n")), &bytes.Buffer{})
 	if err == nil || err.Error() != "recovery mode must be normal or snapshot-only" {
 		t.Fatalf("promptRestoreSnapshotOnly() error = %v", err)
+	}
+}
+
+func TestIncompleteSnapshotCandidatesShowRecordedTimeWithoutClaimingFreshness(t *testing.T) {
+	created := time.Date(2026, 11, 10, 12, 30, 0, 0, time.FixedZone("local", -3*60*60))
+	snapshots := []restore.VerifiedSnapshot{{ID: "candidate-id", Manifest: store.Manifest{CreatedAt: created}, Records: []store.Record{{Path: ".codex/config.toml"}}}}
+	var output bytes.Buffer
+	writeRestoreSnapshotCandidates(&output, snapshots, false)
+	if !strings.Contains(output.String(), "order unknown") || !strings.Contains(output.String(), "2026-11-10T15:30:00Z") || !strings.Contains(output.String(), "not proof of freshness") {
+		t.Fatalf("incomplete snapshot listing omits uncertainty or recorded time: %q", output.String())
 	}
 }
 

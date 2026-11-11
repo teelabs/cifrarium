@@ -193,27 +193,47 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	if err := writeRestoreProgress(tty, "Verifying backup history signatures, integrity, and encryption..."); err != nil {
 		return err
 	}
-	history, err := restore.VerifyRemoteHistory(context.Background(), gitProvider, op, signing)
-	if err != nil {
-		return restoreHistoryVerificationError(err)
+	history := restore.VerifiedHistory{}
+	var snapshots []restore.VerifiedSnapshot
+	historyComplete := true
+	if snapshotOnly {
+		recoveryHistory, verifyErr := restore.VerifyRemoteHistoryForSnapshotRecovery(context.Background(), gitProvider, op, signing)
+		if verifyErr != nil {
+			return restoreHistoryVerificationError(verifyErr)
+		}
+		snapshots = recoveryHistory.Snapshots
+		historyComplete = recoveryHistory.Complete
+		if historyComplete {
+			fmt.Fprintln(tty, "Verified snapshot chain. On a new machine the provider branch is the freshness anchor; a valid older signed history after remote rollback cannot be detected.")
+		} else {
+			fmt.Fprintln(tty, "Backup history is incomplete. These snapshots are individually authenticated, but their order and freshness cannot be established. Changed files will have no verified merge base and require an explicit overwrite or keep choice.")
+		}
+	} else {
+		var verifyErr error
+		history, verifyErr = restore.VerifyRemoteHistory(context.Background(), gitProvider, op, signing)
+		if verifyErr != nil {
+			return restoreHistoryVerificationError(verifyErr)
+		}
+		snapshots = history.Entries
+		fmt.Fprintln(tty, "Verified snapshot chain. On a new machine the provider branch is the freshness anchor; a valid older signed history after remote rollback cannot be detected.")
 	}
-	if len(history.Entries) == 0 {
+	if len(snapshots) == 0 {
 		return fmt.Errorf("verified backup history is empty")
 	}
-	fmt.Fprintln(tty, "Verified snapshot chain. On a new machine the provider branch is the freshness anchor; a valid older signed history after remote rollback cannot be detected.")
-	fmt.Fprintln(tty, "Snapshots (newest first):")
-	for i, entry := range history.Entries {
-		fmt.Fprintf(tty, "  %d) %s (%d files)\n", i+1, entry.ID, len(entry.Records))
+	writeRestoreSnapshotCandidates(tty, snapshots, historyComplete)
+	snapshotDefault := "1"
+	if !historyComplete {
+		snapshotDefault = ""
 	}
-	choice, err := promptLine(reader, tty, "Snapshot number", "1")
+	choice, err := promptLine(reader, tty, "Snapshot number", snapshotDefault)
 	if err != nil {
 		return err
 	}
 	var index int
-	if _, err := fmt.Sscan(choice, &index); err != nil || index < 1 || index > len(history.Entries) {
+	if _, err := fmt.Sscan(choice, &index); err != nil || index < 1 || index > len(snapshots) {
 		return fmt.Errorf("invalid snapshot selection")
 	}
-	selectedSnapshot := history.Entries[index-1]
+	selectedSnapshot := snapshots[index-1]
 	availableAdapters := map[string][]string{}
 	for _, record := range selectedSnapshot.Records {
 		name, ok := restoreAdapter(record.Path)
@@ -273,7 +293,14 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	if err := writeRestoreProgress(tty, "Checking selected files and preparing the local restore plan..."); err != nil {
 		return err
 	}
-	plan, err := restore.BuildFilePlan(home, history, selectedSnapshot.ID, selected)
+	planningHistory := history
+	if snapshotOnly {
+		planningHistory = restore.VerifiedHistory{Head: selectedSnapshot.ID, Entries: []restore.VerifiedSnapshot{selectedSnapshot}}
+		if historyComplete {
+			planningHistory.Entries = snapshots
+		}
+	}
+	plan, err := restore.BuildFilePlan(home, planningHistory, selectedSnapshot.ID, selected)
 	if err != nil {
 		return restorePreflightFailure(err)
 	}
@@ -335,6 +362,9 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	confirmation := "Apply selected restore? Replaced files will receive private backups and vault/keyring configuration will be installed."
 	if snapshotOnly {
 		confirmation = "Apply snapshot-only recovery? Replaced files will receive private backups; local vault history, keyring, and provider configuration will remain unchanged. The user daemon will be disabled and remain off."
+		if !historyComplete {
+			confirmation = "Apply recovery from incomplete backup history? Snapshot freshness and merge base cannot be established. Only individually authenticated files will be restored; differing existing files require overwrite or keep choices. Replaced files will receive private backups; vault history, keyring, and provider configuration will remain unchanged. The user daemon will be disabled and remain off."
+		}
 	}
 	if !promptConfirmation(reader, tty, confirmation) {
 		return fmt.Errorf("restore cancelled; no local state was changed")
@@ -402,6 +432,24 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 		return writeRestoreCompletion(tty, fmt.Sprintf("Snapshot recovery completed. %d selected files applied; local vault history, keyring, and provider configuration were not changed. The user daemon remains disabled.", len(apply)))
 	}
 	return writeRestoreCompletion(tty, fmt.Sprintf("Recovery completed. %d selected files applied; the user daemon remains disabled.", len(apply)))
+}
+
+func writeRestoreSnapshotCandidates(terminal io.Writer, snapshots []restore.VerifiedSnapshot, historyComplete bool) {
+	if historyComplete {
+		fmt.Fprintln(terminal, "Snapshots (newest first):")
+		for i, entry := range snapshots {
+			fmt.Fprintf(terminal, "  %d) %s (%d files)\n", i+1, entry.ID, len(entry.Records))
+		}
+		return
+	}
+	fmt.Fprintln(terminal, "Verified snapshots (recorded date newest first; ancestry order unknown; dates are not proof of freshness):")
+	for i, entry := range snapshots {
+		recordedAt := "unknown"
+		if !entry.Manifest.CreatedAt.IsZero() {
+			recordedAt = entry.Manifest.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		fmt.Fprintf(terminal, "  %d) %s (%d files; recorded at %s)\n", i+1, entry.ID, len(entry.Records), recordedAt)
+	}
 }
 
 func ensureDaemonInactiveForHistory(root string) error {

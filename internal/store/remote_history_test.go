@@ -3,12 +3,44 @@ package store
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	crypt "github.com/teelabs/cifrarium/internal/crypto"
 )
+
+func TestVerifyRemoteSnapshotsRejectsSignedUndecryptableObject(t *testing.T) {
+	op, signing, err := GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := crypt.Seal([]byte("not a serialized snapshot"), op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.Sum256(ciphertext)
+	manifest := Manifest{
+		Version:  1,
+		Previous: strings.Repeat("a", 64),
+		Snapshot: hex.EncodeToString(hash[:]),
+		Signer:   crypt.Fingerprint(signing.Public().(ed25519.PublicKey)),
+	}
+	manifest.Signature = hex.EncodeToString(ed25519.Sign(signing, manifestBytes(manifest)))
+	catalog, err := SealManifest(manifest, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = VerifyRemoteSnapshots([]RemoteSnapshot{{ID: manifest.Snapshot, Ciphertext: ciphertext, Catalog: catalog}}, op, signing)
+	if !errors.Is(err, ErrRemoteSnapshotDecryption) {
+		t.Fatalf("VerifyRemoteSnapshots() error = %v; want authenticated decryption failure", err)
+	}
+}
 
 func TestVerifyRemoteHistoryReturnsTypedForkError(t *testing.T) {
 	op, signing, err := GenerateKeyMaterial()
