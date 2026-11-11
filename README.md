@@ -454,6 +454,12 @@ keep, or cancel, and replaced files receive private backups in the configured
 vault. The daemon remains disabled after recovery. Setup also offers this flow
 before creating new keys on a fresh interactive installation.
 
+When a local keyring already exists, restore offers `normal` and
+`snapshot-only` modes. Snapshot-only asks for two hidden shares and uses them
+only to verify and decrypt the selected remote snapshot. It restores selected
+files with private rollback copies and leaves local vault history, keyring,
+and provider configuration unchanged.
+
 On a new machine the remote branch is the freshness anchor. Cifrarium cannot
 detect a valid older signed history after the remote branch has been rolled
 back. `restore.plan` remains read-only; restoration requires the interactive

@@ -68,7 +68,21 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 
 	keys := store.NewKeyring()
 	op, signing, keyErr := keys.LoadExistingForRoot(root)
+	defer func() {
+		clear(op)
+		clear(signing)
+	}()
 	shareValues := make([]string, 0, 2)
+	defer func() {
+		for i := range shareValues {
+			shareValues[i] = ""
+		}
+		if savedValues != nil {
+			savedValues["CIFRARIUM_RECOVERY_SHARE_1"] = ""
+			savedValues["CIFRARIUM_RECOVERY_SHARE_2"] = ""
+		}
+	}()
+	snapshotOnly := false
 	freshKeys := false
 	if keyErr != nil {
 		if !errors.Is(keyErr, keyring.ErrNotFound) {
@@ -107,22 +121,52 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 			return err
 		}
 	} else {
-		if savedValues["CIFRARIUM_RECOVERY_SHARE_1"] != "" && savedValues["CIFRARIUM_RECOVERY_SHARE_2"] != "" {
-			shareValues = []string{savedValues["CIFRARIUM_RECOVERY_SHARE_1"], savedValues["CIFRARIUM_RECOVERY_SHARE_2"]}
-		} else {
+		snapshotOnly, err = promptRestoreSnapshotOnly(reader, tty)
+		if err != nil {
+			return err
+		}
+		if snapshotOnly {
+			values := make([]string, 0, 2)
+			defer func() {
+				for i := range values {
+					values[i] = ""
+				}
+			}()
 			for i := 1; i <= 2; i++ {
 				value, readErr := readRecoveryShare(tty, i)
 				if readErr != nil {
 					return readErr
 				}
-				shareValues = append(shareValues, value)
+				values = append(values, value)
 			}
-		}
-		if err := validateRestoreRecoveryShares(tty, op, signing, shareValues); err != nil {
-			return err
-		}
-		if err := writeRestoreProgress(tty, "Recovery shares accepted; continuing with remote backup verification."); err != nil {
-			return err
+			if err := writeRestoreProgress(tty, "Decoding recovery shares for snapshot-only restore; local vault history, keyring, and provider configuration will be preserved..."); err != nil {
+				return err
+			}
+			clear(op)
+			clear(signing)
+			op, signing = nil, nil
+			op, signing, err = recoverSnapshotOnlyKeys(values)
+			if err != nil {
+				return err
+			}
+		} else {
+			if savedValues["CIFRARIUM_RECOVERY_SHARE_1"] != "" && savedValues["CIFRARIUM_RECOVERY_SHARE_2"] != "" {
+				shareValues = []string{savedValues["CIFRARIUM_RECOVERY_SHARE_1"], savedValues["CIFRARIUM_RECOVERY_SHARE_2"]}
+			} else {
+				for i := 1; i <= 2; i++ {
+					value, readErr := readRecoveryShare(tty, i)
+					if readErr != nil {
+						return readErr
+					}
+					shareValues = append(shareValues, value)
+				}
+			}
+			if err := validateRestoreRecoveryShares(tty, op, signing, shareValues); err != nil {
+				return err
+			}
+			if err := writeRestoreProgress(tty, "Recovery shares accepted; continuing with remote backup verification."); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -280,19 +324,25 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	daemonMayBeActive := false
 	if _, err := os.Lstat(filepath.Join(root, "control.sock")); err == nil {
 		daemonMayBeActive = true
-		if err := validateDaemonRestoreRequestSize(request); err != nil {
-			return err
+		if !snapshotOnly {
+			if err := validateDaemonRestoreRequestSize(request); err != nil {
+				return err
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("daemon state is unknown; restore stopped")
 	}
-	if !promptConfirmation(reader, tty, "Apply selected restore? Replaced files will receive private backups and vault/keyring configuration will be installed.") {
+	confirmation := "Apply selected restore? Replaced files will receive private backups and vault/keyring configuration will be installed."
+	if snapshotOnly {
+		confirmation = "Apply snapshot-only recovery? Replaced files will receive private backups; local vault history, keyring, and provider configuration will remain unchanged. The user daemon will be disabled and remain off."
+	}
+	if !promptConfirmation(reader, tty, confirmation) {
 		return fmt.Errorf("restore cancelled; no local state was changed")
 	}
 	if err := writeRestoreProgress(tty, "Starting the selected restore; checking daemon state and preparing rollback..."); err != nil {
 		return err
 	}
-	if daemonMayBeActive {
+	if daemonMayBeActive && !snapshotOnly {
 		rollbackConfig, err := prepareRestoreConfiguration(home, root, providerDir, remote, shareValues)
 		if err != nil {
 			return fmt.Errorf("could not prepare protected recovery configuration")
@@ -326,18 +376,30 @@ func runFileRestore(home, rootOverride, providerDir, remote string, output io.Wr
 	if err := disableUserDaemonForRestore(root); err != nil {
 		return err
 	}
-	commit := func() error {
-		if err := gitProvider.Ensure(context.Background()); err != nil {
-			return err
-		}
-		return commitVerifiedRestore(home, root, providerDir, remote, shareValues, freshKeys, keys, op, signing, history)
-	}
 	expected := make([]store.RestoreDestination, 0, len(plan))
 	for _, item := range plan {
 		expected = append(expected, store.RestoreDestination{Path: item.Record.Path, Exists: item.Status != restore.PlanNew, Data: item.Current, Mode: item.CurrentMode})
 	}
-	if err := store.RestoreWithVaultLock(apply, expected, home, filepath.Join(root, "backups"), root, commit); err != nil {
-		return restoreApplicationFailure(err)
+	var commit func() error
+	if !snapshotOnly {
+		commit = func() error {
+			if err := gitProvider.Ensure(context.Background()); err != nil {
+				return err
+			}
+			return commitVerifiedRestore(home, root, providerDir, remote, shareValues, freshKeys, keys, op, signing, history)
+		}
+	}
+	var restoreErr error
+	if snapshotOnly {
+		restoreErr = applySnapshotOnlyRestore(home, root, apply, expected)
+	} else {
+		restoreErr = store.RestoreWithVaultLock(apply, expected, home, filepath.Join(root, "backups"), root, commit)
+	}
+	if restoreErr != nil {
+		return restoreApplicationFailure(restoreErr)
+	}
+	if snapshotOnly {
+		return writeRestoreCompletion(tty, fmt.Sprintf("Snapshot recovery completed. %d selected files applied; local vault history, keyring, and provider configuration were not changed. The user daemon remains disabled.", len(apply)))
 	}
 	return writeRestoreCompletion(tty, fmt.Sprintf("Recovery completed. %d selected files applied; the user daemon remains disabled.", len(apply)))
 }
@@ -695,6 +757,42 @@ func validateRestoreRecoveryShares(progress io.Writer, op []byte, signing ed2551
 		shares[i].Value = ""
 	}
 	return nil
+}
+
+func promptRestoreSnapshotOnly(reader *bufio.Reader, tty io.Writer) (bool, error) {
+	choice, err := promptLine(reader, tty, "Recovery mode (normal or snapshot-only; snapshot-only restores files without changing this vault or keyring)", "normal")
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(choice) {
+	case "normal":
+		return false, nil
+	case "snapshot", "snapshot-only":
+		return true, nil
+	default:
+		return false, fmt.Errorf("recovery mode must be normal or snapshot-only")
+	}
+}
+
+func recoverSnapshotOnlyKeys(values []string) ([]byte, ed25519.PrivateKey, error) {
+	shares, err := parseRecoveryShares(values)
+	if err != nil {
+		return nil, nil, fmt.Errorf("recovery shares are invalid")
+	}
+	defer func() {
+		for i := range shares {
+			shares[i].Value = ""
+		}
+	}()
+	op, signing, err := store.RecoverKeys(shares)
+	if err != nil {
+		return nil, nil, fmt.Errorf("recovery shares could not unlock this backup")
+	}
+	return op, signing, nil
+}
+
+func applySnapshotOnlyRestore(home, root string, records []store.Record, expected []store.RestoreDestination) error {
+	return store.RestoreWithVaultLock(records, expected, home, filepath.Join(root, "backups"), root, nil)
 }
 
 func writeRestoreProgress(progress io.Writer, message string) error {

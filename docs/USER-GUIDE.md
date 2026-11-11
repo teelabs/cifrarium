@@ -377,6 +377,14 @@ reverify the history and destination preflight, then apply the selected files.
 It exits after a successful restore, and the CLI disables its systemd service.
 The daemon remains disabled after recovery.
 
+When a local keyring already exists, `restore` asks which recovery mode to use.
+`normal` keeps the existing vault flow and uses its configured or entered
+shares. `snapshot-only` prompts for two hidden shares and uses them only to
+verify and decrypt the remote snapshot. It restores selected application files
+with private rollback copies, without changing local vault history, keyring,
+or provider configuration. The same final confirmation is required, and the
+daemon remains disabled.
+
 The flow requires a TTY and does not accept shares through command arguments or
 JSON output. It does not upload to GitHub. On a new machine, the provider branch
 is the freshness anchor: Cifrarium cannot detect a valid older signed history

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -59,6 +60,124 @@ func TestValidateRestoreRecoverySharesReportsProgressWithoutPrintingShares(t *te
 		if strings.Contains(output.String(), share.Value) {
 			t.Fatal("recovery share appeared in progress output")
 		}
+	}
+}
+
+func TestRestoreKeyModeOffersSnapshotOnlyRecoveryWithoutChangingTheDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		input        string
+		wantSnapshot bool
+	}{
+		{name: "default keeps using the local vault", input: "\n", wantSnapshot: false},
+		{name: "explicit snapshot-only recovery", input: "snapshot\n", wantSnapshot: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			got, err := promptRestoreSnapshotOnly(bufio.NewReader(strings.NewReader(tc.input)), &output)
+			if err != nil {
+				t.Fatalf("promptRestoreSnapshotOnly() error = %v", err)
+			}
+			if got != tc.wantSnapshot {
+				t.Fatalf("snapshot-only = %v, want %v", got, tc.wantSnapshot)
+			}
+			if !strings.Contains(output.String(), "snapshot-only") {
+				t.Fatalf("prompt does not explain snapshot-only option: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestRestoreKeyModeRejectsUnknownChoice(t *testing.T) {
+	_, err := promptRestoreSnapshotOnly(bufio.NewReader(strings.NewReader("replace\n")), &bytes.Buffer{})
+	if err == nil || err.Error() != "recovery mode must be normal or snapshot-only" {
+		t.Fatalf("promptRestoreSnapshotOnly() error = %v", err)
+	}
+}
+
+func TestRecoverSnapshotOnlyKeysUsesSharesWithoutComparingOrPersistingLocalKeys(t *testing.T) {
+	localOp, localSigning, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupOp, backupSigning, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := store.RecoveryShares(backupOp, backupSigning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := []string{shares[0].Label + ":" + shares[0].Value, shares[1].Label + ":" + shares[1].Value}
+	gotOp, gotSigning, err := recoverSnapshotOnlyKeys(values)
+	if err != nil {
+		t.Fatalf("recoverSnapshotOnlyKeys() error = %v", err)
+	}
+	if !bytes.Equal(gotOp, backupOp) || !bytes.Equal(gotSigning, backupSigning) {
+		t.Fatal("snapshot-only recovery did not decode the backup keys")
+	}
+	if bytes.Equal(gotOp, localOp) || bytes.Equal(gotSigning, localSigning) {
+		t.Fatal("fixture backup keys unexpectedly match the existing local vault")
+	}
+	for i := range shares {
+		shares[i].Value = ""
+	}
+}
+
+func TestApplySnapshotOnlyRestoreLeavesCifrariumStateUntouched(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(t.TempDir(), "vault")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	configPath, envPath := config.ConfigPathForHome(home), providerConfigPath(home)
+	state := map[string][]byte{
+		configPath:                             []byte("existing vault config"),
+		envPath:                                []byte("existing provider config"),
+		filepath.Join(root, "head.json"):       []byte("existing head"),
+		filepath.Join(root, "pending.queue"):   []byte("existing queue"),
+		filepath.Join(root, "keyring.fixture"): []byte("existing keyring"),
+	}
+	for path, contents := range state {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, contents, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file := filepath.Join(home, ".zshrc")
+	if err := os.WriteFile(file, []byte("old user file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := applySnapshotOnlyRestore(home, root, []store.Record{{Path: ".zshrc", Mode: 0600, Data: []byte("recovered user file")}}, []store.RestoreDestination{{Path: ".zshrc", Exists: true, Data: []byte("old user file"), Mode: 0600}}); err != nil {
+		t.Fatalf("applySnapshotOnlyRestore() error = %v", err)
+	}
+	got, err := os.ReadFile(file)
+	if err != nil || !bytes.Equal(got, []byte("recovered user file")) {
+		t.Fatalf("restored file = %q, err = %v", got, err)
+	}
+	for path, want := range state {
+		got, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("Cifrarium state %s = %q, err = %v; want unchanged %q", path, got, err, want)
+		}
+	}
+}
+
+func TestApplySnapshotOnlyRestoreRollsBackIfDestinationChanged(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(t.TempDir(), "vault")
+	file := filepath.Join(home, ".zshrc")
+	before := []byte("changed after preflight")
+	if err := os.WriteFile(file, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := applySnapshotOnlyRestore(home, root, []store.Record{{Path: ".zshrc", Mode: 0600, Data: []byte("backup")}}, []store.RestoreDestination{{Path: ".zshrc", Exists: true, Data: []byte("stale preflight"), Mode: 0600}})
+	if err == nil || !strings.Contains(err.Error(), "restore destination changed after preflight") {
+		t.Fatalf("applySnapshotOnlyRestore() error = %v; want changed-destination failure", err)
+	}
+	got, readErr := os.ReadFile(file)
+	if readErr != nil || !bytes.Equal(got, before) {
+		t.Fatalf("failed snapshot-only restore left file = %q, err = %v", got, readErr)
 	}
 }
 

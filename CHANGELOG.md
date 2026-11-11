@@ -4,6 +4,13 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-11
+
+### Added
+
+- Let restore use alternate hidden recovery shares for snapshot-only recovery
+  without changing the existing keyring, vault history, or provider settings.
+
 ## [0.15.0] - 2026-11-11
 
 ### Added
