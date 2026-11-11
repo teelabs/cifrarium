@@ -284,6 +284,13 @@ private control socket; the daemon independently stages and verifies history,
 rechecks destinations, applies the restore, and exits. MCP `restore.plan`
 remains planning only. The provider branch is the new machine's freshness
 anchor; a valid older signed history after branch rollback cannot be detected.
+When a local keyring already exists, the operator may choose `snapshot-only`
+recovery and enter a different hidden share pair. Those shares are used only
+to verify and decrypt the selected remote snapshot. This mode restores the
+selected application files with private rollback copies, but does not install
+remote vault history, replace the local keyring, or change provider
+configuration. The final confirmation remains required, and the user daemon
+stays disabled.
 If remote history has multiple branches or no unique head, restore stops
 without writing local recovery state; preserve the provider and do not choose
 or edit catalog entries manually. When a required ancestor is missing from the
