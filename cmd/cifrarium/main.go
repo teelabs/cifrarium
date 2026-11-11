@@ -102,6 +102,10 @@ func main() {
 		return
 	}
 	if *nonInteractive && commandMutatesOrHandlesSecrets(cmd) {
+		if cmd == "restore-verify" {
+			fmt.Fprintln(os.Stderr, "cifrarium: restore verify requires hidden terminal input and cannot run with --non-interactive")
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "cifrarium: --non-interactive cannot run %s because it may mutate local or remote state or handle secrets\n", cmd)
 		os.Exit(1)
 	}
@@ -122,6 +126,21 @@ func main() {
 			os.Exit(2)
 		}
 		if err := runFileRestore(home, *root, *providerDir, *providerRemote, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if cmd == "restore-verify" {
+		if format != outputHuman {
+			fmt.Fprintln(os.Stderr, "cifrarium: restore verify is interactive and supports human output only")
+			os.Exit(2)
+		}
+		if len(recoveryValues) != 0 {
+			fmt.Fprintln(os.Stderr, "cifrarium: restore verify reads shares only from the hidden terminal prompt")
+			os.Exit(2)
+		}
+		if err := runFileRestoreVerify(home, *root, *providerRemote); err != nil {
 			fmt.Fprintf(os.Stderr, "cifrarium: %v\n", err)
 			os.Exit(1)
 		}
@@ -482,6 +501,9 @@ func canonicalCommand(args []string) (string, []string, error) {
 		if len(args) >= 2 && args[1] == "history" {
 			return "restore-history", append([]string{}, args[2:]...), nil
 		}
+		if len(args) >= 2 && args[1] == "verify" {
+			return "restore-verify", append([]string{}, args[2:]...), nil
+		}
 		if len(args) > 1 {
 			return "", nil, fmt.Errorf("unknown restore command %q", args[1])
 		}
@@ -534,6 +556,7 @@ func writeCifrariumUsage(w io.Writer, fs *flag.FlagSet, program string) {
 	fmt.Fprintln(w, "  doctor                  Run a read-only installation diagnostic")
 	fmt.Fprintln(w, "  setup                   Configure the local vault")
 	fmt.Fprintln(w, "  restore                 Recover selected files from a private GitHub backup")
+	fmt.Fprintln(w, "  restore verify          Verify recovery shares and backup history without restoring files")
 	fmt.Fprintln(w, "  restore history         Verify and interactively select a canonical remote branch")
 	fmt.Fprintln(w, "  snapshot                Capture a local encrypted snapshot")
 	fmt.Fprintln(w, "  snapshot audit          Compare adapter files with the latest verified snapshot")
@@ -562,7 +585,7 @@ func parseOutputFormat(value string) (outputFormat, error) {
 
 func commandMutatesOrHandlesSecrets(command string) bool {
 	switch command {
-	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "restore", "restore-history", "migrate-catalog", "daemon", "daemon-refresh":
+	case "provider-setup", "provider-health", "snapshot", "recovery-shares", "recover", "restore", "restore-verify", "restore-history", "migrate-catalog", "daemon", "daemon-refresh":
 		return true
 	default:
 		return false

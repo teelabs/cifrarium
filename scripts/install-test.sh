@@ -818,7 +818,13 @@ unset CIFRARIUM_TEST_OVERFLOW_SIDE_EFFECT
 
 # Future releases outside the known doctor interface families also fail
 # before execution.
-FUTURE_BINARY="$PREFIX/lib/cifrarium/versions/0.15.0/cifrarium"
+FUTURE_VERSION="$(python3 - "$VERSION" <<'PY'
+import sys
+major, minor, patch = map(int, sys.argv[1].split('.'))
+print(f'{major}.{minor}.{patch + 1}')
+PY
+)"
+FUTURE_BINARY="$PREFIX/lib/cifrarium/versions/$FUTURE_VERSION/cifrarium"
 FUTURE_SIDE_EFFECT="$TEST_ROOT/future-binary-executed"
 mkdir -p "$(dirname "$FUTURE_BINARY")"
 cat >"$FUTURE_BINARY" <<'EOF'
@@ -828,7 +834,7 @@ printf 'status\n'
 EOF
 chmod 0755 "$FUTURE_BINARY"
 export CIFRARIUM_TEST_UNSUPPORTED_SIDE_EFFECT="$FUTURE_SIDE_EFFECT"
-ln -sfn ../lib/cifrarium/versions/0.15.0/cifrarium "$PREFIX/bin/cifrarium"
+ln -sfn "../lib/cifrarium/versions/$FUTURE_VERSION/cifrarium" "$PREFIX/bin/cifrarium"
 future_output="$TEST_ROOT/future-version.txt"
 if "$ROOT_DIR/scripts/install.sh" --version 0.8.38 --prefix "$PREFIX" \
   --base-url "https://127.0.0.1:$PORT" >"$future_output" 2>&1; then

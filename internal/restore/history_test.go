@@ -16,6 +16,27 @@ type historyProvider struct {
 	stageCalls int
 }
 
+// readOnlyHistoryProvider deliberately has no upload methods: remote history
+// verification must depend only on a read-only provider capability.
+type readOnlyHistoryProvider struct {
+	objects  map[string][]byte
+	catalogs map[string][]byte
+}
+
+func (p *readOnlyHistoryProvider) Download(_ context.Context, id string) ([]byte, error) {
+	return append([]byte(nil), p.objects[id]...), nil
+}
+func (p *readOnlyHistoryProvider) DownloadCatalog(_ context.Context, id string) ([]byte, error) {
+	return append([]byte(nil), p.catalogs[id]...), nil
+}
+func (p *readOnlyHistoryProvider) List(context.Context) ([]string, error) {
+	ids := make([]string, 0, len(p.objects))
+	for id := range p.objects {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 func (p *historyProvider) Upload(context.Context, string, []byte) error        { return nil }
 func (p *historyProvider) UploadCatalog(context.Context, string, []byte) error { return nil }
 func (p *historyProvider) Download(_ context.Context, id string) ([]byte, error) {
@@ -78,6 +99,29 @@ func TestVerifyRemoteHistoryReturnsNewestVerifiedChain(t *testing.T) {
 	}
 	if string(history.Entries[0].Records[0].Data) != "two\n" {
 		t.Fatalf("latest data=%q", history.Entries[0].Records[0].Data)
+	}
+}
+
+func TestVerifyRemoteHistoryUsesReadOnlyProviderCapability(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := store.New(t.TempDir(), op, signing)
+	snapshot, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("verified\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &readOnlyHistoryProvider{
+		objects:  map[string][]byte{snapshot.Manifest.Snapshot: snapshot.Ciphertext},
+		catalogs: map[string][]byte{snapshot.Manifest.Snapshot: snapshot.ManifestBytes},
+	}
+	history, err := VerifyRemoteHistory(context.Background(), reader, op, signing)
+	if err != nil {
+		t.Fatalf("verify with read-only source: %v", err)
+	}
+	if len(history.Entries) != 1 || history.Head != snapshot.Manifest.Snapshot {
+		t.Fatalf("verified history = %#v", history)
 	}
 }
 

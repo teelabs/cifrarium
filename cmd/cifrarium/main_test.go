@@ -389,7 +389,7 @@ func TestCifrariumHelpListsCommandsWithoutConfiguredValues(t *testing.T) {
 		t.Fatalf("help failed: %v\n%s", err, out)
 	}
 	text := string(out)
-	for _, want := range []string{"Usage: cifrarium <command> [flags]", "Commands:", "status", "doctor", "provider setup", "provider health", "recovery shares", "recovery import", "daemon", "daemon refresh"} {
+	for _, want := range []string{"Usage: cifrarium <command> [flags]", "Commands:", "status", "doctor", "restore verify", "provider setup", "provider health", "recovery shares", "recovery import", "daemon", "daemon refresh"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("help missing %q: %s", want, text)
 		}
@@ -418,6 +418,25 @@ func TestLoadProviderConfigIgnoresRecoveryShares(t *testing.T) {
 	}
 	if got.Dir != "/provider" || got.Remote != "https://github.com/o/r.git" {
 		t.Fatalf("provider config = %#v", got)
+	}
+}
+
+func TestLoadProviderConfigRejectsSymlinkedConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	configDir := filepath.Join(home, ".config", "cifrarium")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, "daemon.env")
+	if err := os.WriteFile(target, []byte("CIFRARIUM_RECOVERY_SHARE_1=do-not-read\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(configDir, "daemon.env")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadProviderConfig(home); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("loadProviderConfig error = %v; want symlink rejection", err)
 	}
 }
 

@@ -13,9 +13,17 @@ type VerifiedSnapshot = store.VerifiedSnapshot
 type VerifiedHistory = store.VerifiedHistory
 type HistoryInspection = store.RemoteHistoryInspection
 
+// HistoryReader exposes only the remote reads needed to verify backup
+// history. Verification cannot upload through this interface.
+type HistoryReader interface {
+	Download(context.Context, string) ([]byte, error)
+	DownloadCatalog(context.Context, string) ([]byte, error)
+	List(context.Context) ([]string, error)
+}
+
 // InspectRemoteHistory downloads and verifies every branch without selecting
 // one. It returns the encrypted selection marker for the caller to validate.
-func InspectRemoteHistory(ctx context.Context, source provider.Provider, operational []byte, signing ed25519.PrivateKey) (HistoryInspection, []byte, error) {
+func InspectRemoteHistory(ctx context.Context, source HistoryReader, operational []byte, signing ed25519.PrivateKey) (HistoryInspection, []byte, error) {
 	remote, err := downloadHistory(ctx, source)
 	if err != nil {
 		return HistoryInspection{}, nil, err
@@ -34,7 +42,7 @@ func InspectRemoteHistory(ctx context.Context, source provider.Provider, operati
 
 // VerifyRemoteHistory downloads provider objects and delegates full chain,
 // signature, hash, and decryption verification to the store boundary.
-func VerifyRemoteHistory(ctx context.Context, source provider.Provider, operational []byte, signing ed25519.PrivateKey) (VerifiedHistory, error) {
+func VerifyRemoteHistory(ctx context.Context, source HistoryReader, operational []byte, signing ed25519.PrivateKey) (VerifiedHistory, error) {
 	remote, err := downloadHistory(ctx, source)
 	if err != nil {
 		return VerifiedHistory{}, err
@@ -46,7 +54,7 @@ func VerifyRemoteHistory(ctx context.Context, source provider.Provider, operatio
 	return store.VerifyRemoteHistoryWithSelectionResolver(remote, marker, operational, signing, historicalSnapshotResolver(ctx, source))
 }
 
-func historicalSnapshotResolver(ctx context.Context, source provider.Provider) store.RemoteSnapshotResolver {
+func historicalSnapshotResolver(ctx context.Context, source HistoryReader) store.RemoteSnapshotResolver {
 	stager, ok := source.(provider.HistoricalSnapshotStager)
 	if !ok {
 		return nil
@@ -71,7 +79,7 @@ func historicalSnapshotResolver(ctx context.Context, source provider.Provider) s
 	}
 }
 
-func downloadHistorySelection(ctx context.Context, source provider.Provider) ([]byte, error) {
+func downloadHistorySelection(ctx context.Context, source HistoryReader) ([]byte, error) {
 	if marked, ok := source.(interface {
 		DownloadHistorySelection(context.Context) ([]byte, error)
 	}); ok {
@@ -84,7 +92,7 @@ func downloadHistorySelection(ctx context.Context, source provider.Provider) ([]
 	return nil, nil
 }
 
-func downloadHistory(ctx context.Context, source provider.Provider) ([]store.RemoteSnapshot, error) {
+func downloadHistory(ctx context.Context, source HistoryReader) ([]store.RemoteSnapshot, error) {
 	ids, err := source.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list remote snapshots: %w", err)

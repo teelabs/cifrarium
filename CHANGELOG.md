@@ -4,6 +4,19 @@ All notable changes to Cifrarium will be documented here.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-11
+
+### Added
+
+- Add `cifrarium restore verify` to check hidden recovery shares against the
+  private backup history without writing local recovery or provider state.
+
+### Fixed
+
+- Distinguish malformed catalog envelopes, catalogs that cannot be opened
+  with the supplied keys, and catalog/object snapshot ID mismatches during
+  restore verification.
+
 ## [0.14.3] - 2026-11-10
 
 ### Fixed

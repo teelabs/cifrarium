@@ -43,10 +43,10 @@ Check the current interface before copying examples:
 go run ./cmd/cifrarium -h
 ~~~
 
-The main commands are `status`, `doctor`, `setup`, `restore`, `snapshot`,
-`snapshot audit`, `daemon`, `daemon refresh`, `migrate-catalog`, `provider setup`,
-`provider health`, `recovery shares`, and `recovery import`. Options follow the subcommand, for example
-`cifrarium provider health --verify-private`.
+The main commands are `status`, `doctor`, `setup`, `restore`, `restore verify`,
+`snapshot`, `snapshot audit`, `daemon`, `daemon refresh`, `migrate-catalog`,
+`provider setup`, `provider health`, `recovery shares`, and `recovery import`.
+Options follow the subcommand, for example `cifrarium provider health --verify-private`.
 
 `cifrarium snapshot audit` compares current allowlisted adapter files with the
 latest verified local snapshot. `-format=json` returns `matches`, `differs`, or
@@ -348,14 +348,23 @@ actually lost or on a new machine.
 ### Recovery on a new machine
 
 For a new installation, install Cifrarium, authenticate `gh` for the private
-GitHub repository, then run the interactive restore command:
+GitHub repository, then verify the recovery shares and backup before restoring:
 
 ~~~sh
+cifrarium restore verify
 cifrarium restore
 ~~~
 
-The command asks for the private GitHub remote when it is not configured and
-reads two distinct recovery shares without echo when the keyring is missing.
+`restore verify` reads the two shares through hidden terminal prompts and checks
+the encrypted catalog history without writing vault, keyring, queue, or provider
+state. If a catalog cannot be opened with the supplied keys, the shares may
+belong to another backup or that catalog may be damaged; verify the share pair
+and backup source. A malformed catalog envelope or snapshot ID mismatch is
+reported separately. Require verification to succeed before proceeding with restore.
+
+The subsequent `restore` command asks for the private GitHub remote when it is
+not configured and reads two distinct recovery shares without echo when the
+keyring is missing.
 It stages the remote history locally, searches older reachable provider
 commits for any required snapshots missing from the current backup view, and
 verifies the complete history's signatures and hashes before it

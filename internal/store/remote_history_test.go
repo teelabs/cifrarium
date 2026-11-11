@@ -155,6 +155,49 @@ func TestInspectRemoteHistoryWithResolverReturnsSafeMissingAncestorError(t *test
 	}
 }
 
+func TestInspectRemoteHistoryDistinguishesCatalogFailures(t *testing.T) {
+	op, signing, err := GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vault := New(t.TempDir(), op, signing)
+	snapshot, err := vault.Save([]Record{{Path: ".zshrc", Mode: 0600, Data: []byte("set -o vi")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := os.ReadFile(filepath.Join(vault.Root, "snapshots", snapshot.Snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := os.ReadFile(filepath.Join(vault.Root, "catalog", snapshot.Snapshot+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongOperational, _, err := GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		id      string
+		catalog []byte
+		key     []byte
+		want    error
+	}{
+		{name: "malformed catalog envelope", id: snapshot.Snapshot, catalog: []byte("not json"), key: op, want: ErrRemoteSnapshotCatalogMalformed},
+		{name: "catalog cannot be opened with key", id: snapshot.Snapshot, catalog: catalog, key: wrongOperational, want: ErrRemoteSnapshotCatalogUnreadable},
+		{name: "catalog names another snapshot", id: strings.Repeat("0", 64), catalog: catalog, key: op, want: ErrRemoteSnapshotCatalogMismatch},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := InspectRemoteHistory([]RemoteSnapshot{{ID: tc.id, Ciphertext: ciphertext, Catalog: tc.catalog}}, tc.key, signing)
+			if !errors.Is(err, tc.want) || !errors.Is(err, ErrRemoteSnapshotCatalog) {
+				t.Fatalf("error = %v, want errors.Is(_, %v)", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRemoteHistorySnapshotCountLimit(t *testing.T) {
 	if err := checkRemoteHistorySnapshotCount(maxRemoteHistorySnapshots - 1); err != nil {
 		t.Fatalf("count below limit rejected: %v", err)
