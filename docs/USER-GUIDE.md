@@ -388,13 +388,21 @@ daemon remains disabled.
 The flow requires a TTY and does not accept shares through command arguments or
 JSON output. It does not upload to GitHub. On a new machine, the provider branch
 is the freshness anchor: Cifrarium cannot detect a valid older signed history
-if the remote branch itself was rolled back. A valid signed chain is still
-required. If recovery fails, preserve local files and investigate; do not force
-an import. The search reads only and does not repair or write to the provider.
-If required snapshots cannot be found in the available provider history,
-Cifrarium explains that it could not find all required versions, suggests trying
-another valid backup copy, and stops before writing local recovery state. If the
-remote history has multiple branches or no unique head,
+if the remote branch itself was rolled back. When the full chain is available,
+the verified chain is required for normal restore. In `snapshot-only` mode only,
+if a predecessor is missing, Cifrarium can offer individually authenticated
+snapshots from the provider's initially staged view. It labels ancestry order
+and freshness unknown, requires an explicit snapshot choice, and gives no merge
+base.
+Candidates are displayed by recorded catalog date, newest first, with snapshot ID
+as a stable tie-breaker. The date sort is only a selection hint and cannot prove
+freshness. Different existing files require an explicit overwrite or keep choice.
+Invalid catalogs, signatures, ciphertext hashes, or encrypted contents still
+stop recovery. This fallback restores files only and never changes local vault
+history, keyring, or provider configuration. If recovery fails, preserve local
+files and investigate; do not force an import. The ancestor search is read-only
+and does not repair or write to the provider. If the remote history has multiple
+branches or no unique head,
 restore stops before writing local recovery state. On a trusted machine whose
 verified vault and keyring are available, with its daemon stopped, run
 `cifrarium restore history` to inspect the signed branches and select one that
