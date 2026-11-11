@@ -366,6 +366,159 @@ func ensureDaemonInactiveForHistory(root string) error {
 	return nil
 }
 
+// runFileRestoreVerify checks recovery keys and remote history without
+// importing keys or restoring application files.
+func runFileRestoreVerify(home, rootOverride, remote string) (resultErr error) {
+	if !isTerminalFile(os.Stdin) || !isTerminalFile(os.Stdout) {
+		return fmt.Errorf("cifrarium restore verify requires an interactive terminal")
+	}
+	tty, err := openSetupTTY()
+	if err != nil {
+		return err
+	}
+	defer tty.Close()
+	reader := bufio.NewReader(tty)
+	root, err := resolveVaultRoot("restore", rootOverride, home)
+	if err != nil {
+		return err
+	}
+	currentProvider, err := loadProviderConfig(home)
+	if err != nil {
+		return fmt.Errorf("protected provider configuration is unsafe or unreadable")
+	}
+	if remote == "" {
+		remote = currentProvider.Remote
+	}
+	if remote == "" {
+		remote, err = promptLine(reader, tty, "Private GitHub remote (OWNER/REPO or HTTPS URL)", "")
+		if err != nil {
+			return err
+		}
+		if strings.Count(remote, "/") == 1 && !strings.Contains(remote, "://") {
+			remote = "https://github.com/" + remote + ".git"
+		}
+	}
+	if !strings.HasPrefix(remote, "https://github.com/") || strings.ContainsAny(remote, "\r\n\t ") {
+		return fmt.Errorf("restore verify requires an HTTPS GitHub remote")
+	}
+	return runRestoreVerification(context.Background(), root, remote, store.NewKeyring(),
+		readRecoveryShare, newRestoreVerifySource, tty, tty)
+}
+
+type restoreVerifyKeyReader interface {
+	LoadExistingForRoot(string) ([]byte, ed25519.PrivateKey, error)
+}
+
+type restoreVerifySource interface {
+	restore.HistoryReader
+	VerifyPrivate(context.Context) error
+	StageRemoteSnapshots(context.Context) error
+}
+
+type restoreVerifySourceFactory func(remote string) (restoreVerifySource, func() error, error)
+
+func newRestoreVerifySource(remote string) (restoreVerifySource, func() error, error) {
+	stage, err := os.MkdirTemp("", "cifrarium-restore-verify-")
+	if err != nil {
+		return nil, nil, restoreStagingFailure(err)
+	}
+	return provider.Git{Dir: stage, Remote: remote}, func() error { return os.RemoveAll(stage) }, nil
+}
+
+func runRestoreVerification(ctx context.Context, root, remote string, keys restoreVerifyKeyReader,
+	readShare func(*os.File, int) (string, error), newSource restoreVerifySourceFactory, progress io.Writer, shareTTY *os.File,
+) (resultErr error) {
+	op, signing, keyErr := keys.LoadExistingForRoot(root)
+	defer func() {
+		for i := range op {
+			op[i] = 0
+		}
+		for i := range signing {
+			signing[i] = 0
+		}
+	}()
+	if keyErr != nil && !errors.Is(keyErr, keyring.ErrNotFound) {
+		return fmt.Errorf("existing keyring is unavailable; backup verification stopped")
+	}
+	shareValues := make([]string, 0, 2)
+	defer func() {
+		for i := range shareValues {
+			shareValues[i] = ""
+		}
+	}()
+	for i := 1; i <= 2; i++ {
+		value, readErr := readShare(shareTTY, i)
+		if readErr != nil {
+			return readErr
+		}
+		shareValues = append(shareValues, value)
+	}
+	if err := writeRestoreProgress(progress, "Validating recovery shares against the backup keys..."); err != nil {
+		return err
+	}
+	shares, err := parseRecoveryShares(shareValues)
+	if err != nil {
+		return fmt.Errorf("recovery shares are invalid")
+	}
+	defer func() {
+		for i := range shares {
+			shares[i].Value = ""
+		}
+	}()
+	if errors.Is(keyErr, keyring.ErrNotFound) {
+		op, signing, err = store.RecoverKeys(shares)
+		if err != nil {
+			return fmt.Errorf("recovery shares could not unlock a backup key bundle")
+		}
+	} else if !matchesKeyMaterial(op, signing, shares) {
+		return fmt.Errorf("recovery shares do not match this vault")
+	}
+	if err := writeRestoreProgress(progress, "Recovery key bundle decoded; checking it against the remote backup..."); err != nil {
+		return err
+	}
+	source, cleanup, err := newSource(remote)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		resultErr = restoreVerifyStageCleanupFailure(resultErr, cleanup())
+	}()
+	if err := writeRestoreProgress(progress, "Verifying private GitHub backup access..."); err != nil {
+		return err
+	}
+	if err := source.VerifyPrivate(ctx); err != nil {
+		return fmt.Errorf("private GitHub provider could not be verified; backup verification stopped")
+	}
+	if err := writeRestoreProgress(progress, "Staging encrypted backup history for verification..."); err != nil {
+		return err
+	}
+	if err := source.StageRemoteSnapshots(ctx); err != nil {
+		return fmt.Errorf("private backup could not be staged or verified")
+	}
+	if err := writeRestoreProgress(progress, "Verifying catalog encryption, signatures, snapshot integrity, and history..."); err != nil {
+		return err
+	}
+	history, err := restore.VerifyRemoteHistory(ctx, source, op, signing)
+	if err != nil {
+		return restoreHistoryVerificationError(err)
+	}
+	if len(history.Entries) == 0 {
+		return fmt.Errorf("verified backup history is empty; no local recovery state was written")
+	}
+	fmt.Fprintf(progress, "Backup verification succeeded: %d snapshots validated. No local recovery state was written. Run cifrarium restore to choose files for recovery.\n", len(history.Entries))
+	return nil
+}
+
+func restoreVerifyStageCleanupFailure(resultErr, cleanupErr error) error {
+	if cleanupErr == nil {
+		return resultErr
+	}
+	if resultErr == nil {
+		return fmt.Errorf("backup verification completed, but temporary encrypted staging cleanup failed; inspect temporary storage")
+	}
+	return fmt.Errorf("backup verification failed, and temporary encrypted staging cleanup failed; inspect temporary storage before retrying")
+}
+
 // runHistoryReconcile verifies all remote lineages and lets the operator mark
 // one branch that contains the current local vault head. It keeps every
 // snapshot and branch in the provider.
@@ -508,6 +661,15 @@ func restoreHistoryVerificationError(err error) error {
 	var missing *store.MissingHistorySnapshotsError
 	if errors.As(err, &missing) {
 		return fmt.Errorf("Cifrarium could not find all required versions in the available backup history. No local recovery state was written. Try another valid backup copy.")
+	}
+	if errors.Is(err, store.ErrRemoteSnapshotCatalogMalformed) {
+		return fmt.Errorf("backup contains a malformed catalog envelope; no local recovery state was written")
+	}
+	if errors.Is(err, store.ErrRemoteSnapshotCatalogUnreadable) {
+		return fmt.Errorf("backup catalog could not be opened with these recovery keys. The shares may belong to a different backup, or the catalog may be damaged. Verify the share pair and backup source; no local recovery state was written.")
+	}
+	if errors.Is(err, store.ErrRemoteSnapshotCatalogMismatch) {
+		return fmt.Errorf("backup catalog identifier does not match its remote object; backup metadata is inconsistent and no local recovery state was written")
 	}
 	if errors.Is(err, store.ErrRemoteSnapshotCatalog) {
 		return fmt.Errorf("backup contains a catalog that failed validation; no local recovery state was written")

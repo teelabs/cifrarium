@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
@@ -13,7 +14,9 @@ import (
 	"testing"
 
 	"github.com/teelabs/cifrarium/internal/config"
+	"github.com/teelabs/cifrarium/internal/provider"
 	"github.com/teelabs/cifrarium/internal/store"
+	"github.com/zalando/go-keyring"
 )
 
 type failingRestoreStateKeyring struct {
@@ -110,6 +113,16 @@ func TestRestoreStageCleanupFailureReportsOutcomeWithoutPaths(t *testing.T) {
 	}
 }
 
+func TestRestoreVerifyStageCleanupFailureDoesNotClaimRestore(t *testing.T) {
+	cleanupErr := errors.New("remove /tmp/private-stage: permission denied")
+	if got := restoreVerifyStageCleanupFailure(nil, cleanupErr).Error(); got != "backup verification completed, but temporary encrypted staging cleanup failed; inspect temporary storage" || strings.Contains(got, "/tmp/") {
+		t.Fatalf("successful verification cleanup diagnostic = %q", got)
+	}
+	if got := restoreVerifyStageCleanupFailure(errors.New("verification failed"), cleanupErr).Error(); got != "backup verification failed, and temporary encrypted staging cleanup failed; inspect temporary storage before retrying" || strings.Contains(got, "/tmp/") {
+		t.Fatalf("failed verification cleanup diagnostic = %q", got)
+	}
+}
+
 func TestRestoreDaemonStateFailsClosedForRemainingSocket(t *testing.T) {
 	oldSystemctl, oldMCP, oldBackend := runDaemonRefreshSystemctl, daemonRefreshProbe, daemonRefreshBackendProbe
 	defer func() {
@@ -143,6 +156,9 @@ func TestRestoreHistoryVerificationErrorExplainsForkWithoutDetailLeak(t *testing
 		want  string
 	}{
 		{fmt.Errorf("remote snapshot catalog is invalid: %w", store.ErrRemoteSnapshotCatalog), "backup contains a catalog that failed validation; no local recovery state was written"},
+		{fmt.Errorf("remote snapshot catalog is malformed: %w", errors.Join(store.ErrRemoteSnapshotCatalog, store.ErrRemoteSnapshotCatalogMalformed)), "backup contains a malformed catalog envelope; no local recovery state was written"},
+		{fmt.Errorf("remote snapshot catalog could not be opened: %w", errors.Join(store.ErrRemoteSnapshotCatalog, store.ErrRemoteSnapshotCatalogUnreadable)), "backup catalog could not be opened with these recovery keys. The shares may belong to a different backup, or the catalog may be damaged. Verify the share pair and backup source; no local recovery state was written."},
+		{fmt.Errorf("remote snapshot catalog identifier does not match object: %w", errors.Join(store.ErrRemoteSnapshotCatalog, store.ErrRemoteSnapshotCatalogMismatch)), "backup catalog identifier does not match its remote object; backup metadata is inconsistent and no local recovery state was written"},
 		{fmt.Errorf("remote snapshot signature or hash verification failed: %w", store.ErrRemoteSnapshotIntegrity), "backup contains a snapshot that failed integrity verification; no local recovery state was written"},
 		{fmt.Errorf("remote snapshot decryption failed: %w", store.ErrRemoteSnapshotDecryption), "backup contains a snapshot that could not be decrypted; no local recovery state was written"},
 	} {
@@ -150,6 +166,166 @@ func TestRestoreHistoryVerificationErrorExplainsForkWithoutDetailLeak(t *testing
 		if got != tc.want || strings.Contains(got, tc.cause.Error()) {
 			t.Fatalf("diagnostic for %q = %q, want sanitized %q", tc.cause, got, tc.want)
 		}
+	}
+}
+
+func TestRestoreVerifyCommandParsingAndSecretClassification(t *testing.T) {
+	command, args, err := canonicalCommand([]string{"restore", "verify", "-provider-remote", "https://github.com/owner/repo.git"})
+	if err != nil || command != "restore-verify" || len(args) != 2 || args[0] != "-provider-remote" {
+		t.Fatalf("canonicalCommand = %q, %v, %v", command, args, err)
+	}
+	if !commandMutatesOrHandlesSecrets(command) {
+		t.Fatal("restore verify must not accept non-interactive secret handling")
+	}
+}
+
+type readOnlyRestoreVerifyKeyring struct {
+	operational []byte
+	signing     ed25519.PrivateKey
+	err         error
+	reads       int
+}
+
+func (k *readOnlyRestoreVerifyKeyring) LoadExistingForRoot(string) ([]byte, ed25519.PrivateKey, error) {
+	k.reads++
+	return append([]byte(nil), k.operational...), append(ed25519.PrivateKey(nil), k.signing...), k.err
+}
+
+type readOnlyRestoreVerifySource struct {
+	id         string
+	ciphertext []byte
+	catalog    []byte
+	verified   bool
+	staged     bool
+}
+
+func (s *readOnlyRestoreVerifySource) VerifyPrivate(context.Context) error {
+	s.verified = true
+	return nil
+}
+func (s *readOnlyRestoreVerifySource) StageRemoteSnapshots(context.Context) error {
+	s.staged = true
+	return nil
+}
+func (s *readOnlyRestoreVerifySource) Download(_ context.Context, id string) ([]byte, error) {
+	if id != s.id {
+		return nil, os.ErrNotExist
+	}
+	return append([]byte(nil), s.ciphertext...), nil
+}
+func (s *readOnlyRestoreVerifySource) DownloadCatalog(_ context.Context, id string) ([]byte, error) {
+	if id != s.id {
+		return nil, os.ErrNotExist
+	}
+	return append([]byte(nil), s.catalog...), nil
+}
+func (s *readOnlyRestoreVerifySource) List(context.Context) ([]string, error) {
+	return []string{s.id}, nil
+}
+
+func TestRunRestoreVerificationLeavesLocalStateUnchangedOnSuccessAndFailure(t *testing.T) {
+	op, signing, err := store.GenerateKeyMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shares, err := store.RecoveryShares(op, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareValues := []string{shares[0].Label + ":" + shares[0].Value, shares[1].Label + ":" + shares[1].Value}
+	vault := store.New(t.TempDir(), op, signing)
+	snapshot, err := vault.SaveIfChanged([]store.Record{{Path: ".zshrc", Data: []byte("verified\n"), Mode: 0600}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		catalog []byte
+		wantErr bool
+	}{
+		{name: "verified backup", catalog: snapshot.ManifestBytes},
+		{name: "invalid catalog", catalog: []byte("not-json"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			state := map[string][]byte{
+				"head.json":       []byte("existing-head"),
+				"pending.queue":   []byte("existing-queue"),
+				"keyring.fixture": []byte("existing-keyring"),
+			}
+			for path, data := range state {
+				fullPath := filepath.Join(root, path)
+				if err := os.WriteFile(fullPath, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			keyring := &readOnlyRestoreVerifyKeyring{err: keyring.ErrNotFound}
+			source := &readOnlyRestoreVerifySource{id: snapshot.Manifest.Snapshot, ciphertext: snapshot.Ciphertext, catalog: tc.catalog}
+			prompts, cleaned := 0, false
+			var output bytes.Buffer
+			err := runRestoreVerification(context.Background(), root, "https://github.com/owner/repo.git", keyring, func(_ *os.File, _ int) (string, error) {
+				value := shareValues[prompts]
+				prompts++
+				return value, nil
+			}, func(string) (restoreVerifySource, func() error, error) {
+				return source, func() error { cleaned = true; return nil }, nil
+			}, &output, nil)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("runRestoreVerification error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "malformed catalog envelope") {
+				t.Fatalf("verification failure = %v; want actionable catalog diagnosis", err)
+			}
+			if !tc.wantErr && !strings.Contains(output.String(), "No local recovery state was written") {
+				t.Fatalf("success output lacks read-only confirmation: %q", output.String())
+			}
+			if prompts != 2 || keyring.reads != 1 || !source.verified || !source.staged || !cleaned {
+				t.Fatalf("verification calls: prompts=%d keyringReads=%d verified=%v staged=%v cleaned=%v", prompts, keyring.reads, source.verified, source.staged, cleaned)
+			}
+			for path, want := range state {
+				got, err := os.ReadFile(filepath.Join(root, path))
+				if err != nil || !bytes.Equal(got, want) {
+					t.Fatalf("local state %s changed: got %q err=%v", path, got, err)
+				}
+			}
+			for _, share := range shares {
+				if strings.Contains(output.String(), share.Value) {
+					t.Fatal("recovery share appeared in verification output")
+				}
+			}
+		})
+	}
+}
+
+func TestNewRestoreVerifySourceUsesAndRemovesTemporaryCheckout(t *testing.T) {
+	configuredProviderDir := filepath.Join(t.TempDir(), "configured-provider")
+	if err := os.MkdirAll(configuredProviderDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(configuredProviderDir, "marker")
+	if err := os.WriteFile(marker, []byte("configured-provider-state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	source, cleanup, err := newRestoreVerifySource("https://github.com/owner/repo.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitSource, ok := source.(provider.Git)
+	if !ok {
+		t.Fatalf("source type = %T; want provider.Git", source)
+	}
+	if filepath.Clean(gitSource.Dir) == filepath.Clean(configuredProviderDir) || !strings.HasPrefix(filepath.Clean(gitSource.Dir), filepath.Clean(os.TempDir())+string(os.PathSeparator)) {
+		t.Fatalf("verification checkout %q is not isolated under temporary storage", gitSource.Dir)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(gitSource.Dir); !os.IsNotExist(err) {
+		t.Fatalf("temporary verification checkout still exists: %v", err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil || string(got) != "configured-provider-state" {
+		t.Fatalf("configured provider state changed: data=%q err=%v", got, err)
 	}
 }
 

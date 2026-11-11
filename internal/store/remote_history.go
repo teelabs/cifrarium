@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +18,9 @@ import (
 
 var ErrRemoteHistoryForked = errors.New("remote snapshot history is forked or has no unique head")
 var ErrRemoteSnapshotCatalog = errors.New("remote snapshot catalog is invalid")
+var ErrRemoteSnapshotCatalogMalformed = errors.New("remote snapshot catalog envelope is malformed")
+var ErrRemoteSnapshotCatalogUnreadable = errors.New("remote snapshot catalog cannot be opened with the supplied key")
+var ErrRemoteSnapshotCatalogMismatch = errors.New("remote snapshot catalog identifier does not match its object")
 var ErrRemoteSnapshotIntegrity = errors.New("remote snapshot integrity verification failed")
 var ErrRemoteSnapshotDecryption = errors.New("remote snapshot decryption failed")
 
@@ -103,9 +107,15 @@ func InspectRemoteHistoryWithResolver(remote []RemoteSnapshot, operational []byt
 		if total > maxRemoteHistoryBytes-int64(len(item.Ciphertext))-int64(len(item.Catalog)) {
 			return fmt.Errorf("remote snapshot history exceeds the recovery size limit")
 		}
+		if !validRemoteManifestEnvelope(item.Catalog) {
+			return fmt.Errorf("remote snapshot catalog is malformed: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogMalformed))
+		}
 		manifest, err := OpenManifest(item.Catalog, operational)
-		if err != nil || manifest.Snapshot != item.ID {
-			return fmt.Errorf("remote snapshot catalog is invalid: %w", ErrRemoteSnapshotCatalog)
+		if err != nil {
+			return fmt.Errorf("remote snapshot catalog could not be opened: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogUnreadable))
+		}
+		if manifest.Snapshot != item.ID {
+			return fmt.Errorf("remote snapshot catalog identifier does not match object: %w", errors.Join(ErrRemoteSnapshotCatalog, ErrRemoteSnapshotCatalogMismatch))
 		}
 		if err := vault.VerifySnapshot(manifest, item.Ciphertext, public); err != nil {
 			return fmt.Errorf("remote snapshot signature or hash verification failed: %w", ErrRemoteSnapshotIntegrity)
@@ -473,6 +483,20 @@ func validateVerifiedHistoryContents(history VerifiedHistory, operational []byte
 		}
 	}
 	return nil
+}
+
+func validRemoteManifestEnvelope(raw []byte) bool {
+	var envelope struct {
+		Version    *int    `json:"v"`
+		WrappedKey *string `json:"k"`
+		Ciphertext *string `json:"c"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return false
+	}
+	return envelope.Version != nil && *envelope.Version == 1 &&
+		envelope.WrappedKey != nil && *envelope.WrappedKey != "" &&
+		envelope.Ciphertext != nil && *envelope.Ciphertext != ""
 }
 
 func validHistorySnapshotID(id string) bool {
